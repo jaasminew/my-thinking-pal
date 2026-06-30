@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Unit 1 · Audio → STT → Cleaned Highlighted Transcript</title>
+  </head>
+  <body>
+    <header>
+      <div class="ctrl">
+        <label>Capture</label>
+        <button id="toggle">Start</button>
+      </div>
+
+      <div class="ctrl">
+        <label>Audio source</label>
+        <div class="row group" id="sourceGroup">
+          <button data-value="mic" class="active">Mic</button>
+          <button data-value="system" title="Shares a Chrome tab's audio — check 'Share tab audio' in the dialog">System</button>
+          <button data-value="both" title="Mic + tab audio mixed">Both</button>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <label>STT provider</label>
+        <div class="row group" id="sttGroup">
+          <button data-value="soniox" class="active">Soniox</button>
+          <button data-value="speechmatics">Speechmatics</button>
+          <button data-value="iflytek">讯飞</button>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <label>Language</label>
+        <select id="lang">
+          <option value="en-US">English (US)</option>
+          <option value="zh-CN">中文</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
+        <label>Cleanup provider</label>
+        <div class="row group" id="modelGroup">
+          <button data-value="groq" class="active">Groq</button>
+          <button data-value="cerebras">Cerebras</button>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <label>Groq model</label>
+        <select id="groqModel" title="Applies when Groq is the provider">
+          <option value="openai/gpt-oss-20b">GPT-OSS 20B · default</option>
+          <option value="llama-3.3-70b-versatile">Llama 3.3 70B · safest no-reasoning</option>
+          <option value="llama-3.1-8b-instant">Llama 3.1 8B · fastest, weaker</option>
+          <option value="meta-llama/llama-4-scout-17b-16e-instruct">Llama 4 Scout 17B</option>
+          <option value="qwen/qwen3-32b">Qwen3 32B · reasoning off</option>
+          <option value="qwen/qwen3.6-27b">Qwen3.6 27B · reasoning off</option>
+          <option value="openai/gpt-oss-20b">GPT-OSS 20B · reasoning minimized</option>
+          <option value="openai/gpt-oss-120b">GPT-OSS 120B · reasoning minimized</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
+        <label>Cadence</label>
+        <div class="row group" id="cadenceGroup">
+          <button data-value="pause" class="active">On pause</button>
+        </div>
+        <div class="row">
+          <span style="font-size:11px;color:var(--muted)">Pause</span>
+          <input id="pauseMs" type="range" min="800" max="4000" step="100" value="1500" />
+          <span class="slider-val" id="pauseVal">1500ms</span>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <label>Minimum chunk</label>
+        <div class="row">
+          <span style="font-size:11px;color:var(--muted)">Words</span>
+          <input id="minWords" type="range" min="1" max="35" value="12" />
+          <span class="slider-val" id="minWordsVal">12</span>
+        </div>
+        <div class="row">
+          <span style="font-size:11px;color:var(--muted)">中文</span>
+          <input id="minCjkChars" type="range" min="1" max="35" value="12" />
+          <span class="slider-val" id="minCjkCharsVal">12</span>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <label>Highlight fade</label>
+        <div class="row">
+          <input id="fade" type="range" min="0" max="1200" step="50" value="400" />
+          <span class="slider-val" id="fadeVal">400ms</span>
+        </div>
+      </div>
+
+      <div class="ctrl" style="flex:1">
+        <label>System prompt — how to clean and mark highlights</label>
+        <textarea id="prompt" spellcheck="false"></textarea>
+      </div>
+    </header>
+
+    <main>
+      <div id="transcript"></div>
+      <aside id="latency"></aside>
+    </main>
+
+    <footer id="status"></footer>
+
+    <script type="module" src="/unit1-stt-highlight/src/main.ts"></script>
+  </body>
+</html>
