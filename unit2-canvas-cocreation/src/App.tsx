@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Transcript, TRANSCRIPT_TEXT } from './Transcript'
+import { Transcript } from './Transcript'
 import { CommandBar } from './CommandBar'
 import { KeywordNoteView } from './KeywordNoteView'
-import { uid, type KeywordNote, type Bullet, type Card } from './canvas-types'
+import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem } from './canvas-types'
 import { requestCocreate } from '../../services/llm/cocreate'
 import type { CocreateProvider, OpenSub } from '../../services/llm/cocreate-types'
 
@@ -35,7 +35,31 @@ const countWords = (s: string) => {
 }
 // Human words in a note = keyword + the user's bullets (AI output doesn't count).
 const humanWords = (n: KeywordNote) =>
-  countWords([n.keyword, ...n.bullets.filter((b) => b.origin === 'human').map((b) => b.text)].join(' '))
+  countWords([n.keyword, ...n.items.filter((i): i is BulletItem => isBullet(i) && i.origin === 'human').map((b) => b.text)].join(' '))
+
+// URLs the user types/pastes into a bullet get pulled out into inline cards.
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
+const hostOf = (u: string) => {
+  try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u }
+}
+
+// Commit a bullet: strip typed URLs into gray cards placed right after it, and
+// (on ⏎) continue the outline with a fresh editing bullet below — regardless of
+// whether the committed line was human or accepted AI: laid-down text is text.
+const commitBullet = (b: BulletItem, continueOutline: boolean): NoteItem[] => {
+  const urls = b.text.match(URL_RE) || []
+  const text = b.text.replace(URL_RE, ' ').replace(/\s+/g, ' ').trim()
+  const out: NoteItem[] = []
+  if (text) out.push({ ...b, text, editing: false })
+  for (const u of urls) {
+    out.push({ kind: 'card', id: uid('c'), origin: 'human', status: 'kept', title: hostOf(u), url: u })
+  }
+  // ⏎ on an empty bullet ends the outline instead of opening another one.
+  if (continueOutline && out.length) {
+    out.push({ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true })
+  }
+  return out
+}
 
 export function App() {
   const [notes, setNotes] = useState<KeywordNote[]>([])
@@ -43,9 +67,12 @@ export function App() {
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null)
   const [recording, setRecording] = useState(false)
 
-  const [provider, setProvider] = useState<CocreateProvider>('open')
+  const [provider, setProvider] = useState<CocreateProvider>('codex')
   const [openIdx, setOpenIdx] = useState(0)
   const [webSearch, setWebSearch] = useState(true)
+  // AI co-creation mode: OFF suppresses ambient fires and cancels in-flight
+  // ones. Tier-3 commands stay live — an explicit command is an invitation.
+  const [aiEnabled, setAiEnabled] = useState(true)
 
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const notesRef = useRef<KeywordNote[]>(notes)
@@ -53,13 +80,22 @@ export function App() {
   const selectedIdsRef = useRef(selectedIds)
   useEffect(() => { selectedIdsRef.current = selectedIds }, [selectedIds])
   const aiBufRef = useRef<Record<string, string>>({})
+  const aiEnabledRef = useRef(true)
+  useEffect(() => { aiEnabledRef.current = aiEnabled }, [aiEnabled])
+  // In-flight fires, so switching AI off can cancel ambient streams immediately.
+  const firesRef = useRef(new Map<string, { controller: AbortController; isCommand: boolean }>())
+  // Live cleaned transcript, fed by <Transcript>. Kept in a ref so runAi always
+  // reads the latest text without re-creating the callback on every word.
+  const transcriptTextRef = useRef('')
+  const onTranscriptChange = useCallback((t: string) => { transcriptTextRef.current = t }, [])
 
   // Mass delete: ⌫/Delete removes all selected notes (unless typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      if (e.defaultPrevented) return // e.g. ⌫ on a focused url card = delete that card only
       const ae = document.activeElement
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || (ae as HTMLElement).isContentEditable)) return
       if (selectedIdsRef.current.size === 0) return
       e.preventDefault()
       const del = selectedIdsRef.current
@@ -95,15 +131,20 @@ export function App() {
       const note = notesRef.current.find((n) => n.id === noteId)
       if (!note) return
 
-      const humanBullets = note.bullets.filter((b) => b.origin === 'human' && b.text.trim())
+      const isCommand = typeof command === 'string' && command.trim().length > 0
+      if (!isCommand && !aiEnabledRef.current) return // ambient fires respect the switch
+
+      const humanBullets = note.items.filter((i): i is BulletItem => isBullet(i) && i.origin === 'human' && !!i.text.trim())
       const seed = note.keyword.trim() || humanBullets[0]?.text || ''
-      // Everything already on the canvas — so the model doesn't repeat itself.
-      const existingIdeas = [
-        ...note.bullets.filter((b) => b.origin === 'ai').map((b) => b.text),
-        ...note.cards.map((c) => c.title)
-      ]
+      // Only PERMANENT (kept) AI content is context for the next call; pending
+      // suggestions are temporary — they may be rejected, so they don't count.
+      const existingIdeas = note.items
+        .filter((i) => i.origin === 'ai' && i.status === 'kept')
+        .map((i) => (isBullet(i) ? i.text : i.title))
       const fireId = uid('f')
       aiBufRef.current[fireId] = ''
+      const controller = new AbortController()
+      firesRef.current.set(fireId, { controller, isCommand })
       patchNote(noteId, (n) => ({ ...n, aiRunning: true }))
 
       const result = await requestCocreate(
@@ -114,7 +155,7 @@ export function App() {
           kept: note.kept,
           rejected: note.rejected,
           existingIdeas,
-          transcriptWindow: TRANSCRIPT_TEXT,
+          transcriptWindow: transcriptTextRef.current,
           ...providerArgs()
         },
         {
@@ -130,33 +171,51 @@ export function App() {
             setNotes((ns) =>
               ns.map((n) => {
                 if (n.id !== noteId) return n
-                // Append: keep every other bullet, upsert only this fire's bullet.
-                const others = n.bullets.filter((b) => b.fireId !== fireId)
-                const mine = n.bullets.filter((b) => b.fireId === fireId)
-                const next: Bullet[] = lines.map((t, i) =>
-                  mine[i]
-                    ? { ...mine[i], text: t }
-                    : { id: uid('b'), origin: 'ai', fireId, text: t, status: 'pending' }
-                )
-                return { ...n, bullets: [...others, ...next] }
+                const t = lines[0]
+                if (t === undefined) return n
+                // Upsert this fire's bullet IN PLACE (appended at the end on
+                // first sight). Once the user has accepted (or started editing)
+                // it, the stream stops overwriting their version.
+                const idx = n.items.findIndex((it) => isBullet(it) && it.fireId === fireId)
+                if (idx >= 0) {
+                  const cur = n.items[idx] as BulletItem
+                  if (cur.status !== 'pending') return n
+                  const items = [...n.items]
+                  items[idx] = { ...cur, text: t }
+                  return { ...n, items }
+                }
+                return { ...n, items: [...n.items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, text: t, status: 'pending' }] }
               })
             )
           },
           onUrls: (urls) => {
             patchNote(noteId, (n) => ({
               ...n,
-              cards: [...n.cards, ...urls.slice(0, 1).map((u): Card => ({ ...u, id: uid('c'), status: 'pending' }))]
+              items: [...n.items, ...urls.slice(0, 1).map((u): CardItem => ({ ...u, kind: 'card', id: uid('c'), origin: 'ai', status: 'pending' }))]
             }))
           }
-        }
+        },
+        controller.signal
       )
+
+      firesRef.current.delete(fireId)
+      if (result.aborted) {
+        // Cancelled by the switch: discard this fire's partial suggestion.
+        delete aiBufRef.current[fireId]
+        patchNote(noteId, (n) => ({
+          ...n,
+          aiRunning: false,
+          items: n.items.filter((it) => !(isBullet(it) && it.fireId === fireId))
+        }))
+        return
+      }
 
       patchNote(noteId, (n) => {
         if (result.error && !aiBufRef.current[fireId]?.trim()) {
           return {
             ...n,
             aiRunning: false,
-            bullets: [...n.bullets, { id: uid('b'), origin: 'ai', fireId, text: `⚠ ${result.error}`, status: 'pending' }]
+            items: [...n.items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, text: `⚠ ${result.error}`, status: 'pending' }]
           }
         }
         return { ...n, aiRunning: false }
@@ -167,6 +226,7 @@ export function App() {
 
   // ---- the trigger: fire ONE increment each time human word count grows by 20 ----
   useEffect(() => {
+    if (!aiEnabled) return
     for (const n of notes) {
       if (n.aiRunning || n.keywordEditing) continue
       const words = humanWords(n)
@@ -175,7 +235,22 @@ export function App() {
         void runAi(n.id)
       }
     }
-  }, [notes, patchNote, runAi])
+  }, [notes, aiEnabled, patchNote, runAi])
+
+  // ---- AI co-creation switch. Back ON resets each note's baseline to its
+  // CURRENT word count, so writing done while off never triggers a burst of
+  // stale suggestions. OFF cancels in-flight ambient fires (commands finish).
+  const toggleAi = useCallback(() => {
+    const next = !aiEnabledRef.current
+    if (next) {
+      setNotes((ns) => ns.map((n) => ({ ...n, lastFiredWords: humanWords(n) })))
+    } else {
+      for (const f of firesRef.current.values()) {
+        if (!f.isCommand) f.controller.abort()
+      }
+    }
+    setAiEnabled(next)
+  }, [])
 
   // ---- canvas: drag blank = marquee-select (框选); plain click = new note ----
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
@@ -209,7 +284,7 @@ export function App() {
       setMarquee(null)
       if (!moved) {
         const id = uid('n')
-        setNotes((ns) => [...ns, { id, x: start.x, y: start.y, keyword: '', keywordEditing: true, bullets: [], cards: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: 0 }])
+        setNotes((ns) => [...ns, { id, x: start.x, y: start.y, keyword: '', keywordEditing: true, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: 0 }])
         setSelectedIds(new Set([id]))
       }
     }
@@ -227,9 +302,9 @@ export function App() {
     setNotes((ns) => [
       ...ns,
       {
-        id, x, y, keyword: text, keywordEditing: false, cards: [], aiRunning: false,
+        id, x, y, keyword: text, keywordEditing: false, aiRunning: false,
         kept: [], rejected: [], lastFiredWords: 0,
-        bullets: [{ id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
+        items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
       }
     ])
     setSelectedIds(new Set([id]))
@@ -242,102 +317,89 @@ export function App() {
   const onKeywordCommit = (id: string) => () => {
     const n = notesRef.current.find((x) => x.id === id)
     if (!n) return
-    if (!n.keyword.trim() && n.bullets.length === 0) {
+    if (!n.keyword.trim() && n.items.length === 0) {
       setNotes((ns) => ns.filter((x) => x.id !== id)) // empty click → discard
       return
     }
     patchNote(id, (nn) => ({
       ...nn,
       keywordEditing: false,
-      bullets: nn.bullets.length
-        ? nn.bullets
-        : [{ id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
+      items: nn.items.length
+        ? nn.items
+        : [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
     }))
   }
 
   // ---- bullet editing ----
   const onBulletChange = (id: string) => (bulletId: string, text: string) =>
-    patchNote(id, (n) => ({ ...n, bullets: n.bullets.map((b) => (b.id === bulletId ? { ...b, text } : b)) }))
+    patchNote(id, (n) => ({ ...n, items: n.items.map((it) => (it.id === bulletId && isBullet(it) ? { ...it, text } : it)) }))
 
-  // ⏎ inside a bullet: commit it. Empty → remove. A human bullet also opens a
-  // fresh editing bullet below (continue the outline); an AI bullet just commits.
-  const onBulletEnter = (id: string) => (bulletId: string) => {
-    const n = notesRef.current.find((x) => x.id === id)
-    const b = n?.bullets.find((x) => x.id === bulletId)
-    if (!n || !b) return
-    if (!b.text.trim()) {
-      patchNote(id, (nn) => ({ ...nn, bullets: nn.bullets.filter((x) => x.id !== bulletId) }))
-      return
-    }
-    patchNote(id, (nn) => {
-      // Only continue the outline (open a new bullet) when committing the LAST
-      // bullet — i.e. authoring at the end. Editing an earlier bullet just commits.
-      const isLast = nn.bullets[nn.bullets.length - 1]?.id === bulletId
-      const out: Bullet[] = []
-      for (const x of nn.bullets) {
-        out.push(x.id === bulletId ? { ...x, editing: false } : x)
-        if (x.id === bulletId && x.origin === 'human' && isLast) {
-          out.push({ id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true })
-        }
-      }
-      return { ...nn, bullets: out }
-    })
-  }
-
-  // Click any bullet's text to edit it in place (human or AI). Also tidies up:
-  // drops any OTHER empty editing bullet (a stray trailing one) and ensures only
-  // the clicked bullet is in edit mode.
-  const onBulletEdit = (id: string) => (bulletId: string) =>
-    patchNote(id, (n) => ({
-      ...n,
-      bullets: n.bullets
-        .filter((b) => b.id === bulletId || b.text.trim() || !b.editing)
-        .map((b) => ({ ...b, editing: b.id === bulletId }))
-    }))
-
-  // Blur an editing bullet: commit it (empty → remove). No new bullet on blur.
-  const onBulletBlur = (id: string) => (bulletId: string) =>
+  // Replace one bullet with its committed form (URL cards split out, optional
+  // fresh editing bullet after) — splice keeps the item's position in the flow.
+  const spliceCommit = (id: string, bulletId: string, continueOutline: boolean) =>
     patchNote(id, (n) => {
-      const b = n.bullets.find((x) => x.id === bulletId)
-      if (b && !b.text.trim()) return { ...n, bullets: n.bullets.filter((x) => x.id !== bulletId) }
-      return { ...n, bullets: n.bullets.map((x) => (x.id === bulletId ? { ...x, editing: false } : x)) }
+      const idx = n.items.findIndex((it) => it.id === bulletId)
+      const b = n.items[idx]
+      if (!b || !isBullet(b)) return n
+      return { ...n, items: [...n.items.slice(0, idx), ...commitBullet(b, continueOutline), ...n.items.slice(idx + 1)] }
+    })
+
+  // ⏎ inside any bullet — human or laid-down AI — commits it and opens a fresh
+  // bullet right below. ⏎ on an empty bullet removes it (end of the outline).
+  const onBulletEnter = (id: string) => (bulletId: string) => spliceCommit(id, bulletId, true)
+
+  // Blur a bullet: commit it (empty → remove). No new bullet on blur. Bullets
+  // are always contentEditable, so a click edits in place natively — no
+  // separate "enter edit mode" step needed.
+  const onBulletBlur = (id: string) => (bulletId: string) => spliceCommit(id, bulletId, false)
+
+  // ⏎ on a focused inline URL card: start a new line right after it.
+  const onInsertAfter = (id: string) => (itemId: string) =>
+    patchNote(id, (n) => {
+      const idx = n.items.findIndex((it) => it.id === itemId)
+      if (idx < 0) return n
+      const fresh: NoteItem = { kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }
+      return { ...n, items: [...n.items.slice(0, idx + 1), fresh, ...n.items.slice(idx + 1)] }
     })
 
   // ---- accept / reject (records reaction signals that sharpen the next fire) ----
   const keepBullet = (id: string) => (bid: string) =>
     patchNote(id, (n) => {
-      const b = n.bullets.find((x) => x.id === bid)
+      const b = n.items.find((x) => x.id === bid)
       return {
         ...n,
-        bullets: n.bullets.map((x) => (x.id === bid ? { ...x, status: 'kept' } : x)),
-        kept: b ? [...n.kept, b.text] : n.kept
+        items: n.items.map((x) => (x.id === bid && isBullet(x) ? { ...x, status: 'kept' } : x)),
+        kept: b && isBullet(b) ? [...n.kept, b.text] : n.kept
       }
     })
   const rejectBullet = (id: string) => (bid: string) =>
     patchNote(id, (n) => {
-      const b = n.bullets.find((x) => x.id === bid)
+      const b = n.items.find((x) => x.id === bid)
       return {
         ...n,
-        bullets: n.bullets.filter((x) => x.id !== bid),
-        rejected: b ? [...n.rejected, b.text] : n.rejected
+        items: n.items.filter((x) => x.id !== bid),
+        rejected: b && isBullet(b) ? [...n.rejected, b.text] : n.rejected
       }
     })
   const keepCard = (id: string) => (cid: string) =>
     patchNote(id, (n) => {
-      const c = n.cards.find((x) => x.id === cid)
+      const c = n.items.find((x) => x.id === cid)
       return {
         ...n,
-        cards: n.cards.map((x) => (x.id === cid ? { ...x, status: 'kept' } : x)),
-        kept: c ? [...n.kept, c.title] : n.kept
+        items: n.items.map((x) => (x.id === cid && isCard(x) ? { ...x, status: 'kept' } : x)),
+        kept: c && isCard(c) ? [...n.kept, c.title] : n.kept
       }
     })
-  const rejectCard = (id: string) => (cid: string) =>
+  // Removes a card line. Rejecting a PENDING AI card records a reaction signal;
+  // deleting a settled card (⌫ on a focused card) is just deletion.
+  const removeCard = (id: string) => (cid: string) =>
     patchNote(id, (n) => {
-      const c = n.cards.find((x) => x.id === cid)
+      const c = n.items.find((x) => x.id === cid)
+      const wasPending = c && isCard(c) && c.status === 'pending'
       return {
         ...n,
-        cards: n.cards.filter((x) => x.id !== cid),
-        rejected: c ? [...n.rejected, c.title] : n.rejected
+        items: n.items.filter((x) => x.id !== cid),
+        rejected: wasPending ? [...n.rejected, c.title] : n.rejected
       }
     })
 
@@ -395,7 +457,7 @@ export function App() {
     const { x, y } = { x: 80, y: 60 + notes.length * 6 }
     const id = uid('n')
     // Pre-set lastFiredWords so the every-20 effect doesn't ALSO fire this note.
-    setNotes((ns) => [...ns, { id, x, y, keyword: command, keywordEditing: false, bullets: [], cards: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: countWords(command) }])
+    setNotes((ns) => [...ns, { id, x, y, keyword: command, keywordEditing: false, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: countWords(command) }])
     setSelectedIds(new Set([id]))
     void runAi(id, command)
   }
@@ -426,7 +488,7 @@ export function App() {
       </header>
 
       <main>
-        <Transcript />
+        <Transcript recording={recording} onTranscriptChange={onTranscriptChange} />
         <div
           className="canvas"
           ref={canvasRef}
@@ -434,8 +496,19 @@ export function App() {
           onDrop={onDrop}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
         >
+          <div className="ai-switch" onPointerDown={(e) => e.stopPropagation()}>
+            <span className="ai-switch-label">AI co-creation mode</span>
+            <button
+              className={`switch ${aiEnabled ? 'on' : ''}`}
+              role="switch"
+              aria-checked={aiEnabled}
+              aria-label="AI co-creation mode"
+              onClick={toggleAi}
+            />
+          </div>
+
           {notes.length === 0 && (
-            <div className="canvas-hint">Drag a highlighted phrase here · click to start a note · drag the canvas to box-select</div>
+            <div className="canvas-hint">Select transcript text and drag here · click to start a note · drag the canvas to box-select</div>
           )}
 
           {marquee && (
@@ -452,12 +525,12 @@ export function App() {
               onKeywordCommit={onKeywordCommit(n.id)}
               onBulletChange={onBulletChange(n.id)}
               onBulletEnter={onBulletEnter(n.id)}
-              onBulletEdit={onBulletEdit(n.id)}
               onBulletBlur={onBulletBlur(n.id)}
               onKeepBullet={keepBullet(n.id)}
               onRejectBullet={rejectBullet(n.id)}
               onKeepCard={keepCard(n.id)}
-              onRejectCard={rejectCard(n.id)}
+              onRemoveCard={removeCard(n.id)}
+              onInsertAfter={onInsertAfter(n.id)}
             />
           ))}
 

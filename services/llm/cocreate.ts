@@ -18,13 +18,15 @@ export interface CocreateHandlers {
 // holds all keys and routes claude-code / codex / open(+Tavily).
 export async function requestCocreate(
   req: CocreateRequest,
-  handlers: CocreateHandlers
+  handlers: CocreateHandlers,
+  signal?: AbortSignal
 ): Promise<CocreateResult> {
   try {
     const r = await fetch('/api/cocreate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req)
+      body: JSON.stringify(req),
+      signal
     })
 
     // Pre-stream failures (bad request) come back as JSON, not a stream.
@@ -80,6 +82,8 @@ export async function requestCocreate(
 
     return { model, provider, urls, error }
   } catch (e: any) {
+    // Abort (AI mode switched off mid-stream) is a cancellation, not a failure.
+    if (e?.name === 'AbortError' || signal?.aborted) return { aborted: true }
     return { error: e?.message || String(e) }
   }
 }

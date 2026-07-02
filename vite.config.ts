@@ -14,12 +14,7 @@ export default defineConfig(({ mode }) => {
   }
   return {
     plugins: [react(), apiPlugin()],
-    server: { port: 5173, open: true },
-    // Multi-page: index.html is Unit 1 (default), unit2.html is Unit 2.
-    build: {
-      rollupOptions: {
-        input: { main: 'index.html', unit2: 'unit2.html' }
-      }
-    }
+    server: { port: 5173, open: true }
+    // index.html serves Unit 2 (the co-creation canvas) at the root path.
   }
 })

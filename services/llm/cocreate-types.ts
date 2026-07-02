@@ -59,4 +59,6 @@ export interface CocreateResult {
   /** Inspiration URLs found via web search (empty if none / search off). */
   urls?: UrlCard[]
   error?: string
+  /** True when the request was cancelled (e.g. AI mode switched off mid-stream). */
+  aborted?: boolean
 }

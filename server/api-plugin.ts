@@ -14,11 +14,16 @@ const COCREATE_SYSTEM =
   `You are an AMBIENT co-creation partner inside a "keyword note" on a thinking canvas. ` +
   `You receive the full transcript, the user's keyword and bullets, and a record of what ` +
   `they KEPT (liked) and REJECTED (disliked) from your earlier suggestions. ` +
-  `Add EXACTLY ONE small increment — a SINGLE concise bullet (≤ 14 words), nothing more. ` +
+  `Your job: bring in ONE inspiration from the real world — a CONCRETE, NAMED case ` +
+  `(product, project, paper, or article) that actually does what the user is describing, ` +
+  `so they can go look at it. Name the case and say in one line HOW it does the thing ` +
+  `(e.g. user muses about modular data storage → "Notion stores everything as nestable ` +
+  `blocks, so any content can restructure freely"). Prefer a real named case; fall back to ` +
+  `an abstract idea only when no real case fits. ` +
+  `Add EXACTLY ONE increment — a SINGLE bullet (≤ 25 words), nothing more. ` +
   `Do NOT repeat or restate the user's words or anything already on the canvas; go somewhere NEW. ` +
-  `Aim for ONE of: (1) deepen resonance — point to a similar project, real example, or supporting ` +
-  `idea; (2) expand possibility — a loosely-relevant, interdisciplinary, or thought-provoking spark. ` +
   `Lean toward what the user KEPT; avoid the directions they REJECTED. ` +
+  `Write in the language the user's note is written in. ` +
   `Output ONLY the single bullet line starting with "- ". No preamble, no extra lines.`
 
 // ---- Tier-3 command (Unit 2) -----------------------------------------------
@@ -32,9 +37,10 @@ const COMMAND_SYSTEM =
 // Open-model path can't search on its own, so we ask it to name the query it
 // would search — that reasoned query drives Tavily (CLIs search natively).
 const SEARCH_INSTRUCTION =
-  `\n\nIf (and only if) a concrete web example would help the user more than your bullet, ` +
-  `add ONE final line exactly: "SEARCH: <one focused query>" for a single inspiration link. ` +
-  `Otherwise omit it. Put nothing after it.`
+  `\n\nA URL is almost always helpful: after the bullet, add ONE final line exactly ` +
+  `"SEARCH: <one focused query>" that will find a page ABOUT THE CASE YOU JUST NAMED ` +
+  `(name it in the query, e.g. "Notion block data model"), so the link matches the bullet. ` +
+  `Omit it only if the bullet names no concrete case. Put nothing after it.`
 
 // CLI providers (Claude/Codex) search natively, and the structured results are
 // harvested into URL cards automatically. We must (a) force an actual search, yet
@@ -42,10 +48,63 @@ const SEARCH_INSTRUCTION =
 // as bullets). "Search now" forces the tool; "start with the first bullet" trims
 // the chatter. (Telling it to be fully "silent" made it skip searching entirely.)
 const CLI_SEARCH_INSTRUCTION =
-  `\n\nIf a concrete web example would help, use your web search tool NOW to find ONE ` +
-  `relevant inspiration link (actually run the search). Reply with ONLY your single ` +
-  `bullet: start directly with the "-" bullet, no preamble and no "Sources" list ` +
-  `(the link is captured for you automatically).`
+  `\n\nUse your web search tool NOW (actually run the search) to find ONE real case that ` +
+  `does what the user is describing, then write your bullet FROM that result — name the ` +
+  `case and how it works. Cite the case's page by writing the case's NAME as a markdown ` +
+  `link, e.g. "- [Notion](https://…) stores everything as blocks…" — it is extracted into ` +
+  `a link card automatically. Reply with ONLY your single bullet: start directly with the ` +
+  `"-" bullet, no preamble, no "Sources" list, no bare URLs outside that one link.`
+
+// CLI models sometimes inline "[title](url)" or a bare URL in the bullet despite
+// instructions. The canvas renders bullet text raw (no markdown), so we strip
+// links out of the streamed text and surface them as URL cards instead. Streaming-
+// safe: a trailing fragment that may be a link still mid-stream is held back
+// until the next chunk (or flush).
+function makeLinkStripper(
+  emit: (text: string) => void,
+  onUrl: (u: UrlCard) => void
+) {
+  let buf = ''
+  const MD_LINK = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g
+  const process = (final: boolean) => {
+    // Complete markdown links → card; keep the human-readable title in the text.
+    let s = buf.replace(MD_LINK, (_, title: string, url: string) => {
+      onUrl({ title: title || url, url })
+      return title
+    })
+    // Bare URLs: mid-text ones (whitespace-terminated) are complete — extract.
+    s = s.replace(/https?:\/\/[^\s)\]]+(?=\s)/g, (url) => {
+      onUrl({ title: url, url })
+      return ''
+    })
+    if (final) {
+      s = s.replace(/https?:\/\/[^\s)\]]+/g, (url) => {
+        onUrl({ title: url, url })
+        return ''
+      })
+      buf = ''
+      if (s) emit(s)
+      return
+    }
+    // Hold back anything that might be an incomplete link still streaming.
+    let hold = s.length
+    const lb = s.lastIndexOf('[')
+    if (lb >= 0 && !s.slice(lb).includes(')')) hold = Math.min(hold, lb)
+    const tailUrl = s.match(/https?:\/\/\S*$/)
+    if (tailUrl?.index !== undefined) hold = Math.min(hold, tailUrl.index)
+    if (hold > 0) emit(s.slice(0, hold))
+    buf = s.slice(hold)
+  }
+  return {
+    push(text: string) {
+      buf += text
+      process(false)
+    },
+    flush() {
+      process(true)
+    }
+  }
+}
 
 // ---- LLM provider registry -------------------------------------------------
 // Every provider below speaks the OpenAI-compatible /chat/completions API, so
@@ -154,14 +213,13 @@ export function apiPlugin(): Plugin {
             const reasoningParams = getReasoningParams(cfg.model)
             const sys =
               `${systemPrompt}\n\n` +
-              `You are maintaining ONE evolving visible note, not appending a mini-summary. ` +
-              `Use the existing cleaned notes only as context. Integrate the new raw speech, ` +
-              `merge duplicate ideas, remove repeated wording, and delete weak fragments. ` +
-              `Output the full updated note as a coherent, compact structure. Prefer 3-6 bullets total. ` +
-              `Each bullet should contain one complete idea, not a repeated keyword. ` +
-              `Match the user's dominant language. If the new raw speech is mostly Chinese, write Chinese; ` +
+              `You clean ONLY the new raw speech into concise, written-style notes that are APPENDED below the existing notes. ` +
+              `Never rewrite, repeat, or restate the existing notes — they are read-only context. ` +
+              `Output ONE idea per line. Each line is a single complete idea in polished written language — ` +
+              `not a repeated keyword, not a verbatim quote. Aim for 1-4 lines covering only the new speech; drop filler and side chatter. ` +
+              `Match the user's dominant language. If the new speech is mostly Chinese, write Chinese; ` +
               `if mostly English, write English. Preserve code-switching only when it carries meaning. ` +
-              `Use ==double equals== sparingly to mark only the most important ideas. ` +
+              `Do NOT use any Markdown: no **bold**, *italics*, # headings, backticks, or ==marks==. Plain text lines only. ` +
               `Do not explain what you changed. ` +
               `Do not include raw transcript labels, JSON, code fences, or commentary.`
             const userText = /qwen3/i.test(cfg.model)
@@ -196,16 +254,122 @@ export function apiPlugin(): Plugin {
             const data: any = await r.json()
             const raw = data?.choices?.[0]?.message?.content || ''
             const markedText = sanitizeCleanedTranscript(raw)
+            // Empty output (e.g. reasoning ate the budget) is a silent skip, never
+            // an error: the engine keeps the raw and retries next cleanup tick.
             if (!markedText) {
-              return json(res, 502, {
-                error: 'LLM returned reasoning/no visible cleaned transcript; try a non-reasoning model.',
-                serverMs,
-                markedText: ''
-              })
+              return json(res, 200, { markedText: '', skipped: true, serverMs, model: cfg.model })
             }
             return json(res, 200, { markedText, serverMs, model: cfg.model })
           } catch (e: any) {
             return json(res, 500, { error: e?.message || String(e), markedText: '', serverMs: 0 })
+          }
+        }
+
+        // --- POST /api/section-header: closed section body -> short title ---
+        // Fired async when a topic boundary closes a section. Small + fast.
+        if (url.startsWith('/api/section-header') && req.method === 'POST') {
+          try {
+            const { body: sectionBody, provider, model } = await readBody(req)
+            if (!sectionBody || typeof sectionBody !== 'string') {
+              return json(res, 400, { error: 'body is required', header: '', serverMs: 0 })
+            }
+
+            const cfg = (LLM[provider] || LLM.groq)()
+            if (model) cfg.model = model
+            if (cfg.proxy && !cfg.key) {
+              return json(res, 400, { error: `${provider} needs an API key in .env`, header: '' })
+            }
+
+            const sys =
+              `You write a short section title for a block of thinking notes. ` +
+              `Reply with ONLY the title: 3-6 words, sentence case, no quotes, no trailing punctuation. ` +
+              `Match the language of the notes (Chinese notes -> Chinese title). ` +
+              `No commentary, no markdown, no code fences.`
+            const t0 = performance.now()
+            const r = await fetch(`${cfg.base}/chat/completions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
+              body: JSON.stringify({
+                model: cfg.model,
+                temperature: 0.2,
+                max_tokens: 40,
+                ...getReasoningParams(cfg.model),
+                messages: [
+                  { role: 'system', content: sys },
+                  { role: 'user', content: String(sectionBody).replace(/==/g, '').slice(0, 1200) }
+                ]
+              }),
+              ...(cfg.proxy ? { dispatcher: getDispatcher() } : {})
+            } as any)
+
+            const serverMs = Math.round(performance.now() - t0)
+            if (!r.ok) {
+              const errBody = await r.text()
+              return json(res, 502, { error: `LLM ${r.status}: ${errBody.slice(0, 200)}`, serverMs, header: '' })
+            }
+            const data: any = await r.json()
+            const rawHeader = data?.choices?.[0]?.message?.content || ''
+            const header = sanitizeCleanedTranscript(rawHeader).replace(/^[-*#>\s]+/, '').replace(/["'“”]/g, '').trim()
+            return json(res, 200, { header, serverMs, model: cfg.model })
+          } catch (e: any) {
+            return json(res, 500, { error: e?.message || String(e), header: '', serverMs: 0 })
+          }
+        }
+
+        // --- POST /api/segment: open tail (numbered lines) -> topic sections ---
+        // The structuring pass. A THINKING model reads only the open tail and
+        // returns closed segments {endLine, header}. Runs async every ~2min + on
+        // stop. Never returns an HTTP error to the browser: any failure yields
+        // empty sections, which the engine treats as "no split this round". The
+        // model's raw reply is PARSED (not printed), so leaked reasoning can't
+        // reach the UI even if it slips past reasoning_format:'hidden'.
+        if (url.startsWith('/api/segment') && req.method === 'POST') {
+          try {
+            const { lines, closing, provider, model } = await readBody(req)
+            if (!lines || typeof lines !== 'string') {
+              return json(res, 400, { error: 'lines is required', sections: [], serverMs: 0 })
+            }
+
+            const cfg = (LLM[provider] || LLM.groq)()
+            if (model) cfg.model = model
+            if (cfg.proxy && !cfg.key) {
+              return json(res, 400, { error: `${provider} needs an API key in .env`, sections: [] })
+            }
+
+            // Enable real thinking but hide it, and leave room for the JSON after
+            // the (hidden) reasoning so the answer is never starved.
+            const reasoningParams = /gpt-oss/i.test(cfg.model)
+              ? { reasoning_effort: 'medium', reasoning_format: 'hidden' }
+              : getReasoningParams(cfg.model)
+
+            const t0 = performance.now()
+            const r = await fetch(`${cfg.base}/chat/completions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
+              body: JSON.stringify({
+                model: cfg.model,
+                temperature: 0.2,
+                max_tokens: 3000,
+                ...reasoningParams,
+                messages: [
+                  { role: 'system', content: buildSegmentSystem(!!closing) },
+                  { role: 'user', content: String(lines).slice(0, 6000) }
+                ]
+              }),
+              ...(cfg.proxy ? { dispatcher: getDispatcher() } : {})
+            } as any)
+
+            const serverMs = Math.round(performance.now() - t0)
+            if (!r.ok) {
+              const errBody = await r.text()
+              // 200 + empty so the engine silently skips rather than showing an error.
+              return json(res, 200, { error: `LLM ${r.status}: ${errBody.slice(0, 200)}`, sections: [], serverMs })
+            }
+            const data: any = await r.json()
+            const rawReply = data?.choices?.[0]?.message?.content || ''
+            return json(res, 200, { sections: parseSegments(rawReply), serverMs, model: cfg.model })
+          } catch (e: any) {
+            return json(res, 200, { error: e?.message || String(e), sections: [], serverMs: 0 })
           }
         }
 
@@ -227,7 +391,7 @@ export function apiPlugin(): Plugin {
             kept,
             rejected,
             existingIdeas,
-            provider = 'open',
+            provider = 'codex',
             openSub = 'groq',
             model,
             webSearch = false,
@@ -256,13 +420,23 @@ export function apiPlugin(): Plugin {
               const run = provider === 'claude-code' ? runClaude : runCodex
               resolvedModel = provider === 'claude-code' ? 'claude (subscription)' : 'codex (subscription)'
               const cliSystem = system + (webSearch ? CLI_SEARCH_INSTRUCTION : '')
-              const urls: UrlCard[] = []
+              // Two url sources: links the model CITES inline in the bullet (the
+              // case it actually named — stripped from the text, top priority)
+              // vs links harvested from raw search results (fallback).
+              const cited: UrlCard[] = []
+              const harvested: UrlCard[] = []
+              const strip = makeLinkStripper(
+                (t) => send({ type: 'text', text: t }),
+                (u) => { if (!cited.some((c) => c.url === u.url)) cited.push(u) }
+              )
               for await (const ev of run({ prompt: userText, system: cliSystem, webSearch })) {
-                if (ev.type === 'text') send({ type: 'text', text: ev.text })
-                else if (ev.type === 'url') urls.push({ title: ev.title, url: ev.url, snippet: ev.snippet, image: ev.image })
+                if (ev.type === 'text') strip.push(ev.text)
+                else if (ev.type === 'url') harvested.push({ title: ev.title, url: ev.url, snippet: ev.snippet, image: ev.image })
               }
+              strip.flush()
               // One increment at a time — at most a single inspiration card.
-              if (urls.length) send({ type: 'urls', urls: urls.slice(0, 1) })
+              const card = cited[0] || harvested[0]
+              if (card) send({ type: 'urls', urls: [card] })
             } else {
               // provider === 'open': OpenAI-compatible model (+ Tavily for URLs).
               const cfg = (LLM[openSub as string] || LLM.groq)()
@@ -430,14 +604,57 @@ function buildCleanTranscriptUserText(rawText: string, existingNotes?: string): 
   const cleaned = typeof existingNotes === 'string' ? existingNotes.trim() : ''
   const parts: string[] = []
   if (cleaned) {
-    parts.push(`Existing visible cleaned notes:\n${cleaned}`)
+    parts.push(`Existing visible cleaned notes (context only, do NOT restate):\n${cleaned}`)
   }
-  parts.push(`New raw STT chunk to integrate:\n${rawText.trim()}`)
-  parts.push(
-    `Return the full updated visible note. Do not repeat the same idea in multiple bullets. ` +
-    `If the new chunk only clarifies an existing idea, revise that idea instead of adding a new bullet.`
-  )
+  parts.push(`New raw STT chunk to clean (append below as one idea per line):\n${rawText.trim()}`)
   return parts.join('\n\n')
+}
+
+// System prompt for the structuring pass. Asks for a strict JSON object of
+// closed sections. On a normal pass the trailing (still-open) topic is left
+// uncut; on the closing pass every line must be assigned so nothing is untitled.
+function buildSegmentSystem(closing: boolean): string {
+  return (
+    `You segment a running stream of a person's thinking notes into topic sections. ` +
+    `The user message is the notes, one idea per numbered line (0-indexed). ` +
+    `Find where the topic clearly SHIFTS to a different subject. ` +
+    `Return ONLY a JSON object of exactly this shape: ` +
+    `{"sections":[{"endLine":<int>,"header":"<3-6 word title>"}]}. ` +
+    `Each entry closes a section that ENDS at endLine (inclusive); the header titles the lines up to that point ` +
+    `(from just after the previous section's end). endLine values MUST be strictly increasing. ` +
+    `Write headers in the language of the notes (Chinese notes -> Chinese header), sentence case, no punctuation. ` +
+    (closing
+      ? `This is the FINAL pass: assign EVERY line to a section — the last endLine MUST equal the last line index. `
+      : `Leave the final, still-in-progress topic UNcut: do not emit a section whose endLine is the last line. ` +
+        `If there is no clear topic shift yet, return {"sections":[]}. `) +
+    `No prose, no markdown, no code fences — output only the JSON object.`
+  )
+}
+
+// Extract the {sections:[...]} object from the model's reply. Tolerant of code
+// fences, leaked <think> blocks, and surrounding prose; returns [] on any doubt
+// so the engine treats the round as "no split".
+function parseSegments(raw: string): { endLine: number; header: string }[] {
+  const s = raw
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+  const start = s.indexOf('{')
+  const end = s.lastIndexOf('}')
+  if (start < 0 || end <= start) return []
+  try {
+    const obj = JSON.parse(s.slice(start, end + 1))
+    const arr = Array.isArray(obj?.sections) ? obj.sections : []
+    const out: { endLine: number; header: string }[] = []
+    for (const it of arr) {
+      const endLine = Math.floor(Number(it?.endLine))
+      const header = typeof it?.header === 'string' ? it.header.trim() : ''
+      if (Number.isFinite(endLine) && header) out.push({ endLine, header })
+    }
+    return out
+  } catch {
+    return []
+  }
 }
 
 // Stream an OpenAI-compatible chat completion as concise bullet LINES. Emits a
@@ -543,6 +760,9 @@ function getReasoningParams(model: string): Record<string, string | boolean> {
     return { reasoning_effort: 'none', include_reasoning: false }
   }
   // GPT-OSS models always reason, but Groq can hide the reasoning content.
+  // Keep effort 'low': 'medium' ate the token budget (empty visible output) and
+  // raised token usage into the free-tier rate limit. Marking/format quality is
+  // handled by the prompt + the renderer's bold-alias instead.
   if (/gpt-oss/i.test(model)) {
     return { reasoning_effort: 'low', reasoning_format: 'hidden' }
   }
