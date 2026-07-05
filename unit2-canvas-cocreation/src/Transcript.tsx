@@ -3,7 +3,9 @@ import { SonioxSTT } from '../../services/stt/soniox'
 import { getAudioStream } from '../../services/stt/audio-source'
 import type { STTProvider } from '../../services/stt/types'
 import { CleanupEngine } from './cleanup-engine'
+import { isImeEvent } from './ime'
 import type { Line, Section, EngineStatus } from './cleanup-engine'
+import { loadJSON, saveJSON } from './persist'
 
 // Cleanup system prompt: turn rough live STT into concise, written-style thinking
 // notes — one idea per line. No highlight marks anymore; structure comes from the
@@ -31,11 +33,16 @@ function cleanText(t: string): string {
   return t.replace(/==/g, '').replace(/[*_`]/g, '').replace(/^#{1,6}\s+/gm, '')
 }
 
-// The transcript handed to the AI: section headers + lines + the open tail.
-function aiContext(frozen: Section[], tail: Line[]): string {
-  const secs = frozen.map((s) => `${s.header}\n${s.lines.map((l) => l.text).join('\n')}`)
-  const tailText = tail.map((l) => l.text).join('\n')
-  return [...secs, tailText].join('\n\n').replace(/==/g, '').trim()
+// On a selection drag, find the first selected cleaned line and attach its
+// spoken-at timestamp, so a dropped keyword note can anchor its ±1min verbatim
+// transcript window (rule B) to when the idea was actually said.
+function attachDragTs(e: React.DragEvent) {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return
+  const start = sel.getRangeAt(0).startContainer
+  const el = start instanceof Element ? start : start.parentElement
+  const ts = el?.closest('[data-ts]')?.getAttribute('data-ts')
+  if (ts) e.dataTransfer.setData('application/x-transcript-ts', ts)
 }
 
 // Shallow snapshots so React sees new refs after the engine mutates in place.
@@ -46,13 +53,20 @@ type EditTarget = { kind: 'line'; lineId: string } | { kind: 'header'; sid: stri
 
 export function Transcript({
   recording,
-  onTranscriptChange
+  onRawFinal,
+  storageSuffix = ''
 }: {
   recording: boolean
-  onTranscriptChange?: (text: string) => void
+  /** Every final verbatim STT segment, timestamped — feeds the AI context window. */
+  onRawFinal?: (text: string, ts: number) => void
+  /** Per-idea-space persistence: '' keeps the original keys, '.<id>' scopes new spaces. */
+  storageSuffix?: string
 }) {
-  const [frozen, setFrozen] = useState<Section[]>([])
-  const [tail, setTail] = useState<Line[]>([])
+  const k = (key: string) => key + storageSuffix
+  // Restored from localStorage so the cleaned transcript survives refreshes;
+  // starting a NEW recording still resets it (existing semantics).
+  const [frozen, setFrozen] = useState<Section[]>(() => loadJSON(k('transcript-frozen'), []))
+  const [tail, setTail] = useState<Line[]>(() => loadJSON(k('transcript-tail'), []))
   const [status, setStatus] = useState<EngineStatus>('idle')
   const [err, setErr] = useState('')
   const [editing, setEditing] = useState<EditTarget>(null)
@@ -61,10 +75,10 @@ export function Transcript({
   const engineRef = useRef<CleanupEngine | null>(null)
   const sttRef = useRef<STTProvider | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
-  const onChangeRef = useRef(onTranscriptChange)
+  const onRawFinalRef = useRef(onRawFinal)
   useEffect(() => {
-    onChangeRef.current = onTranscriptChange
-  }, [onTranscriptChange])
+    onRawFinalRef.current = onRawFinal
+  }, [onRawFinal])
 
   // One engine for the component's life. Cleanup (30s) appends idea lines to the
   // tail; segmentation (2min + on stop) freezes them into titled sections.
@@ -82,10 +96,13 @@ export function Transcript({
     engine.onRender = () => {
       setFrozen(snapFrozen(engine.frozenSections))
       setTail(snapTail(engine.tail))
-      onChangeRef.current?.(aiContext(engine.frozenSections, engine.tail))
     }
     engine.onStatus = (s) => setStatus(s)
     engine.onError = (msg) => setErr(`⚠ ${msg}`)
+    // Seed the engine with the restored transcript so editing a restored line
+    // or header still works. A new recording resets this, as before.
+    engine.frozenSections = snapFrozen(frozen)
+    engine.tail = snapTail(tail)
     engineRef.current = engine
     return () => engine.reset()
   }, [])
@@ -105,7 +122,7 @@ export function Transcript({
 
       let stream: MediaStream
       try {
-        stream = await getAudioStream('mic')
+        stream = await getAudioStream('both')
       } catch (e: any) {
         setErr(`⚠ ${e.message}`)
         return
@@ -119,8 +136,10 @@ export function Transcript({
       sttRef.current = stt
       stt.onError((e) => setErr(`⚠ ${e.message}`))
       stt.onTranscript((ev) => {
-        if (ev.isFinal) engineRef.current?.pushFinal(ev.text)
-        else engineRef.current?.pushInterim(ev.text)
+        if (ev.isFinal) {
+          engineRef.current?.pushFinal(ev.text)
+          if (ev.text.trim()) onRawFinalRef.current?.(ev.text.trim(), Date.now())
+        } else engineRef.current?.pushInterim(ev.text)
       })
       try {
         await stt.start({ lang: 'en-US', stream })
@@ -136,6 +155,15 @@ export function Transcript({
       void engineRef.current?.stop() // final cleanup + closing segmentation pass
     }
   }, [recording])
+
+  // Autosave the cleaned transcript (debounced — it re-renders per STT chunk).
+  useEffect(() => {
+    const t = setTimeout(() => {
+      saveJSON(k('transcript-frozen'), frozen)
+      saveJSON(k('transcript-tail'), tail)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [frozen, tail])
 
   // Keep the newest content in view.
   useEffect(() => {
@@ -167,6 +195,7 @@ export function Transcript({
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={(e) => {
+            if (isImeEvent(e)) return
             if (e.key === 'Enter') commitEdit()
             if (e.key === 'Escape') setEditing(null)
           }}
@@ -199,6 +228,7 @@ export function Transcript({
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={(e) => {
+            if (isImeEvent(e)) return
             if (e.key === 'Escape') setEditing(null)
           }}
         />
@@ -209,6 +239,7 @@ export function Transcript({
         key={line.id}
         className={`clean-block${open ? ' tail' : ''}`}
         title="Double-click to edit"
+        data-ts={line.ts}
         onDoubleClick={() => startEdit({ kind: 'line', lineId: line.id }, line.text)}
       >
         {cleanText(line.text)}
@@ -220,11 +251,11 @@ export function Transcript({
   const caption = STATUS_CAPTION[status]
 
   return (
-    <aside className="transcript" ref={scrollRef}>
+    <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
       <div className="hint">
         {recording
           ? 'Speak freely — thoughts are cleaned and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a line to edit, click a header to rename.'
-          : 'Press ● (bottom of the canvas) to start capture. Speech is cleaned and grouped into titled sections.'}
+          : ''}
       </div>
 
       {frozen.map((sec) => (

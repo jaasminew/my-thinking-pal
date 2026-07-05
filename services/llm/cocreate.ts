@@ -10,6 +10,18 @@ export interface CocreateHandlers {
   onText: (text: string) => void
   /** Called once when web-search inspiration URLs arrive. */
   onUrls?: (urls: UrlCard[]) => void
+  /**
+   * Called once, BEFORE any text, with the model's invisible self-diagnosis of
+   * what the note needs. Attach it to the suggestions this fire produces.
+   */
+  onDiagnosis?: (text: string) => void
+  /**
+   * Called once, before any text, with the index of the user bullet this fire
+   * anchors to (see the 'anchor' event) — place its bullets under that thought.
+   */
+  onAnchor?: (line: number) => void
+  /** Called when a bullet's inline image resolves (words+image register). */
+  onImage?: (img: { src: string; sourceUrl?: string; title?: string; line?: number }) => void
 }
 
 // Reusable Tier-2 / Tier-3 client. Streams the model's adjacent content back
@@ -57,6 +69,9 @@ export async function requestCocreate(
         return
       }
       if (ev.type === 'text') handlers.onText(ev.text)
+      else if (ev.type === 'diagnosis') handlers.onDiagnosis?.(ev.text)
+      else if (ev.type === 'anchor') handlers.onAnchor?.(ev.line)
+      else if (ev.type === 'image') handlers.onImage?.(ev)
       else if (ev.type === 'urls') {
         urls.push(...ev.urls)
         handlers.onUrls?.(ev.urls)

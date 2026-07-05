@@ -3,28 +3,52 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import crypto from 'node:crypto'
 import { getDispatcher } from './proxy'
 import { runClaude, runCodex } from './agents'
-import { tavilySearch } from './search'
+import { tavilySearch, fetchOgImage } from './search'
+import { fetchUrlMeta } from './url-meta'
 import type { UrlCard } from '../services/llm/cocreate-types'
 
 // ---- Tier-2 co-creation (Unit 2) -------------------------------------------
 // Strong model that BUILDS ON the user's thinking — never rewrites it. It gets
 // the full transcript + the keyword note's contents as context, REASONS about
 // what the user is reaching for, and replies with concise bullets (Figma model).
+// Diagnose-then-contribute: the model FIRST finds the spot in the note that
+// most needs outside help and decides what KIND of help fits (example, fresh
+// alternatives, counterpoint, dropped transcript thread…) and HOW MUCH — no
+// hand-enumerated move menu (bitter lesson: model judgment over human routers).
+// The judgment is kept accountable by forcing it out loud as a DIAGNOSIS line
+// (machine-only — the client stores it invisibly and tags kept/rejected with it,
+// so reactions teach the model which KINDS of help land). PASS is a legitimate
+// answer: a note that's flowing needs silence, not decoration.
 const COCREATE_SYSTEM =
   `You are an AMBIENT co-creation partner inside a "keyword note" on a thinking canvas. ` +
-  `You receive the full transcript, the user's keyword and bullets, and a record of what ` +
-  `they KEPT (liked) and REJECTED (disliked) from your earlier suggestions. ` +
-  `Your job: bring in ONE inspiration from the real world — a CONCRETE, NAMED case ` +
-  `(product, project, paper, or article) that actually does what the user is describing, ` +
-  `so they can go look at it. Name the case and say in one line HOW it does the thing ` +
-  `(e.g. user muses about modular data storage → "Notion stores everything as nestable ` +
-  `blocks, so any content can restructure freely"). Prefer a real named case; fall back to ` +
-  `an abstract idea only when no real case fits. ` +
-  `Add EXACTLY ONE increment — a SINGLE bullet (≤ 25 words), nothing more. ` +
+  `You receive the transcript of the user's spoken thinking, the note's keyword and bullets, ` +
+  `and what they KEPT (liked) / REJECTED (disliked) from your earlier suggestions — kept and ` +
+  `rejected entries may carry "[offered because: …]" tags showing why each was offered; use ` +
+  `them to learn which KINDS of help this user wants, not just which texts. ` +
+  `Work in two steps. ` +
+  `STEP 1 — DIAGNOSE: find the ONE spot in the note that most needs outside input right now ` +
+  `(an unsupported claim, a vague idea needing a concrete real-world case, a stalled direction ` +
+  `needing fresh alternatives, a hidden assumption worth challenging, a promising transcript ` +
+  `thread the user dropped…). Decide what kind of contribution serves THAT spot best, and how much. ` +
+  `STEP 2 — CONTRIBUTE: produce exactly that, GROUNDED in reality. Whatever the kind, anchor ` +
+  `it in something real and NAMED: an opinion or counterpoint needs evidence (a product, ` +
+  `project, paper, or event that demonstrates it); a creative direction gains force from a ` +
+  `precedent that proves its key ingredient works. When you name a case, say in one line HOW ` +
+  `it does the thing. A grounded bullet beats a clever but unanchored one — reach for an ` +
+  `abstract-only bullet only when nothing real fits. Grounding lives in your WORDS: naming ` +
+  `the case and explaining HOW is complete in itself — it does not require a link. ` +
+  `Output format (strict): ` +
+  `Line 1: "DIAGNOSIS: <one short line — the spot + what it needs>". It is machine-read and never shown. ` +
+  `Line 2: "ANCHOR: <n>" — the number of the user's bullet (from the numbered note list) that your ` +
+  `contribution most directly builds on, so it can be placed right under that thought; or "ANCHOR: NONE" ` +
+  `when it speaks to the note as a whole. Also machine-read, never shown. ` +
+  `Then EITHER the single word "PASS" on its own line (the note is doing fine on its own — a fully ` +
+  `legitimate answer; never force a contribution) OR 1-3 bullet lines starting with "- ", each ≤ 25 words. ` +
+  `Use the SMALLEST number of bullets that serves the diagnosis — one sharp bullet usually beats three. ` +
   `Do NOT repeat or restate the user's words or anything already on the canvas; go somewhere NEW. ` +
   `Lean toward what the user KEPT; avoid the directions they REJECTED. ` +
   `Write in the language the user's note is written in. ` +
-  `Output ONLY the single bullet line starting with "- ". No preamble, no extra lines.`
+  `No preamble, no lines outside this format.`
 
 // ---- Tier-3 command (Unit 2) -----------------------------------------------
 // Explicit instruction typed into the command box ("go search some voice-to-text
@@ -37,10 +61,17 @@ const COMMAND_SYSTEM =
 // Open-model path can't search on its own, so we ask it to name the query it
 // would search — that reasoned query drives Tavily (CLIs search natively).
 const SEARCH_INSTRUCTION =
-  `\n\nA URL is almost always helpful: after the bullet, add ONE final line exactly ` +
-  `"SEARCH: <one focused query>" that will find a page ABOUT THE CASE YOU JUST NAMED ` +
-  `(name it in the query, e.g. "Notion block data model"), so the link matches the bullet. ` +
-  `Omit it only if the bullet names no concrete case. Put nothing after it.`
+  `\n\nAfter your bullets you may add ONE final line that fetches a reference for the case ` +
+  `you named. Choose by what serves the user, keeping a genuine mix across fires — never ` +
+  `collapse into one form: ` +
+  `"SEARCH: <one focused query>" (a query that finds the page about the case you named, ` +
+  `e.g. "Notion block data model") when the page itself is worth the user's visit — a ` +
+  `product to try, a paper to read in full. It becomes a link card. ` +
+  `"SEARCH IMAGE: <one focused query>" when the case is inherently VISUAL — a UI, a ` +
+  `diagram, a physical object — and one glance beats any words; the image renders inside ` +
+  `your bullet, no jump. ` +
+  `Add neither when your words alone carry it — pure reasoning, a question, a reframe. ` +
+  `Never add one on PASS. Put nothing after it.`
 
 // CLI providers (Claude/Codex) search natively, and the structured results are
 // harvested into URL cards automatically. We must (a) force an actual search, yet
@@ -48,12 +79,80 @@ const SEARCH_INSTRUCTION =
 // as bullets). "Search now" forces the tool; "start with the first bullet" trims
 // the chatter. (Telling it to be fully "silent" made it skip searching entirely.)
 const CLI_SEARCH_INSTRUCTION =
-  `\n\nUse your web search tool NOW (actually run the search) to find ONE real case that ` +
-  `does what the user is describing, then write your bullet FROM that result — name the ` +
-  `case and how it works. Cite the case's page by writing the case's NAME as a markdown ` +
-  `link, e.g. "- [Notion](https://…) stores everything as blocks…" — it is extracted into ` +
-  `a link card automatically. Reply with ONLY your single bullet: start directly with the ` +
-  `"-" bullet, no preamble, no "Sources" list, no bare URLs outside that one link.`
+  `\n\nUnless you PASS, use your web search tool NOW (actually run it) BEFORE writing — ` +
+  `your contribution must rest on a real, current case, and searching is how you get it ` +
+  `right. Then choose how to PRESENT that case. Keep a genuine mix across fires — never ` +
+  `collapse into one form: ` +
+  `WORDS — name the case and how it works, when your one line carries the insight. ` +
+  `LINK — write the case's NAME as a markdown link, "- [Notion](https://…) stores ` +
+  `everything as blocks…", when the page itself is worth the user's visit (a product to ` +
+  `try, a paper to read in full). It becomes a link card. ` +
+  `IMAGE — write markdown image syntax with the PAGE url, "- ![Teenage Engineering ` +
+  `OP-1](https://teenage.engineering/products/op-1) proves dense controls can feel ` +
+  `playful", when the case is inherently VISUAL (a UI, a diagram, a physical object) — ` +
+  `the page's own header image is fetched and rendered inside your bullet. Never guess a ` +
+  `direct image-file url. ` +
+  `Rule of thumb: words for pure reasoning, link when acting on the page helps, image ` +
+  `when seeing beats reading. ` +
+  `Keep the output format above exactly: no preamble, no "Sources" list, no bare URLs.`
+
+// Line-level filter for the diagnose-then-contribute protocol: captures the
+// leading "DIAGNOSIS: …" line (surfaced as its own NDJSON event, never as text),
+// the "ANCHOR: <n>|NONE" line (which user bullet the fire builds on — placement),
+// and a bare "PASS" line (suppressed — the fire contributes nothing), passing
+// every other completed line through. Buffering whole lines costs a little
+// streaming granularity, but bullets are ≤ 25 words — line-at-a-time still
+// feels live, and it's the only safe way to catch protocol lines mid-stream.
+function makeProtocolFilter(
+  emit: (text: string) => void,
+  onDiagnosis: (d: string) => void,
+  onAnchor?: (line: number) => void
+) {
+  let buf = ''
+  let passed = false
+  let contentLines = 0 // content lines emitted so far — anchors inline images to bullets
+  const handleLine = (l: string) => {
+    const dm = l.match(/^\s*DIAGNOSIS:\s*(.*)$/i)
+    if (dm) {
+      if (dm[1].trim()) onDiagnosis(dm[1].trim())
+      return
+    }
+    const am = l.match(/^\s*ANCHOR:\s*(\S+)/i)
+    if (am) {
+      const n = parseInt(am[1], 10)
+      if (Number.isFinite(n) && n >= 0) onAnchor?.(n) // "NONE" parses NaN → no event
+      return
+    }
+    if (/^\s*PASS[.!]?\s*$/i.test(l)) {
+      passed = true
+      return
+    }
+    if (l.trim()) {
+      contentLines++
+      emit(l + '\n')
+    }
+  }
+  return {
+    push(text: string) {
+      buf += text
+      let i: number
+      while ((i = buf.indexOf('\n')) >= 0) {
+        handleLine(buf.slice(0, i))
+        buf = buf.slice(i + 1)
+      }
+    },
+    flush() {
+      if (buf.trim()) handleLine(buf)
+      buf = ''
+    },
+    get passed() {
+      return passed
+    },
+    get contentLines() {
+      return contentLines
+    }
+  }
+}
 
 // CLI models sometimes inline "[title](url)" or a bare URL in the bullet despite
 // instructions. The canvas renders bullet text raw (no markdown), so we strip
@@ -62,13 +161,22 @@ const CLI_SEARCH_INSTRUCTION =
 // until the next chunk (or flush).
 function makeLinkStripper(
   emit: (text: string) => void,
-  onUrl: (u: UrlCard) => void
+  onUrl: (u: UrlCard) => void,
+  onImage?: (im: { title: string; url: string }) => void
 ) {
   let buf = ''
+  const MD_IMG = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g
   const MD_LINK = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g
   const process = (final: boolean) => {
+    // Markdown IMAGE syntax first (a plain-link match would leave the "!"
+    // behind): "![Notion](url)" = the words+image register — the page url is
+    // resolved to its og:image later; keep the name in the text.
+    let s = buf.replace(MD_IMG, (_, title: string, url: string) => {
+      onImage?.({ title: title || url, url })
+      return title
+    })
     // Complete markdown links → card; keep the human-readable title in the text.
-    let s = buf.replace(MD_LINK, (_, title: string, url: string) => {
+    s = s.replace(MD_LINK, (_, title: string, url: string) => {
       onUrl({ title: title || url, url })
       return title
     })
@@ -86,10 +194,11 @@ function makeLinkStripper(
       if (s) emit(s)
       return
     }
-    // Hold back anything that might be an incomplete link still streaming.
+    // Hold back anything that might be an incomplete link still streaming
+    // (including a "!" that may be starting a markdown image).
     let hold = s.length
     const lb = s.lastIndexOf('[')
-    if (lb >= 0 && !s.slice(lb).includes(')')) hold = Math.min(hold, lb)
+    if (lb >= 0 && !s.slice(lb).includes(')')) hold = Math.min(hold, lb > 0 && s[lb - 1] === '!' ? lb - 1 : lb)
     const tailUrl = s.match(/https?:\/\/\S*$/)
     if (tailUrl?.index !== undefined) hold = Math.min(hold, tailUrl.index)
     if (hold > 0) emit(s.slice(0, hold))
@@ -420,23 +529,50 @@ export function apiPlugin(): Plugin {
               const run = provider === 'claude-code' ? runClaude : runCodex
               resolvedModel = provider === 'claude-code' ? 'claude (subscription)' : 'codex (subscription)'
               const cliSystem = system + (webSearch ? CLI_SEARCH_INSTRUCTION : '')
-              // Two url sources: links the model CITES inline in the bullet (the
-              // case it actually named — stripped from the text, top priority)
-              // vs links harvested from raw search results (fallback).
+              // Cards come ONLY from links the model deliberately cites inline —
+              // linking is a judged decision (words usually carry the grounding),
+              // so raw search results are never auto-surfaced as cards. Markdown
+              // IMAGE syntax = the words+image register: the bullet keeps the
+              // case's name and gets the page's og:image rendered inline.
               const cited: UrlCard[] = []
-              const harvested: UrlCard[] = []
+              const inlineImages: { title: string; url: string; line: number }[] = []
               const strip = makeLinkStripper(
                 (t) => send({ type: 'text', text: t }),
-                (u) => { if (!cited.some((c) => c.url === u.url)) cited.push(u) }
+                (u) => { if (!cited.some((c) => c.url === u.url)) cited.push(u) },
+                (im) => {
+                  // ≤ 1 inline image per fire; line anchors it to its bullet.
+                  if (!inlineImages.length) inlineImages.push({ ...im, line: proto.contentLines - 1 })
+                }
+              )
+              // Protocol filter first (whole lines: catches DIAGNOSIS/PASS),
+              // then the link stripper on the surviving content lines.
+              const proto = makeProtocolFilter(
+                (l) => strip.push(l),
+                (d) => send({ type: 'diagnosis', text: d }),
+                (a) => send({ type: 'anchor', line: a })
               )
               for await (const ev of run({ prompt: userText, system: cliSystem, webSearch })) {
-                if (ev.type === 'text') strip.push(ev.text)
-                else if (ev.type === 'url') harvested.push({ title: ev.title, url: ev.url, snippet: ev.snippet, image: ev.image })
+                if (ev.type === 'text') proto.push(ev.text)
+                // ev.type === 'url' (raw search results) deliberately ignored.
               }
+              proto.flush()
               strip.flush()
-              // One increment at a time — at most a single inspiration card.
-              const card = cited[0] || harvested[0]
-              if (card) send({ type: 'urls', urls: [card] })
+              // ≤ 3 cards (matching the bullet cap); none on PASS. Thumbnails
+              // come from each cited page's own og:image (provably matching —
+              // unlike the old positional Tavily pairing).
+              const cards = cited.slice(0, 3)
+              if (cards.length && !proto.passed) {
+                await Promise.all(cards.map(async (c) => { c.image = await fetchOgImage(c.url) }))
+                send({ type: 'urls', urls: cards })
+              }
+              const im = inlineImages[0]
+              if (im && !proto.passed) {
+                const src = await fetchOgImage(im.url)
+                // Graceful degrade: page yields no image → keep the reference
+                // as a link card rather than dropping it silently.
+                if (src) send({ type: 'image', src, sourceUrl: im.url, title: im.title, line: im.line })
+                else send({ type: 'urls', urls: [{ title: im.title, url: im.url }] })
+              }
             } else {
               // provider === 'open': OpenAI-compatible model (+ Tavily for URLs).
               const cfg = (LLM[openSub as string] || LLM.groq)()
@@ -449,17 +585,37 @@ export function apiPlugin(): Plugin {
               // Generate bullets first; the model names the search query it would
               // run (reasoned from transcript + note). Then search with THAT query.
               const sys = system + (webSearch ? SEARCH_INSTRUCTION : '')
-              const reasonedQuery = await streamOpenModel(cfg, sys, userText, (t) =>
-                send({ type: 'text', text: t })
+              // streamOpenModel emits whole lines, so the protocol filter sees
+              // complete DIAGNOSIS/PASS lines immediately.
+              const proto = makeProtocolFilter(
+                (t) => send({ type: 'text', text: t }),
+                (d) => send({ type: 'diagnosis', text: d }),
+                (a) => send({ type: 'anchor', line: a })
               )
-              // Only search when the model decided one example would help (it emitted
-              // a SEARCH line). One increment → at most a single card.
-              if (webSearch && reasonedQuery) {
-                const urls = await tavilySearch(reasonedQuery.trim(), 1).catch((e) => {
+              const reasonedQuery = await streamOpenModel(cfg, sys, userText, (t) =>
+                proto.push(t)
+              )
+              proto.flush()
+              // Only search when the model chose a register that needs it (it
+              // emitted a SEARCH / SEARCH IMAGE line) and didn't PASS.
+              if (webSearch && reasonedQuery && !proto.passed) {
+                const urls = await tavilySearch(reasonedQuery.query, 1).catch((e) => {
                   send({ type: 'error', error: `search: ${e?.message || e}` })
                   return [] as UrlCard[]
                 })
-                if (urls.length) send({ type: 'urls', urls: urls.slice(0, 1) })
+                const u = urls[0]
+                if (u) {
+                  const src = await fetchOgImage(u.url)
+                  if (reasonedQuery.image && src) {
+                    // words + image: rendered inside the LAST bullet (the SEARCH
+                    // line follows the bullets, so that's the one it grounds).
+                    send({ type: 'image', src, sourceUrl: u.url, title: u.title, line: proto.contentLines - 1 })
+                  } else {
+                    // words + link (or image intent that found no og:image —
+                    // degrade to a card so the reference isn't lost).
+                    send({ type: 'urls', urls: [{ ...u, image: src }] })
+                  }
+                }
               }
             }
 
@@ -471,6 +627,13 @@ export function apiPlugin(): Plugin {
             res.end()
           }
           return
+        }
+
+        // --- GET /api/url-meta?url=… : og description + image for a card ---
+        if (url.startsWith('/api/url-meta')) {
+          const target = new URL(url, 'http://localhost').searchParams.get('url') || ''
+          if (!/^https?:\/\//.test(target)) return json(res, 400, {})
+          return json(res, 200, await fetchUrlMeta(target))
         }
 
         // --- GET /api/deepgram-key: hand the browser a key for direct WS ---
@@ -571,7 +734,11 @@ function buildCocreateContext(
     parts.push(`Full transcript so far:\n${transcriptWindow.trim()}`)
   }
   if (Array.isArray(contextNotes) && contextNotes.length) {
-    parts.push(`What the user has written in this note:\n- ${contextNotes.join('\n- ')}`)
+    // Numbered so the model can name its ANCHOR; leading spaces = outline depth.
+    parts.push(
+      `What the user has written in this note (numbered; indented lines are sub-points):\n` +
+        contextNotes.map((t, i) => `${i}. ${t}`).join('\n')
+    )
   }
   const kept = signals?.kept?.filter(Boolean)
   if (kept?.length) parts.push(`The user KEPT these suggestions (do MORE like this):\n- ${kept.join('\n- ')}`)
@@ -659,14 +826,16 @@ function parseSegments(raw: string): { endLine: number; header: string }[] {
 
 // Stream an OpenAI-compatible chat completion as concise bullet LINES. Emits a
 // completed line at a time via onText (so each bullet renders whole), strips Qwen
-// <think>, and intercepts a trailing `SEARCH: <query>` line — returned, not shown,
-// so it can drive Tavily. Covers Groq / Cerebras (proxied) and local Ollama.
+// <think>, and intercepts a trailing `SEARCH: <query>` / `SEARCH IMAGE: <query>`
+// line — returned, not shown, so it can drive Tavily (image=true → the result
+// resolves to an inline bullet image instead of a link card).
+// Covers Groq / Cerebras (proxied) and local Ollama.
 async function streamOpenModel(
   cfg: { base: string; key: string; model: string; proxy: boolean },
   system: string,
   userText: string,
   onText: (t: string) => void
-): Promise<string | undefined> {
+): Promise<{ query: string; image: boolean } | undefined> {
   const noThink = /qwen3/i.test(cfg.model) ? ' /no_think' : ''
   const r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
@@ -688,13 +857,13 @@ async function streamOpenModel(
     throw new Error(`LLM ${r.status}: ${(await r.text()).slice(0, 200)}`)
   }
 
-  let searchQuery: string | undefined
+  let searchQuery: { query: string; image: boolean } | undefined
   let line = '' // current (incomplete) output line
 
   // Decide what to do with one completed output line.
   const emitLine = (l: string) => {
-    const m = l.match(/^\s*SEARCH:\s*(.+)$/i)
-    if (m) { searchQuery = m[1].trim(); return } // capture, don't show
+    const m = l.match(/^\s*SEARCH(\s+IMAGE)?\s*:\s*(.+)$/i)
+    if (m) { searchQuery = { query: m[2].trim(), image: !!m[1] }; return } // capture, don't show
     if (l.trim()) onText(l + '\n')
   }
 

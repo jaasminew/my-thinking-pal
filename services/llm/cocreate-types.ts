@@ -15,9 +15,18 @@ export interface CocreateRequest {
   seedText: string
   /** Nearby canvas notes (human + AI) sent as context. Keep it small. */
   contextNotes?: string[]
-  /** Recent transcript window, when the seed came from the transcript. */
+  /**
+   * Verbatim word-by-word transcript window (never the cleaned summary):
+   * ±1min around when a dragged keyword was spoken, or the rolling last 2min
+   * for other notes. Omitted entirely when nothing was recorded.
+   */
   transcriptWindow?: string
-  /** Reaction signals — AI suggestions the user KEPT (positive) / REJECTED (negative). */
+  /**
+   * Reaction signals — AI suggestions the user KEPT (positive) / REJECTED
+   * (negative). Each entry may carry the fire's diagnosis inline, e.g.
+   * "Notion stores… [offered because: bullet 2 needs a real case]", so the
+   * model learns WHICH KINDS of help land, not just which texts.
+   */
   kept?: string[]
   rejected?: string[]
   /** Everything already on the canvas (human + AI bullets, card titles) — do not repeat. */
@@ -48,6 +57,25 @@ export interface UrlCard {
 /** NDJSON events streamed back from /api/cocreate, one JSON object per line. */
 export type CocreateEvent =
   | { type: 'text'; text: string }
+  /**
+   * The model's self-diagnosis of what the note needs most right now — emitted
+   * BEFORE any content. Machine-only: never rendered, but attached to the
+   * suggestions it produced so kept/rejected reactions carry the WHY.
+   */
+  | { type: 'diagnosis'; text: string }
+  /**
+   * Which of the user's bullets this fire builds on (index into the numbered
+   * contextNotes list) — emitted before any text. Machine-only: the client
+   * uses it to place the fire's bullets as sub-points under that thought
+   * instead of appending them after the whole note. Absent = note-level.
+   */
+  | { type: 'anchor'; line: number }
+  /**
+   * An inline image belonging to ONE bullet (the model chose the words+image
+   * register). src is the cited page's own og:image; line is the 0-based
+   * content-line index of the bullet it belongs to.
+   */
+  | { type: 'image'; src: string; sourceUrl?: string; title?: string; line?: number }
   | { type: 'urls'; urls: UrlCard[] }
   | { type: 'done'; model?: string; provider: CocreateProvider }
   | { type: 'error'; error: string }

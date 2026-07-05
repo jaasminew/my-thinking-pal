@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Transcript } from './Transcript'
 import { CommandBar } from './CommandBar'
 import { KeywordNoteView } from './KeywordNoteView'
-import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem } from './canvas-types'
+import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
+import { loadJSON, saveJSON, clearSaved } from './persist'
 import { requestCocreate } from '../../services/llm/cocreate'
 import type { CocreateProvider, OpenSub } from '../../services/llm/cocreate-types'
+import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
 
 const PROVIDERS: { id: CocreateProvider; label: string }[] = [
   { id: 'claude-code', label: 'Claude Code' },
@@ -17,6 +19,9 @@ const OPEN_MODELS: { sub: OpenSub; model: string; label: string }[] = [
   { sub: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
   { sub: 'ollama', model: '', label: 'Ollama · local (.env)' }
 ]
+
+// Ambient fires wait for this much keyboard silence before landing content.
+const IDLE_MS = 5000
 
 // Strip a leading bullet marker ("- ", "• ", "* ") from a model line.
 const stripMarker = (l: string) => l.replace(/^[\s\-*•]+/, '').trim()
@@ -36,6 +41,41 @@ const countWords = (s: string) => {
 // Human words in a note = keyword + the user's bullets (AI output doesn't count).
 const humanWords = (n: KeywordNote) =>
   countWords([n.keyword, ...n.items.filter((i): i is BulletItem => isBullet(i) && i.origin === 'human').map((b) => b.text)].join(' '))
+// Exact human text of a note — changes on every keystroke (unlike the word
+// count), so it's the signal the idle-detection in the trigger watches.
+const humanSig = (n: KeywordNote) =>
+  [n.keyword, ...n.items.filter((i): i is BulletItem => isBullet(i) && i.origin === 'human').map((b) => b.text)].join(' ')
+
+// Anchored placement: an AI bullet lands as a sub-point directly under the
+// human bullet the fire declared it builds on (after that bullet's existing
+// subtree, so the user's own sub-points aren't split), not appended after the
+// whole note. Later bullets of the same fire stack under the first. Cards
+// between bullets belong to the bullet above them — skipped, never split from
+// it. No anchor (model said NONE / bullet since deleted) → append at the end.
+const insertAnchored = (items: NoteItem[], nb: BulletItem, anchorId?: string): NoteItem[] => {
+  for (let j = items.length - 1; j >= 0; j--) {
+    const it = items[j]
+    if (isBullet(it) && it.fireId === nb.fireId) {
+      return [...items.slice(0, j + 1), { ...nb, indent: it.indent }, ...items.slice(j + 1)]
+    }
+  }
+  const a = anchorId ? items.findIndex((it) => it.id === anchorId) : -1
+  if (a < 0) return [...items, nb]
+  const depth = ((items[a] as BulletItem).indent ?? 0) + 1
+  let end = a + 1
+  while (end < items.length) {
+    const it = items[end]
+    if (isCard(it) || (isBullet(it) && (it.indent ?? 0) >= depth)) end++
+    else break
+  }
+  return [...items.slice(0, end), { ...nb, indent: depth }, ...items.slice(end)]
+}
+
+// Reaction entries carry the fire's invisible diagnosis, so the model learns
+// which KINDS of help land ("she rejects examples on early-stage notes"), not
+// just which texts. Format matches what COCREATE_SYSTEM is told to expect.
+const withDiag = (text: string, diagnosis?: string) =>
+  diagnosis ? `${text} [offered because: ${diagnosis}]` : text
 
 // URLs the user types/pastes into a bullet get pulled out into inline cards.
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
@@ -54,44 +94,257 @@ const commitBullet = (b: BulletItem, continueOutline: boolean): NoteItem[] => {
   for (const u of urls) {
     out.push({ kind: 'card', id: uid('c'), origin: 'human', status: 'kept', title: hostOf(u), url: u })
   }
-  // ⏎ on an empty bullet ends the outline instead of opening another one.
+  // ⏎ on an empty bullet ends the outline instead of opening another one. The
+  // fresh line continues at the same outline depth.
   if (continueOutline && out.length) {
-    out.push({ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true })
+    out.push({ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true, indent: b.indent })
   }
   return out
 }
 
-export function App() {
-  const [notes, setNotes] = useState<KeywordNote[]>([])
+// One idea space = one canvas panel: its own transcript (left) + infinite
+// canvas (right), with its own saved notes/images/view/transcript. Mounted
+// keyed by space id. The original canvas keeps the un-suffixed storage keys.
+// Only the ACTIVE space records, fires ambient AI, or answers global keys.
+function CanvasSpace({
+  storageSuffix,
+  isActive,
+  recording,
+  onToggleRecord,
+  provider,
+  openIdx
+}: {
+  storageSuffix: string
+  isActive: boolean
+  recording: boolean
+  onToggleRecord: () => void
+  provider: CocreateProvider
+  openIdx: number
+}) {
+  const k = (key: string) => key + storageSuffix
+  // Notes are restored from localStorage so testing data survives refreshes.
+  // Transient flags (aiRunning, open editors) are reset — a restored note is
+  // settled content, not a live session snapshot.
+  const [notes, setNotes] = useState<KeywordNote[]>(() =>
+    loadJSON<KeywordNote[]>(k('notes'), [])
+      .map((n) => ({
+        ...n,
+        aiRunning: false,
+        keywordEditing: false,
+        items: n.items.filter((it) => !isBullet(it) || it.text.trim() !== '').map((it) => (isBullet(it) ? { ...it, editing: false } : it))
+      }))
+      .filter((n) => n.keyword.trim() !== '' || n.items.length > 0)
+  )
+  // Free-floating pictures on the canvas (dropped onto blank space) — no note
+  // wrapper. Share the note selection set (ids are globally unique).
+  const [images, setImages] = useState<CanvasImage[]>(() => loadJSON<CanvasImage[]>(k('images'), []))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null)
-  const [recording, setRecording] = useState(false)
+  // Expanded view of an inline bullet image (click to open, Esc/click-away to
+  // close). Shows the image large over a blurred scrim + its source url below.
+  // The open/close uses a FLIP transition: the image grows from the clicked
+  // thumbnail's screen rect to its centered size (and shrinks back), while the
+  // scrim fades — the classic Apple shared-element expand.
+  type PreviewImg = { src: string; sourceUrl?: string; title?: string; originRect?: DOMRect }
+  const [imgPreview, setImgPreview] = useState<PreviewImg | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false) // drives the scrim fade-in class
+  const previewImgRef = useRef<HTMLImageElement>(null)
+  const previewNaturalRect = useRef<{ top: number; left: number; width: number; height: number } | null>(null)
 
-  const [provider, setProvider] = useState<CocreateProvider>('codex')
-  const [openIdx, setOpenIdx] = useState(0)
-  const [webSearch, setWebSearch] = useState(true)
+  // PLAY the expand: measure the image's natural (centered) rect, snap it back
+  // onto the origin thumbnail with no transition, then release to natural size.
+  useLayoutEffect(() => {
+    if (!imgPreview) return
+    const el = previewImgRef.current
+    const origin = imgPreview.originRect
+    const play = () => {
+      if (!el) return
+      const last = el.getBoundingClientRect() // natural centered rect (no transform yet)
+      if (!last.width || !last.height) return
+      previewNaturalRect.current = { top: last.top, left: last.left, width: last.width, height: last.height }
+      if (origin) {
+        el.style.transformOrigin = '0 0'
+        el.style.transition = 'none'
+        el.style.transform =
+          `translate(${origin.left - last.left}px, ${origin.top - last.top}px) ` +
+          `scale(${origin.width / last.width}, ${origin.height / last.height})`
+        void el.offsetWidth // force the FIRST frame to paint before releasing
+      }
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform .34s cubic-bezier(.2,0,0,1)'
+        el.style.transform = 'none'
+      })
+    }
+    if (el && (el.complete || !origin)) play()
+    else if (el) el.addEventListener('load', play, { once: true })
+    requestAnimationFrame(() => setPreviewOpen(true)) // fade the scrim in
+  }, [imgPreview])
+
+  // Reverse the FLIP: shrink the image back onto the origin thumbnail, fade the
+  // scrim out, then unmount once the image transition ends.
+  const closeImgPreview = useCallback(() => {
+    const el = previewImgRef.current
+    const origin = imgPreview?.originRect
+    const nat = previewNaturalRect.current
+    setPreviewOpen(false)
+    if (el && origin && nat) {
+      el.style.transformOrigin = '0 0'
+      el.style.transition = 'transform .28s cubic-bezier(.4,0,.2,1)'
+      el.style.transform =
+        `translate(${origin.left - nat.left}px, ${origin.top - nat.top}px) ` +
+        `scale(${origin.width / nat.width}, ${origin.height / nat.height})`
+      const done = () => setImgPreview(null)
+      el.addEventListener('transitionend', done, { once: true })
+      setTimeout(done, 360) // fallback if transitionend is missed
+    } else {
+      setImgPreview(null)
+    }
+  }, [imgPreview])
+
+  useEffect(() => {
+    if (!imgPreview) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeImgPreview() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [imgPreview, closeImgPreview])
+
   // AI co-creation mode: OFF suppresses ambient fires and cancels in-flight
   // ones. Tier-3 commands stay live — an explicit command is an invitation.
   const [aiEnabled, setAiEnabled] = useState(true)
 
   const canvasRef = useRef<HTMLDivElement | null>(null)
+  const layerRef = useRef<HTMLDivElement | null>(null)
+  // Canvas view transform: pinch = zoom (around the cursor), two-finger swipe
+  // = pan. Applied to the notes layer; notes themselves keep world coords.
+  const [view, setView] = useState(() => loadJSON(k('view'), { x: 0, y: 0, scale: 1 }))
+  const viewRef = useRef(view)
+  useEffect(() => { viewRef.current = view }, [view])
   const notesRef = useRef<KeywordNote[]>(notes)
   useEffect(() => { notesRef.current = notes }, [notes])
+  const imagesRef = useRef<CanvasImage[]>(images)
+  useEffect(() => { imagesRef.current = images }, [images])
   const selectedIdsRef = useRef(selectedIds)
   useEffect(() => { selectedIdsRef.current = selectedIds }, [selectedIds])
   const aiBufRef = useRef<Record<string, string>>({})
   const aiEnabledRef = useRef(true)
   useEffect(() => { aiEnabledRef.current = aiEnabled }, [aiEnabled])
+  const isActiveRef = useRef(isActive)
+  useEffect(() => { isActiveRef.current = isActive }, [isActive])
   // In-flight fires, so switching AI off can cancel ambient streams immediately.
   const firesRef = useRef(new Map<string, { controller: AbortController; isCommand: boolean }>())
-  // Live cleaned transcript, fed by <Transcript>. Kept in a ref so runAi always
-  // reads the latest text without re-creating the callback on every word.
-  const transcriptTextRef = useRef('')
-  const onTranscriptChange = useCallback((t: string) => { transcriptTextRef.current = t }, [])
+  // Bullets rejected mid-stream, per fire (fireId → set of fireLine): the
+  // streaming upsert must not recreate them. Cleared when the fire ends.
+  const rejectedFireLinesRef = useRef(new Map<string, Set<number>>())
+  // Verbatim word-by-word transcript, fed by this space's <Transcript> as
+  // timestamped final STT segments — per idea space. The AI never gets all of
+  // it; runAi slices a window (rules A/B/C below).
+  const rawTranscriptRef = useRef<{ text: string; ts: number }[]>(loadJSON(k('raw-transcript'), []))
+  const onRawFinal = useCallback((text: string, ts: number) => {
+    rawTranscriptRef.current.push({ text, ts })
+    saveJSON(k('raw-transcript'), rawTranscriptRef.current)
+  }, [])
+  const transcriptSlice = useCallback((from: number, to: number): string | undefined => {
+    const parts = rawTranscriptRef.current.filter((e) => e.ts >= from && e.ts <= to).map((e) => e.text)
+    return parts.length ? parts.join(' ') : undefined
+  }, [])
+
+  // Autosave notes + view (debounced — note state churns on every keystroke
+  // and during streaming AI fires).
+  useEffect(() => {
+    const t = setTimeout(() => saveJSON(k('notes'), notes), 300)
+    return () => clearTimeout(t)
+  }, [notes])
+  useEffect(() => {
+    const t = setTimeout(() => saveJSON(k('images'), images), 300)
+    return () => clearTimeout(t)
+  }, [images])
+  useEffect(() => {
+    const t = setTimeout(() => saveJSON(k('view'), view), 300)
+    return () => clearTimeout(t)
+  }, [view])
+
+  // ---- Undo / redo (⌘Z / ⌘⇧Z), WORD-GRANULAR ----
+  // One ⌘Z rolls back exactly ONE word, not a whole typing burst. So we record
+  // a history step at each BOUNDARY: the human word count changing (a word
+  // started or was removed — CJK counts per char, latin per word, matching
+  // countWords), or the canvas SHAPE changing (a note / bullet / card / image
+  // added or deleted, including AI bullets landing). Between boundaries — the
+  // characters within one word — nothing is recorded. A snapshot pairs notes +
+  // images because a delete removes both together.
+  type Snapshot = { notes: KeywordNote[]; images: CanvasImage[] }
+  const canvasWords = (ns: KeywordNote[]) => ns.reduce((a, n) => a + humanWords(n), 0)
+  const shapeSig = (ns: KeywordNote[], is: CanvasImage[]) =>
+    `${ns.length}|${is.length}|${ns.reduce((a, n) => a + n.items.length, 0)}`
+  const historyRef = useRef<Snapshot[]>([]) // past boundary states, oldest → newest
+  const futureRef = useRef<Snapshot[]>([]) // undone states, for redo
+  const prevRef = useRef<Snapshot>({ notes, images }) // state from the previous render
+  const prevWordsRef = useRef(canvasWords(notes)) // word count at the last boundary
+  const prevShapeRef = useRef(shapeSig(notes, images)) // shape sig at the last boundary
+  const restoringRef = useRef(false) // set while applying undo/redo — skip recording
+  const HISTORY_CAP = 300
+
+  useEffect(() => {
+    const words = canvasWords(notes)
+    const shape = shapeSig(notes, images)
+    if (restoringRef.current) {
+      // This change came FROM an undo/redo — re-baseline, don't record.
+      restoringRef.current = false
+      prevRef.current = { notes, images }
+      prevWordsRef.current = words
+      prevShapeRef.current = shape
+      return
+    }
+    // Boundary crossed → the PREVIOUS render was the end of the last word/action;
+    // push it so one ⌘Z returns there. Mid-word keystrokes only advance prevRef.
+    if (words !== prevWordsRef.current || shape !== prevShapeRef.current) {
+      historyRef.current.push(prevRef.current)
+      if (historyRef.current.length > HISTORY_CAP) historyRef.current.shift()
+      futureRef.current = [] // a fresh edit invalidates the redo stack
+      prevWordsRef.current = words
+      prevShapeRef.current = shape
+    }
+    prevRef.current = { notes, images }
+  }, [notes, images])
+
+  const applySnapshot = useCallback((s: Snapshot) => {
+    restoringRef.current = true
+    setNotes(s.notes)
+    setImages(s.images)
+    setSelectedIds(new Set()) // stale ids may point at notes that just came/went
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isActiveRef.current) return // global keys belong to the active canvas
+      if (e.key.toLowerCase() !== 'z' && e.key.toLowerCase() !== 'y') return
+      if (!e.metaKey && !e.ctrlKey) return
+      // Let native undo handle text fields — only drive canvas history otherwise.
+      const ae = document.activeElement
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || (ae as HTMLElement).isContentEditable)) return
+      const redo = e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)
+      const current: Snapshot = { notes: notesRef.current, images: imagesRef.current }
+      if (redo) {
+        const next = futureRef.current.pop()
+        if (!next) return
+        e.preventDefault()
+        historyRef.current.push(current)
+        applySnapshot(next)
+      } else {
+        const prev = historyRef.current.pop()
+        if (!prev) return
+        e.preventDefault()
+        futureRef.current.push(current)
+        applySnapshot(prev)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [applySnapshot])
 
   // Mass delete: ⌫/Delete removes all selected notes (unless typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!isActiveRef.current) return // global keys belong to the active canvas
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
       if (e.defaultPrevented) return // e.g. ⌫ on a focused url card = delete that card only
       const ae = document.activeElement
@@ -100,6 +353,7 @@ export function App() {
       e.preventDefault()
       const del = selectedIdsRef.current
       setNotes((ns) => ns.filter((n) => !del.has(n.id)))
+      setImages((is) => is.filter((i) => !del.has(i.id)))
       setSelectedIds(new Set())
     }
     window.addEventListener('keydown', onKey)
@@ -110,22 +364,122 @@ export function App() {
     setNotes((ns) => ns.map((n) => (n.id === id ? fn(n) : n)))
   }, [])
 
+  // Cards from the CLI providers arrive as bare title+url — enrich them with the
+  // site's own short description (og:description) and thumbnail via /api/url-meta.
+  // One attempt per card; missing fields just stay empty (the card renders
+  // without an image area / falls back to the hostname as description).
+  const metaTriedRef = useRef(new Set<string>())
+  useEffect(() => {
+    for (const n of notes)
+      for (const it of n.items) {
+        if (!isCard(it) || (it.snippet && it.image) || metaTriedRef.current.has(it.id)) continue
+        metaTriedRef.current.add(it.id)
+        const noteId = n.id
+        fetch(`/api/url-meta?url=${encodeURIComponent(it.url)}`)
+          .then((r) => (r.ok ? r.json() : {}))
+          .then((m: { description?: string; image?: string }) => {
+            if (!m?.description && !m?.image) return
+            patchNote(noteId, (nn) => ({
+              ...nn,
+              items: nn.items.map((x) =>
+                x.id === it.id && isCard(x)
+                  ? { ...x, snippet: x.snippet || m.description, image: x.image || m.image }
+                  : x
+              )
+            }))
+          })
+          .catch(() => {})
+      }
+  }, [notes, patchNote])
+
   const providerArgs = useCallback(() => {
     if (provider === 'open') {
       const m = OPEN_MODELS[openIdx]
-      return { provider, openSub: m.sub, model: m.model || undefined, webSearch }
+      return { provider, openSub: m.sub, model: m.model || undefined, webSearch: true }
     }
-    return { provider, webSearch }
-  }, [provider, openIdx, webSearch])
+    return { provider, webSearch: true }
+  }, [provider, openIdx])
 
-  const toLocal = (clientX: number, clientY: number) => {
+  // Screen → world coords (undo the pan/zoom of the notes layer).
+  const toWorld = (clientX: number, clientY: number) => {
     const r = canvasRef.current!.getBoundingClientRect()
-    return { x: clientX - r.left, y: clientY - r.top }
+    const v = viewRef.current
+    return { x: (clientX - r.left - v.x) / v.scale, y: (clientY - r.top - v.y) / v.scale }
   }
 
-  // ---- AI co-creation: ONE increment per fire, appended (never replaces prior
-  // suggestions), informed by the full transcript, the note, and what the user
-  // has KEPT / REJECTED so far. Reads accumulate → the next suggestion sharpens.
+  // ---- images: drop / paste a picture into the canvas ----
+  // Local files can't be referenced by URL, so read them into a base64 data URL
+  // — it renders directly and survives a refresh through the localStorage save.
+  const fileToDataUrl = (file: File) =>
+    new Promise<string>((res, rej) => {
+      const r = new FileReader()
+      r.onload = () => res(r.result as string)
+      r.onerror = rej
+      r.readAsDataURL(file)
+    })
+
+  // Which item (bullet/card/image) holds focus right now, within the given
+  // note? Reads the DOM: notes carry data-noteid, each row carries data-idx.
+  const focusedItemIn = (noteId: string): string | undefined => {
+    const ae = document.activeElement as HTMLElement | null
+    const noteEl = ae?.closest?.('[data-noteid]')
+    if (!noteEl || noteEl.getAttribute('data-noteid') !== noteId) return undefined
+    const idxEl = ae!.closest('[data-idx]')
+    if (!idxEl) return undefined
+    return notesRef.current.find((n) => n.id === noteId)?.items[Number(idxEl.getAttribute('data-idx'))]?.id
+  }
+
+  // Land an image into a note as its own line item (like a url card): inserted
+  // right after the focused item (or at the end). Rendered in the AI inline-
+  // image style, but the caret can land on it and Backspace deletes just it.
+  const insertImage = useCallback((noteId: string, src: string, afterItemId?: string) =>
+    patchNote(noteId, (n) => {
+      const img: ImageItem = { kind: 'image', id: uid('img'), src, origin: 'human', status: 'kept' }
+      const idx = afterItemId ? n.items.findIndex((it) => it.id === afterItemId) : -1
+      const at = idx >= 0 ? idx + 1 : n.items.length
+      return { ...n, items: [...n.items.slice(0, at), img, ...n.items.slice(at)] }
+    }), [patchNote])
+
+  // ⌘V while editing inside a note: if the clipboard holds an image, insert it
+  // into that note at the caret. No image (plain text/URL paste) → default.
+  const onPaste = useCallback(async (e: React.ClipboardEvent) => {
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'))
+    const file = item?.getAsFile()
+    if (!file) return
+    const ae = document.activeElement as HTMLElement | null
+    const noteId = ae?.closest?.('[data-noteid]')?.getAttribute('data-noteid')
+    if (!noteId) return // paste only lands inside a note
+    e.preventDefault()
+    insertImage(noteId, await fileToDataUrl(file), focusedItemIn(noteId))
+  }, [insertImage])
+
+  // Native (non-passive) wheel listener: trackpad pinch arrives as a wheel
+  // event with ctrlKey; two-finger swipe as plain deltaX/deltaY.
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      setView((v) => {
+        if (e.ctrlKey || e.metaKey) {
+          const cx = e.clientX - rect.left, cy = e.clientY - rect.top
+          const scale = Math.min(3, Math.max(0.25, v.scale * Math.exp(-e.deltaY * 0.01)))
+          const k = scale / v.scale
+          return { x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k, scale }
+        }
+        return { ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // ---- AI co-creation: each fire DIAGNOSES what the note needs most (invisible
+  // to the user), then contributes what the diagnosis calls for — 1-3 bullets,
+  // or nothing at all (PASS). Appended, never replacing prior suggestions;
+  // informed by the transcript, the note, and diagnosis-tagged KEPT / REJECTED
+  // reactions. Reads accumulate → the next diagnosis sharpens.
   const runAi = useCallback(
     async (noteId: string, command?: string) => {
       const note = notesRef.current.find((n) => n.id === noteId)
@@ -140,67 +494,121 @@ export function App() {
       // suggestions are temporary — they may be rejected, so they don't count.
       const existingIdeas = note.items
         .filter((i) => i.origin === 'ai' && i.status === 'kept')
-        .map((i) => (isBullet(i) ? i.text : i.title))
+        .map((i) => (isBullet(i) ? i.text : isCard(i) ? i.title : ''))
+        .filter(Boolean)
       const fireId = uid('f')
       aiBufRef.current[fireId] = ''
       const controller = new AbortController()
       firesRef.current.set(fireId, { controller, isCommand })
       patchNote(noteId, (n) => ({ ...n, aiRunning: true }))
+      // The model's self-diagnosis for THIS fire — arrives before any text and
+      // is attached (invisibly) to every suggestion the fire produces.
+      let diagnosis: string | undefined
+      // The human bullet this fire builds on (ANCHOR event, by index into the
+      // numbered contextNotes) — its bullets land as sub-points under it.
+      let anchorId: string | undefined
+
+      // Rule B (keyword-dragged note) beats rule A (rolling window); an empty
+      // slice — nothing recorded, or nothing said in the window — sends none.
+      const transcriptWindow =
+        note.originTs !== undefined
+          ? transcriptSlice(note.originTs - 60_000, note.originTs + 60_000)
+          : transcriptSlice(Date.now() - 120_000, Infinity)
 
       const result = await requestCocreate(
         {
           seedText: seed,
           command,
-          contextNotes: humanBullets.map((b) => b.text),
+          // Leading spaces mirror outline depth so the model sees the structure
+          // it anchors into (the server numbers these lines for ANCHOR).
+          contextNotes: humanBullets.map((b) => '  '.repeat(b.indent ?? 0) + b.text),
           kept: note.kept,
           rejected: note.rejected,
           existingIdeas,
-          transcriptWindow: transcriptTextRef.current,
+          transcriptWindow,
           ...providerArgs()
         },
         {
+          onDiagnosis: (d) => {
+            diagnosis = d
+          },
+          onAnchor: (line) => {
+            anchorId = humanBullets[line]?.id
+          },
           onText: (chunk) => {
             aiBufRef.current[fireId] = (aiBufRef.current[fireId] || '') + chunk
-            // One increment → keep only the first content bullet of THIS fire.
+            // The model decides the amount (1-3 bullets); hard cap at 3.
             const lines = aiBufRef.current[fireId]
               .split('\n')
               .flatMap((l) => l.split(/(?<=[.!?])\s*(?=[-•*]\s)/))
               .map(stripMarker)
               .filter(isContentBullet)
-              .slice(0, 1)
+              .slice(0, 3)
             setNotes((ns) =>
               ns.map((n) => {
                 if (n.id !== noteId) return n
-                const t = lines[0]
-                if (t === undefined) return n
-                // Upsert this fire's bullet IN PLACE (appended at the end on
-                // first sight). Once the user has accepted (or started editing)
-                // it, the stream stops overwriting their version.
-                const idx = n.items.findIndex((it) => isBullet(it) && it.fireId === fireId)
-                if (idx >= 0) {
-                  const cur = n.items[idx] as BulletItem
-                  if (cur.status !== 'pending') return n
-                  const items = [...n.items]
-                  items[idx] = { ...cur, text: t }
-                  return { ...n, items }
-                }
-                return { ...n, items: [...n.items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, text: t, status: 'pending' }] }
+                // Upsert each of this fire's bullets IN PLACE by (fireId, line
+                // index), anchored under the fire's target bullet on first
+                // sight. Once the user has accepted (or started editing) one,
+                // the stream stops overwriting it; a mid-stream rejected line
+                // is never recreated.
+                let items = n.items
+                lines.forEach((t, i) => {
+                  if (rejectedFireLinesRef.current.get(fireId)?.has(i)) return
+                  const idx = items.findIndex((it) => isBullet(it) && it.fireId === fireId && it.fireLine === i)
+                  if (idx >= 0) {
+                    const cur = items[idx] as BulletItem
+                    if (cur.status !== 'pending' || cur.text === t) return
+                    items = [...items.slice(0, idx), { ...cur, text: t }, ...items.slice(idx + 1)]
+                  } else {
+                    items = insertAnchored(items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, fireLine: i, diagnosis, text: t, status: 'pending' }, anchorId)
+                  }
+                })
+                return items === n.items ? n : { ...n, items }
               })
             )
           },
           onUrls: (urls) => {
-            patchNote(noteId, (n) => ({
-              ...n,
-              items: [...n.items, ...urls.slice(0, 1).map((u): CardItem => ({ ...u, kind: 'card', id: uid('c'), origin: 'ai', status: 'pending' }))]
-            }))
+            // One card per cited case (server caps at 3, matching the bullets).
+            // Placed right after this fire's last bullet — a card grounds those
+            // bullets, so it must not drift to the end of an anchored note.
+            patchNote(noteId, (n) => {
+              const cards = urls.slice(0, 3).map((u): CardItem => ({ ...u, kind: 'card', id: uid('c'), origin: 'ai', status: 'pending', diagnosis }))
+              let at = n.items.length
+              for (let j = n.items.length - 1; j >= 0; j--) {
+                const it = n.items[j]
+                if (isBullet(it) && it.fireId === fireId) { at = j + 1; break }
+              }
+              return { ...n, items: [...n.items.slice(0, at), ...cards, ...n.items.slice(at)] }
+            })
+          },
+          onImage: (img) => {
+            // The image is PART of its bullet (no ✓/✕ of its own): attach it to
+            // the bullet the server anchored it to; if line counts drifted, fall
+            // back to this fire's last image-less bullet.
+            patchNote(noteId, (n) => {
+              let idx = n.items.findIndex((it) => isBullet(it) && it.fireId === fireId && it.fireLine === img.line && !it.image)
+              if (idx < 0) {
+                for (let j = n.items.length - 1; j >= 0; j--) {
+                  const it = n.items[j]
+                  if (isBullet(it) && it.fireId === fireId && !it.image) { idx = j; break }
+                }
+              }
+              if (idx < 0) return n
+              const cur = n.items[idx] as BulletItem
+              const items = [...n.items]
+              items[idx] = { ...cur, image: { src: img.src, sourceUrl: img.sourceUrl, title: img.title } }
+              return { ...n, items }
+            })
           }
         },
         controller.signal
       )
 
       firesRef.current.delete(fireId)
+      rejectedFireLinesRef.current.delete(fireId)
       if (result.aborted) {
-        // Cancelled by the switch: discard this fire's partial suggestion.
+        // Cancelled by the switch: discard this fire's partial suggestions.
         delete aiBufRef.current[fireId]
         patchNote(noteId, (n) => ({
           ...n,
@@ -221,20 +629,39 @@ export function App() {
         return { ...n, aiRunning: false }
       })
     },
-    [patchNote, providerArgs]
+    [patchNote, providerArgs, transcriptSlice]
   )
 
-  // ---- the trigger: fire ONE increment each time human word count grows by 20 ----
+  // ---- the trigger: fire once each time human word count grows by 20, but
+  // only after ≥5s without a keystroke in that note. Word growth says the note
+  // has enough new thought to react to; the idle wait keeps AI content from
+  // landing mid-typing and dragging attention away from the thought in flight.
+  const lastEditRef = useRef(new Map<string, { sig: string; at: number }>())
   useEffect(() => {
-    if (!aiEnabled) return
+    // Record edit times: any change to a note's human text stamps "now".
+    const now = Date.now()
     for (const n of notes) {
-      if (n.aiRunning || n.keywordEditing) continue
-      const words = humanWords(n)
-      if (words - n.lastFiredWords >= 20) {
-        patchNote(n.id, (x) => ({ ...x, lastFiredWords: words }))
-        void runAi(n.id)
+      const sig = humanSig(n)
+      const rec = lastEditRef.current.get(n.id)
+      if (!rec || rec.sig !== sig) lastEditRef.current.set(n.id, { sig, at: now })
+    }
+    if (!aiEnabled) return
+    const check = () => {
+      if (!isActiveRef.current) return // ambient fires only on the active canvas
+      for (const n of notesRef.current) {
+        if (n.aiRunning || n.keywordEditing) continue
+        const words = humanWords(n)
+        const at = lastEditRef.current.get(n.id)?.at ?? 0
+        if (words - n.lastFiredWords >= 20 && Date.now() - at >= IDLE_MS) {
+          patchNote(n.id, (x) => ({ ...x, lastFiredWords: words }))
+          void runAi(n.id)
+        }
       }
     }
+    check()
+    // Re-check while waiting out the idle window (cleared on every notes change).
+    const t = setInterval(check, 1000)
+    return () => clearInterval(t)
   }, [notes, aiEnabled, patchNote, runAi])
 
   // ---- AI co-creation switch. Back ON resets each note's baseline to its
@@ -254,10 +681,11 @@ export function App() {
 
   // ---- canvas: drag blank = marquee-select (框选); plain click = new note ----
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.target !== canvasRef.current) return // only on truly blank space
+    if (e.target !== canvasRef.current && e.target !== layerRef.current) return // only on truly blank space
     const startC = { x: e.clientX, y: e.clientY }
     const rect = canvasRef.current!.getBoundingClientRect()
-    const start = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    const start = { x: e.clientX - rect.left, y: e.clientY - rect.top } // screen-space (marquee)
+    const startW = toWorld(e.clientX, e.clientY) // world-space (new note)
     let moved = false
 
     const move = (ev: PointerEvent) => {
@@ -269,13 +697,15 @@ export function App() {
       if (!moved) return
       const box = { left: l, top: t, right: l + w, bottom: t + h }
       const sel = new Set<string>()
-      for (const n of notesRef.current) {
-        const el = document.querySelector(`[data-noteid="${n.id}"]`) as HTMLElement | null
-        if (!el) continue
+      const hit = (selector: string, id: string) => {
+        const el = document.querySelector(selector) as HTMLElement | null
+        if (!el) return
         const r = el.getBoundingClientRect()
         const nb = { left: r.left - rect.left, top: r.top - rect.top, right: r.right - rect.left, bottom: r.bottom - rect.top }
-        if (nb.left < box.right && nb.right > box.left && nb.top < box.bottom && nb.bottom > box.top) sel.add(n.id)
+        if (nb.left < box.right && nb.right > box.left && nb.top < box.bottom && nb.bottom > box.top) sel.add(id)
       }
+      for (const n of notesRef.current) hit(`[data-noteid="${n.id}"]`, n.id)
+      for (const im of imagesRef.current) hit(`[data-imageid="${im.id}"]`, im.id)
       setSelectedIds(sel)
     }
     const up = () => {
@@ -284,33 +714,64 @@ export function App() {
       setMarquee(null)
       if (!moved) {
         const id = uid('n')
-        setNotes((ns) => [...ns, { id, x: start.x, y: start.y, keyword: '', keywordEditing: true, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: 0 }])
-        setSelectedIds(new Set([id]))
+        // A fresh note starts in typing mode, NOT selected — the selection
+        // rectangle is a drag-select (marquee) affordance, not a "new" marker.
+        setNotes((ns) => [...ns, { id, x: startW.x, y: startW.y, keyword: '', keywordEditing: true, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: 0 }])
+        setSelectedIds(new Set())
       }
     }
     document.addEventListener('pointermove', move)
     document.addEventListener('pointerup', up)
   }, [])
 
-  // ---- canvas: drop a transcript keyword = new note + auto blinking bullet ----
-  const onDrop = useCallback((e: React.DragEvent) => {
+  // ---- canvas: drop an image file, or a transcript keyword ----
+  const onDrop = useCallback(async (e: React.DragEvent) => {
+    // Image file? Land it before the text branch (a file drop carries no
+    // text/plain, so the early-return below would let the browser open it).
+    const file = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/'))
+    if (file) {
+      e.preventDefault()
+      // Priority: dropped onto a note → into that note as an image item; else
+      // the selected note; else a standalone floating image at the drop point.
+      const dropNoteEl = (e.target as HTMLElement).closest('[data-noteid]')
+      const targetNoteId = dropNoteEl?.getAttribute('data-noteid') ?? [...selectedIdsRef.current][0] ?? null
+      const { x, y } = toWorld(e.clientX, e.clientY)
+      const src = await fileToDataUrl(file)
+      if (targetNoteId && notesRef.current.some((n) => n.id === targetNoteId)) {
+        insertImage(targetNoteId, src, focusedItemIn(targetNoteId))
+      } else {
+        const id = uid('img')
+        setImages((is) => [...is, { id, x, y, src }])
+        setSelectedIds(new Set([id]))
+      }
+      return
+    }
+
     const text = e.dataTransfer.getData('text/plain').trim()
     if (!text) return
     e.preventDefault()
-    const { x, y } = toLocal(e.clientX, e.clientY)
+    // When the drag came from the transcript it carries the spoken-at timestamp
+    // of its first selected line — the note keeps it for life (rule B anchor).
+    const tsData = e.dataTransfer.getData('application/x-transcript-ts')
+    const originTs = tsData ? Number(tsData) : undefined
+    const { x, y } = toWorld(e.clientX, e.clientY)
     const id = uid('n')
     setNotes((ns) => [
       ...ns,
       {
         id, x, y, keyword: text, keywordEditing: false, aiRunning: false,
         kept: [], rejected: [], lastFiredWords: 0,
+        ...(Number.isFinite(originTs) ? { originTs } : {}),
         items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
       }
     ])
-    setSelectedIds(new Set([id]))
-  }, [])
+    setSelectedIds(new Set())
+  }, [insertImage])
 
   // ---- keyword header editing ----
+  const onKeywordEdit = (id: string) => () =>
+    patchNote(id, (n) => ({ ...n, keywordEditing: true }))
+
   const onKeywordChange = (id: string) => (text: string) =>
     patchNote(id, (n) => ({ ...n, keyword: text }))
 
@@ -334,6 +795,17 @@ export function App() {
   const onBulletChange = (id: string) => (bulletId: string, text: string) =>
     patchNote(id, (n) => ({ ...n, items: n.items.map((it) => (it.id === bulletId && isBullet(it) ? { ...it, text } : it)) }))
 
+  // Tab / Shift+Tab: push a bullet one outline level deeper / shallower.
+  const onIndentBullet = (id: string) => (bulletId: string, delta: number) =>
+    patchNote(id, (n) => ({
+      ...n,
+      items: n.items.map((it) =>
+        it.id === bulletId && isBullet(it)
+          ? { ...it, indent: Math.max(0, Math.min(3, (it.indent ?? 0) + delta)) }
+          : it
+      )
+    }))
+
   // Replace one bullet with its committed form (URL cards split out, optional
   // fresh editing bullet after) — splice keeps the item's position in the flow.
   const spliceCommit = (id: string, bulletId: string, continueOutline: boolean) =>
@@ -353,6 +825,58 @@ export function App() {
   // separate "enter edit mode" step needed.
   const onBulletBlur = (id: string) => (bulletId: string) => spliceCommit(id, bulletId, false)
 
+  // Merge a bullet into its neighbour (⌫ at start → 'prev', ⌦ at end → 'next'):
+  // the two texts join, the emptied-out bullet is dropped, and a lone inline
+  // image rides along so it isn't lost. Caret placement is handled in the view.
+  const onMergeBullet = (id: string) => (bulletId: string, dir: 'prev' | 'next') =>
+    patchNote(id, (n) => {
+      const idx = n.items.findIndex((it) => it.id === bulletId)
+      if (idx < 0) return n
+      const keepIdx = dir === 'prev' ? idx - 1 : idx
+      const dropIdx = dir === 'prev' ? idx : idx + 1
+      const keep = n.items[keepIdx]
+      const drop = n.items[dropIdx]
+      if (!keep || !drop || !isBullet(keep) || !isBullet(drop)) return n
+      const merged: BulletItem = {
+        ...keep,
+        text: keep.text + drop.text,
+        image: keep.image ?? drop.image
+      }
+      return { ...n, items: n.items.map((it, i) => (i === keepIdx ? merged : it)).filter((_, i) => i !== dropIdx) }
+    })
+
+  // Delete a drag-selected span that crosses bullets: keep the head of the
+  // start bullet and the tail of the end bullet, drop everything between, and
+  // fuse the two survivors into one bullet (caret lands at the seam — set in
+  // the view). A lone inline image on either survivor rides along.
+  const onDeleteRange = (id: string) => (startId: string, startOff: number, endId: string, endOff: number) =>
+    patchNote(id, (n) => {
+      const si = n.items.findIndex((it) => it.id === startId)
+      const ei = n.items.findIndex((it) => it.id === endId)
+      if (si < 0 || ei < 0 || si >= ei) return n
+      const s = n.items[si]
+      const e = n.items[ei]
+      if (!isBullet(s) || !isBullet(e)) return n
+      const merged: BulletItem = {
+        ...s,
+        text: s.text.slice(0, startOff) + e.text.slice(endOff),
+        image: s.image ?? e.image
+      }
+      return { ...n, items: [...n.items.slice(0, si), merged, ...n.items.slice(ei + 1)] }
+    })
+
+  // ⌘A-then-delete: remove the whole note as one block (empty notes are
+  // discarded anyway), clearing any canvas selection it was part of.
+  const onDeleteNote = (id: string) => () => {
+    setNotes((ns) => ns.filter((n) => n.id !== id))
+    setSelectedIds((s) => {
+      if (!s.has(id)) return s
+      const next = new Set(s)
+      next.delete(id)
+      return next
+    })
+  }
+
   // ⏎ on a focused inline URL card: start a new line right after it.
   const onInsertAfter = (id: string) => (itemId: string) =>
     patchNote(id, (n) => {
@@ -362,34 +886,49 @@ export function App() {
       return { ...n, items: [...n.items.slice(0, idx + 1), fresh, ...n.items.slice(idx + 1)] }
     })
 
-  // ---- accept / reject (records reaction signals that sharpen the next fire) ----
+  // ---- accept / reject (records reaction signals that sharpen the next fire;
+  // each entry carries the fire's diagnosis so the model learns which KINDS of
+  // help this user wants) ----
   const keepBullet = (id: string) => (bid: string) =>
     patchNote(id, (n) => {
       const b = n.items.find((x) => x.id === bid)
       return {
         ...n,
         items: n.items.map((x) => (x.id === bid && isBullet(x) ? { ...x, status: 'kept' } : x)),
-        kept: b && isBullet(b) ? [...n.kept, b.text] : n.kept
+        kept: b && isBullet(b) ? [...n.kept, withDiag(b.text, b.diagnosis)] : n.kept
       }
     })
-  const rejectBullet = (id: string) => (bid: string) =>
+  const rejectBullet = (id: string) => (bid: string) => {
+    // Remember the fire-line OUTSIDE the state updater (updaters must stay
+    // pure), so a still-streaming fire can't recreate the rejected bullet.
+    const rb = notesRef.current.find((n) => n.id === id)?.items.find((x) => x.id === bid)
+    if (rb && isBullet(rb) && rb.fireId && rb.fireLine !== undefined) {
+      const set = rejectedFireLinesRef.current.get(rb.fireId) || new Set<number>()
+      set.add(rb.fireLine)
+      rejectedFireLinesRef.current.set(rb.fireId, set)
+    }
     patchNote(id, (n) => {
       const b = n.items.find((x) => x.id === bid)
       return {
         ...n,
         items: n.items.filter((x) => x.id !== bid),
-        rejected: b && isBullet(b) ? [...n.rejected, b.text] : n.rejected
+        rejected: b && isBullet(b) ? [...n.rejected, withDiag(b.text, b.diagnosis)] : n.rejected
       }
     })
+  }
   const keepCard = (id: string) => (cid: string) =>
     patchNote(id, (n) => {
       const c = n.items.find((x) => x.id === cid)
       return {
         ...n,
         items: n.items.map((x) => (x.id === cid && isCard(x) ? { ...x, status: 'kept' } : x)),
-        kept: c && isCard(c) ? [...n.kept, c.title] : n.kept
+        kept: c && isCard(c) ? [...n.kept, withDiag(c.title, c.diagnosis)] : n.kept
       }
     })
+  // Removes an in-note image line (⌫ on a focused image, like removing a card).
+  const removeImageItem = (id: string) => (imgId: string) =>
+    patchNote(id, (n) => ({ ...n, items: n.items.filter((x) => x.id !== imgId) }))
+
   // Removes a card line. Rejecting a PENDING AI card records a reaction signal;
   // deleting a settled card (⌫ on a focused card) is just deletion.
   const removeCard = (id: string) => (cid: string) =>
@@ -399,57 +938,78 @@ export function App() {
       return {
         ...n,
         items: n.items.filter((x) => x.id !== cid),
-        rejected: wasPending ? [...n.rejected, c.title] : n.rejected
+        rejected: wasPending && isCard(c) ? [...n.rejected, withDiag(c.title, c.diagnosis)] : n.rejected
       }
+    })
+
+  // Which id(s) move when a pointer-drag starts on obj `id`: the whole selection
+  // if `id` is part of a multi-select, else just `id` (which becomes the lone
+  // selection). Shared by notes and standalone images.
+  const dragTargets = (id: string): string[] => {
+    if (selectedIdsRef.current.has(id) && selectedIdsRef.current.size > 1) return [...selectedIdsRef.current]
+    setSelectedIds(new Set([id]))
+    return [id]
+  }
+
+  // Drag a set of canvas objects (notes and/or images) together, world-space.
+  // A pointerup with no real movement is a click, not a drag → onClick (used by
+  // standalone images to expand into the previewer, same as an inline image).
+  const beginDrag = (dragIds: string[], startX: number, startY: number, onClick?: () => void) => {
+    const origins = dragIds.flatMap((i) => {
+      const n = notesRef.current.find((x) => x.id === i)
+      if (n) return [{ i, ox: n.x, oy: n.y }]
+      const im = imagesRef.current.find((x) => x.id === i)
+      return im ? [{ i, ox: im.x, oy: im.y }] : []
+    })
+    let moved = false
+    const move = (ev: PointerEvent) => {
+      if (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4) moved = true
+      const s = viewRef.current.scale
+      const dx = (ev.clientX - startX) / s, dy = (ev.clientY - startY) / s
+      const shift = <T extends { id: string; x: number; y: number }>(o: T): T => {
+        const org = origins.find((g) => g.i === o.id)
+        return org ? { ...o, x: org.ox + dx, y: org.oy + dy } : o
+      }
+      setNotes((ns) => ns.map(shift))
+      setImages((is) => is.map(shift))
+    }
+    const up = () => {
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', up)
+      if (!moved) onClick?.()
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', up)
+  }
+
+  // Shift/⌘-click toggles an object in/out of the selection (no drag).
+  const toggleSelected = (id: string) =>
+    setSelectedIds((prev) => {
+      const s = new Set(prev)
+      s.has(id) ? s.delete(id) : s.add(id)
+      return s
     })
 
   // ---- select + drag keyword note(s); supports multi-select group move ----
   const onNotePointerDown = (id: string) => (e: React.PointerEvent) => {
     e.stopPropagation() // don't let the canvas start a marquee
     const el = e.target as HTMLElement
-    const interactive = !!el.closest('input, textarea, button, .accept, .url-card, .bullet-text')
+    const interactive = !!el.closest('input, textarea, button, .accept, .url-card, .bullet-text, .kw-text, .kw-input, .bullet-img, .note-image')
 
-    // Shift/⌘-click toggles this note in/out of the selection (no drag).
-    if (e.shiftKey || e.metaKey) {
-      setSelectedIds((prev) => {
-        const s = new Set(prev)
-        s.has(id) ? s.delete(id) : s.add(id)
-        return s
-      })
-      return
-    }
-
-    // Drag the whole selection if this note is part of a multi-select; else
-    // select just this note and drag it.
-    let dragIds: string[]
-    if (selectedIdsRef.current.has(id) && selectedIdsRef.current.size > 1) {
-      dragIds = [...selectedIdsRef.current]
-    } else {
-      dragIds = [id]
-      setSelectedIds(new Set([id]))
-    }
+    if (e.shiftKey || e.metaKey) { toggleSelected(id); return }
+    const dragIds = dragTargets(id)
     if (interactive) return // editing a field → no drag
+    beginDrag(dragIds, e.clientX, e.clientY)
+  }
 
-    const origins = dragIds
-      .map((i) => notesRef.current.find((n) => n.id === i))
-      .filter((n): n is KeywordNote => !!n)
-      .map((n) => ({ i: n.id, ox: n.x, oy: n.y }))
-    const sx = e.clientX, sy = e.clientY
-    const move = (ev: PointerEvent) => {
-      const dx = ev.clientX - sx, dy = ev.clientY - sy
-      setNotes((ns) =>
-        ns.map((n) => {
-          const o = origins.find((o) => o.i === n.id)
-          return o ? { ...n, x: o.ox + dx, y: o.oy + dy } : n
-        })
-      )
-    }
-    const up = () => {
-      document.removeEventListener('pointermove', move)
-      document.removeEventListener('pointerup', up)
-    }
-    document.addEventListener('pointermove', move)
-    document.addEventListener('pointerup', up)
+  // ---- select + drag a standalone canvas image; a plain click (no drag)
+  // expands it into the previewer, same as clicking an inline image ----
+  const onImagePointerDown = (id: string) => (e: React.PointerEvent) => {
+    e.stopPropagation()
+    if (e.shiftKey || e.metaKey) { toggleSelected(id); return }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const im = imagesRef.current.find((x) => x.id === id)
+    beginDrag(dragTargets(id), e.clientX, e.clientY, im ? () => setImgPreview({ src: im.src, originRect: rect }) : undefined)
   }
 
   // ---- Tier-3 command pill ----
@@ -458,43 +1018,23 @@ export function App() {
     const id = uid('n')
     // Pre-set lastFiredWords so the every-20 effect doesn't ALSO fire this note.
     setNotes((ns) => [...ns, { id, x, y, keyword: command, keywordEditing: false, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: countWords(command) }])
-    setSelectedIds(new Set([id]))
     void runAi(id, command)
   }
 
   return (
-    <div className="window">
-      <header className="titlebar">
-        <span className="lights"><i className="r" /><i className="y" /><i className="g" /></span>
-        <span className="folder">🗂</span>
-        <span className="title">IdeaSpace brainstorming note</span>
-        <div className="controls">
-          <div className="seg">
-            {PROVIDERS.map((p) => (
-              <button key={p.id} className={provider === p.id ? 'on' : ''} onClick={() => setProvider(p.id)}>
-                {p.label}
-              </button>
-            ))}
-          </div>
-          {provider === 'open' && (
-            <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
-              {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
-            </select>
-          )}
-          <button className={`chip ${webSearch ? 'on' : ''}`} onClick={() => setWebSearch((w) => !w)}>
-            🔎 Web search {webSearch ? 'on' : 'off'}
-          </button>
-        </div>
-      </header>
-
-      <main>
-        <Transcript recording={recording} onTranscriptChange={onTranscriptChange} />
-        <div
-          className="canvas"
+    <>
+      <Transcript recording={recording} onRawFinal={onRawFinal} storageSuffix={storageSuffix} />
+      <div
+        className="canvas"
           ref={canvasRef}
           onPointerDown={onCanvasPointerDown}
           onDrop={onDrop}
+          onPaste={onPaste}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+          style={{
+            backgroundPosition: `${view.x}px ${view.y}px`,
+            backgroundSize: `${22 * view.scale}px ${22 * view.scale}px`
+          }}
         >
           <div className="ai-switch" onPointerDown={(e) => e.stopPropagation()}>
             <span className="ai-switch-label">AI co-creation mode</span>
@@ -507,7 +1047,7 @@ export function App() {
             />
           </div>
 
-          {notes.length === 0 && (
+          {notes.length === 0 && images.length === 0 && (
             <div className="canvas-hint">Select transcript text and drag here · click to start a note · drag the canvas to box-select</div>
           )}
 
@@ -515,32 +1055,386 @@ export function App() {
             <div className="marquee" style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }} />
           )}
 
+          <div
+            className="canvas-layer"
+            ref={layerRef}
+            style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
+          >
           {notes.map((n) => (
             <KeywordNoteView
               key={n.id}
               note={n}
               selected={selectedIds.has(n.id)}
               onPointerDownNote={onNotePointerDown(n.id)}
+              onKeywordEdit={onKeywordEdit(n.id)}
               onKeywordChange={onKeywordChange(n.id)}
               onKeywordCommit={onKeywordCommit(n.id)}
               onBulletChange={onBulletChange(n.id)}
+              onIndentBullet={onIndentBullet(n.id)}
               onBulletEnter={onBulletEnter(n.id)}
               onBulletBlur={onBulletBlur(n.id)}
+              onMergeBullet={onMergeBullet(n.id)}
+              onDeleteNote={onDeleteNote(n.id)}
+              onDeleteRange={onDeleteRange(n.id)}
               onKeepBullet={keepBullet(n.id)}
               onRejectBullet={rejectBullet(n.id)}
               onKeepCard={keepCard(n.id)}
               onRemoveCard={removeCard(n.id)}
               onInsertAfter={onInsertAfter(n.id)}
+              onRemoveImage={removeImageItem(n.id)}
+              onOpenImage={setImgPreview}
             />
           ))}
+          {/* standalone floating images — no note wrapper, no header */}
+          {images.map((im) => (
+            <img
+              key={im.id}
+              data-imageid={im.id}
+              className={`canvas-image ${selectedIds.has(im.id) ? 'selected' : ''}`}
+              src={im.src}
+              alt=""
+              draggable={false}
+              style={{ left: im.x, top: im.y }}
+              onPointerDown={onImagePointerDown(im.id)}
+              onError={(e) => { e.currentTarget.style.display = 'none' }}
+            />
+          ))}
+          </div>
 
           <CommandBar
             recording={recording}
-            onToggleRecord={() => setRecording((r) => !r)}
+            onToggleRecord={onToggleRecord}
             onSubmit={onCommand}
           />
+      </div>
+
+      {/* Expanded image previewer: blurred scrim, image large, source url below. */}
+      {imgPreview && (
+        <div className={`img-preview ${previewOpen ? 'open' : ''}`} onClick={closeImgPreview}>
+          <img ref={previewImgRef} className="img-preview-pic" src={imgPreview.src} alt="" onClick={(e) => e.stopPropagation()} />
+          {imgPreview.sourceUrl && (
+            <a
+              className="img-preview-source"
+              href={imgPreview.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img
+                className="favicon"
+                src={`https://www.google.com/s2/favicons?domain=${hostOf(imgPreview.sourceUrl)}&sz=32`}
+                alt=""
+                onError={(e) => { e.currentTarget.style.display = 'none' }}
+              />
+              <span>{imgPreview.title || hostOf(imgPreview.sourceUrl)}</span>
+            </a>
+          )}
         </div>
-      </main>
+      )}
+    </>
+  )
+}
+
+// ---- workspace shell: collapsible nav sidebar + Obsidian-style sliding panels ----
+
+// The pre-existing canvas lives on as the 'default' space (un-suffixed storage
+// keys), so nothing saved before this layout change is lost.
+const DEFAULT_TREE: TreeNode[] = [{ id: 'default', kind: 'space', name: 'A New Canvas' }]
+
+const findNode = (nodes: TreeNode[], id: string): TreeNode | undefined => {
+  for (const n of nodes) {
+    if (n.id === id) return n
+    const hit = n.children && findNode(n.children, id)
+    if (hit) return hit
+  }
+  return undefined
+}
+const firstSpace = (nodes: TreeNode[]): TreeNode | undefined => {
+  for (const n of nodes) {
+    if (n.kind === 'space') return n
+    const hit = n.children && firstSpace(n.children)
+    if (hit) return hit
+  }
+  return undefined
+}
+const mapNodes = (nodes: TreeNode[], fn: (n: TreeNode) => TreeNode): TreeNode[] =>
+  nodes.map((n) => fn(n.children ? { ...n, children: mapNodes(n.children, fn) } : { ...n }))
+
+// Pulls a node out of the tree wherever it lives, returning the pruned tree
+// alongside the detached node (so a caller can re-insert it elsewhere).
+const removeNode = (nodes: TreeNode[], id: string): { nodes: TreeNode[]; found?: TreeNode } => {
+  let found: TreeNode | undefined
+  const rest = nodes
+    .filter((n) => {
+      if (n.id === id) {
+        found = n
+        return false
+      }
+      return true
+    })
+    .map((n) => {
+      if (found || !n.children) return n
+      const r = removeNode(n.children, id)
+      if (r.found) found = r.found
+      return { ...n, children: r.nodes }
+    })
+  return { nodes: rest, found }
+}
+
+// Handle = the spine strip on a panel's top-left (drag it to slide/resize).
+// Its width is what an open-but-buried canvas always keeps visible.
+const HANDLE = 44
+const MAX_OPEN = 3
+
+// Overlapping paper-stack model (Obsidian-like): every open canvas pins its
+// RIGHT edge to the workspace's right edge and keeps its own independent
+// width — later-opened panels lie on top, like sheets of paper. Dragging a
+// handle resizes ONLY that sheet; the others don't move. Clamps keep every
+// sheet's handle visible: a sheet stays at least one HANDLE narrower than the
+// sheet beneath it and one HANDLE wider than the sheet on top of it. So the
+// widest a sheet can get is workspace − (sheets beneath it × HANDLE).
+type OpenPanels = { ids: string[]; fracs: number[] } // fracs: width ÷ workspace width
+
+export function App() {
+  const [collapsed, setCollapsed] = useState(() => loadJSON('sidebar-collapsed', false))
+  const [tree, setTree] = useState<TreeNode[]>(() => loadJSON('workspace-tree', DEFAULT_TREE))
+  // Open canvases (≤3), bottom→top of the paper stack (= open order).
+  // Sanitized against the saved tree so a stale id never renders a dead panel.
+  const [open, setOpen] = useState<OpenPanels>(() => {
+    const t = loadJSON<TreeNode[]>('workspace-tree', DEFAULT_TREE)
+    const saved = loadJSON<OpenPanels>('open-panels', { ids: ['default'], fracs: [1] })
+    const pairs = saved.ids
+      .map((id, i) => ({ id, f: saved.fracs[i] ?? 1 }))
+      .filter((p) => findNode(t, p.id)?.kind === 'space')
+      .slice(0, MAX_OPEN)
+    if (!pairs.length) {
+      const s = firstSpace(t)
+      return s ? { ids: [s.id], fracs: [1] } : { ids: [], fracs: [] }
+    }
+    return { ids: pairs.map((p) => p.id), fracs: pairs.map((p) => Math.min(1, Math.max(0, p.f))) }
+  })
+  const [activeId, setActiveId] = useState<string>(() => loadJSON('active-space', 'default'))
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  // Only ONE canvas records at a time — the id of the recording space, or null.
+  const [recordingId, setRecordingId] = useState<string | null>(null)
+  const [provider, setProvider] = useState<CocreateProvider>('codex')
+  const [openIdx, setOpenIdx] = useState(0)
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const [ww, setWw] = useState(1200)
+
+  useEffect(() => saveJSON('sidebar-collapsed', collapsed), [collapsed])
+  useEffect(() => saveJSON('workspace-tree', tree), [tree])
+  useEffect(() => saveJSON('open-panels', open), [open])
+  useEffect(() => saveJSON('active-space', activeId), [activeId])
+
+  // The active canvas must be one of the open ones.
+  useEffect(() => {
+    if (open.ids.length && !open.ids.includes(activeId)) setActiveId(open.ids[open.ids.length - 1])
+  }, [open, activeId])
+
+  // Track the workspace's real width — panel fractions are resolved against it.
+  useEffect(() => {
+    const el = workspaceRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setWw(el.clientWidth))
+    ro.observe(el)
+    setWw(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+
+  // Deliberate reset — refresh alone no longer clears anything.
+  const clearAll = useCallback(() => {
+    if (!window.confirm('Clear all saved notes and transcript data?')) return
+    clearSaved()
+    window.location.reload()
+  }, [])
+
+  // Resolve fractions to px and enforce the stack invariant: each sheet at
+  // least one HANDLE narrower than the one beneath, never below one HANDLE.
+  const widths = open.fracs.map((f) => f * ww)
+  for (let i = 0; i < widths.length; i++) {
+    const max = i === 0 ? ww : widths[i - 1] - HANDLE
+    widths[i] = Math.max(HANDLE, Math.min(widths[i], max))
+  }
+
+  // Open an idea space as a canvas panel: already open → just activate; room
+  // left → a new sheet slides in on top (right edge pinned, one HANDLE
+  // narrower than the sheet below); already 3 open → the new canvas replaces
+  // the ACTIVE one in its slot, keeping that slot's width.
+  const openSpace = (id: string) => {
+    if (!open.ids.includes(id)) {
+      if (open.ids.length < MAX_OPEN) {
+        const below = widths.length ? widths[widths.length - 1] : ww
+        const w = widths.length
+          ? Math.max(HANDLE, Math.min(below - HANDLE, Math.round(ww * 0.62)))
+          : ww
+        setOpen({ ids: [...open.ids, id], fracs: [...open.fracs, w / ww] })
+      } else {
+        const idx = Math.max(0, open.ids.indexOf(activeId))
+        const replaced = open.ids[idx]
+        const ids = [...open.ids]
+        ids[idx] = id
+        setOpen({ ...open, ids })
+        if (recordingId === replaced) setRecordingId(null)
+      }
+    }
+    setActiveId(id)
+  }
+
+  // Close a canvas (its ×): the sheet leaves the stack; the space itself stays
+  // in the tree and can be reopened. Focus falls to the topmost remaining sheet.
+  const closeSpace = (id: string) => {
+    const idx = open.ids.indexOf(id)
+    if (idx < 0) return
+    const ids = open.ids.filter((x) => x !== id)
+    const fracs = open.fracs.filter((_, j) => j !== idx)
+    setOpen({ ids, fracs })
+    if (recordingId === id) setRecordingId(null)
+    if (activeId === id && ids.length) setActiveId(ids[ids.length - 1])
+  }
+
+  // New Project: expand the sidebar if collapsed, create a folder, and drop
+  // straight into renaming it.
+  const addProject = () => {
+    const id = uid('p')
+    setTree((t) => [...t, { id, kind: 'project', name: 'New Project', children: [] }])
+    setCollapsed(false)
+    setSelectedId(id)
+    setRenamingId(id)
+  }
+
+  // New Idea Space: a fresh canvas (= idea space) that slides in from the
+  // right. Nested into the selected project (if any), else at the root.
+  const addIdeaSpace = () => {
+    const id = uid('s')
+    const node: TreeNode = { id, kind: 'space', name: 'A New Canvas' }
+    setTree((t) => {
+      const sel = selectedId ? findNode(t, selectedId) : undefined
+      if (sel && sel.kind === 'project') {
+        return mapNodes(t, (n) => (n.id === sel.id ? { ...n, children: [...(n.children || []), node] } : n))
+      }
+      return [...t, node]
+    })
+    openSpace(id)
+  }
+
+  const onSelect = (node: TreeNode) => {
+    setSelectedId(node.id)
+    if (node.kind === 'space') openSpace(node.id)
+  }
+
+  // Drag a canvas onto a project row to file it into that project, or onto
+  // the sidebar's root drop zone to pull it back out to the top level.
+  const onMoveNode = (id: string, targetProjectId: string | null) => {
+    if (id === targetProjectId) return
+    setTree((t) => {
+      const { nodes, found } = removeNode(t, id)
+      if (!found) return t
+      if (!targetProjectId) return [...nodes, found]
+      const target = findNode(nodes, targetProjectId)
+      if (!target || target.kind !== 'project') return t
+      return mapNodes(nodes, (n) => (n.id === targetProjectId ? { ...n, children: [...(n.children || []), found] } : n))
+    })
+  }
+
+  const onRename = (id: string, name: string) => {
+    const clean = name.trim()
+    if (clean) setTree((t) => mapNodes(t, (n) => (n.id === id ? { ...n, name: clean } : n)))
+    setRenamingId(null)
+  }
+
+  // Drag a sheet's handle: only THIS sheet's left edge moves (right edge is
+  // pinned), clamped so the sheet below keeps its handle visible and this
+  // sheet stays visible in front of the sheet above.
+  const startPanelDrag = (idx: number) => (e: React.PointerEvent) => {
+    setActiveId(open.ids[idx])
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = widths[idx]
+    const min = idx === widths.length - 1 ? HANDLE : widths[idx + 1] + HANDLE
+    const max = idx === 0 ? ww : widths[idx - 1] - HANDLE
+    const move = (ev: PointerEvent) => {
+      const w = Math.max(min, Math.min(max, startW - (ev.clientX - startX)))
+      setOpen((o) => ({ ...o, fracs: o.fracs.map((f, j) => (j === idx ? w / ww : f)) }))
+    }
+    const up = () => {
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', up)
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', up)
+  }
+
+  return (
+    <div className="app-shell">
+      <Sidebar
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((c) => !c)}
+        tree={tree}
+        activeId={activeId}
+        selectedId={selectedId}
+        renamingId={renamingId}
+        onSelect={onSelect}
+        onNewProject={addProject}
+        onNewIdeaSpace={addIdeaSpace}
+        onStartRename={setRenamingId}
+        onRename={onRename}
+        onMoveNode={onMoveNode}
+        footer={
+          <div className="side-controls">
+            <div className="seg">
+              {PROVIDERS.map((p) => (
+                <button key={p.id} className={provider === p.id ? 'on' : ''} onClick={() => setProvider(p.id)}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {provider === 'open' && (
+              <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
+                {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
+              </select>
+            )}
+            <button className="clear-saved" title="Delete all saved notes and transcript data" onClick={clearAll}>
+              Clear saved
+            </button>
+          </div>
+        }
+      />
+
+      <div className="workspace" ref={workspaceRef}>
+        {open.ids.map((id, i) => (
+          <section
+            key={id}
+            className={`panel${activeId === id ? ' active' : ''}`}
+            style={{ width: widths[i], zIndex: i + 1 }}
+            onPointerDownCapture={() => setActiveId(id)}
+          >
+            <div className="panel-spine spine-drag" onPointerDown={startPanelDrag(i)} title="Drag to slide / resize">
+              <button
+                className="panel-close"
+                title="Close this canvas"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => closeSpace(id)}
+              >
+                ×
+              </button>
+              {BookIcon}
+              <span className="spine-title">{findNode(tree, id)?.name ?? 'A New Canvas'}</span>
+            </div>
+            <div className="panel-body">
+              <CanvasSpace
+                storageSuffix={id === 'default' ? '' : `.${id}`}
+                isActive={activeId === id}
+                recording={recordingId === id}
+                onToggleRecord={() => setRecordingId((r) => (r === id ? null : id))}
+                provider={provider}
+                openIdx={openIdx}
+              />
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   )
 }

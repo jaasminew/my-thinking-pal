@@ -16,6 +16,8 @@ import { requestCleanTranscript, requestSegment } from '../../services/llm/clien
 export interface Line {
   id: string
   text: string
+  /** When the raw speech behind this line was spoken (start of its cleanup window). */
+  ts: number
 }
 
 export interface Section {
@@ -55,6 +57,7 @@ export class CleanupEngine {
   onError: (msg: string) => void = () => {}
 
   private pendingRaw = ''
+  private pendingRawStartTs: number | undefined // when the current raw window began
   private cleanupTimer: number | undefined
   private segmentTimer: number | undefined
   private cleaning = false
@@ -93,6 +96,7 @@ export class CleanupEngine {
     this.frozenSections = []
     this.tail = []
     this.pendingRaw = ''
+    this.pendingRawStartTs = undefined
     this.cleaning = false
     this.segmenting = false
     this.running = false
@@ -101,6 +105,7 @@ export class CleanupEngine {
   pushFinal(text: string) {
     const chunk = text.trim()
     if (!chunk) return
+    if (!this.pendingRaw) this.pendingRawStartTs = Date.now()
     this.pendingRaw += (this.pendingRaw ? ' ' : '') + chunk
   }
 
@@ -148,7 +153,9 @@ export class CleanupEngine {
     if (this.cleaning) return
 
     const gen = this.gen
+    const rawTs = this.pendingRawStartTs ?? Date.now()
     this.pendingRaw = ''
+    this.pendingRawStartTs = undefined
     this.cleaning = true
     this.setStatus('summarizing')
 
@@ -168,12 +175,13 @@ export class CleanupEngine {
       // No usable output this round — put the raw back so no speech is lost; the
       // next tick retries. Never surfaced as an error to the user.
       this.pendingRaw = raw + (this.pendingRaw ? ` ${this.pendingRaw}` : '')
+      this.pendingRawStartTs = rawTs // restored raw is the oldest speech again
       this.setStatus(this.idleStatus())
       return
     }
 
     for (const line of this.splitLines(text)) {
-      this.tail.push({ id: uid('l'), text: line })
+      this.tail.push({ id: uid('l'), text: line, ts: rawTs })
     }
     this.onRender()
     this.setStatus(this.idleStatus())

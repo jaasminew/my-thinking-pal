@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { isImeEvent } from './ime'
 
 // Tier-3 command pill, floating at the bottom of the canvas. Left: the record
 // toggle (STT lives in Unit 1; here it's the capture affordance). Right: an
@@ -37,7 +38,7 @@ export function CommandBar({
           value={value}
           placeholder="Ask AI to search, draw, or expand…"
           onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          onKeyDown={(e) => { if (!isImeEvent(e) && e.key === 'Enter') submit() }}
         />
         <button className="send" title="Send" onClick={submit}>↑</button>
       </div>
