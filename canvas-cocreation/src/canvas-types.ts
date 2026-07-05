@@ -63,7 +63,7 @@ export interface CanvasImage {
   x: number
   y: number
   src: string
-  w?: number // natural display width in world units (set once the image loads)
+  w?: number // natural display width in world coordinates (set once the image loads)
 }
 
 export interface KeywordNote {

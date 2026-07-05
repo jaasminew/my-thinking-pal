@@ -10,5 +10,5 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "node"]
   },
-  "include": ["unit2-canvas-cocreation", "services", "server"]
+  "include": ["canvas-cocreation", "services", "server"]
 }

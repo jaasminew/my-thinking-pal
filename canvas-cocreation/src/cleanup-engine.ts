@@ -7,7 +7,7 @@ import { requestCleanTranscript, requestSegment } from '../../services/llm/clien
 //
 //  1. Cleanup (every 30s): rewrites the last window of raw speech into concise,
 //     written-style idea lines and APPENDS them to the open `tail`. One idea per
-//     line — lines are the atomic unit of structure.
+//     line — lines are the atomic building block of structure.
 //  2. Segmentation (every 2min + on stop): a thinking model reads ONLY the open
 //     tail, decides where topics break, and FREEZES the closed segments with
 //     headers. Frozen sections are final — the model never touches them again,

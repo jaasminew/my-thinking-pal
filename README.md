@@ -68,7 +68,7 @@ server/
   api-plugin.ts        Vite backend: Groq/Cerebras/Ollama proxy and /api/cocreate
   agents.ts            Claude Code / Codex CLI bridge
   search.ts            Tavily search bridge
-unit2-canvas-cocreation/
+canvas-cocreation/
   src/App.tsx          Canvas co-creation prototype
 index.html             App entry
 ```

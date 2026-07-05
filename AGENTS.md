@@ -47,9 +47,9 @@ Common variables:
 
 Active files:
 
-- `unit2-canvas-cocreation/src/App.tsx`
-- `unit2-canvas-cocreation/src/KeywordNoteView.tsx`
-- `unit2-canvas-cocreation/src/Transcript.tsx`
+- `canvas-cocreation/src/App.tsx`
+- `canvas-cocreation/src/KeywordNoteView.tsx`
+- `canvas-cocreation/src/Transcript.tsx`
 - `services/llm/cocreate.ts`
 - `server/api-plugin.ts`
 - `server/agents.ts`
