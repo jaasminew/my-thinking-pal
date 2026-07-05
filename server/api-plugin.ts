@@ -1,13 +1,12 @@
 import type { Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import crypto from 'node:crypto'
 import { getDispatcher } from './proxy'
 import { runClaude, runCodex } from './agents'
 import { tavilySearch, fetchOgImage } from './search'
 import { fetchUrlMeta } from './url-meta'
 import type { UrlCard } from '../services/llm/cocreate-types'
 
-// ---- Tier-2 co-creation (Unit 2) -------------------------------------------
+// ---- Ambient co-creation ----------------------------------------------------
 // Strong model that BUILDS ON the user's thinking — never rewrites it. It gets
 // the full transcript + the keyword note's contents as context, REASONS about
 // what the user is reaching for, and replies with concise bullets (Figma model).
@@ -248,62 +247,6 @@ export function apiPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url || ''
-
-        // --- POST /api/highlight: text -> phrases to highlight ---
-        if (url.startsWith('/api/highlight') && req.method === 'POST') {
-          try {
-            const { systemPrompt, text, provider, model } = await readBody(req)
-
-            const cfg = (LLM[provider] || LLM.groq)()
-            // Client-supplied model id (Groq picker) overrides the .env default.
-            if (model) cfg.model = model
-            if (cfg.proxy && !cfg.key) {
-              return json(res, 400, { error: `${provider} needs an API key in .env`, phrases: [] })
-            }
-
-            const reasoningParams = getReasoningParams(cfg.model)
-            const sys =
-              `${systemPrompt}\n\n` +
-              `Return ONLY the exact phrases to highlight, copied verbatim from the text below, ` +
-              `one phrase per line. No numbering, no quotes, no commentary. ` +
-              `If nothing is worth highlighting, return nothing.`
-            const userText = /qwen3/i.test(cfg.model) ? `${text}\n\n/no_think` : text
-
-            const t0 = performance.now()
-            const r = await fetch(`${cfg.base}/chat/completions`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${cfg.key}`
-              },
-              body: JSON.stringify({
-                model: cfg.model,
-                temperature: 0.2,
-                max_tokens: 200,
-                ...reasoningParams,
-                messages: [
-                  { role: 'system', content: sys },
-                  { role: 'user', content: userText }
-                ]
-              }),
-              // Only route hosted providers through the proxy dispatcher.
-              ...(cfg.proxy ? { dispatcher: getDispatcher() } : {})
-            } as any)
-
-            const serverMs = Math.round(performance.now() - t0)
-            if (!r.ok) {
-              const body = await r.text()
-              return json(res, 502, { error: `LLM ${r.status}: ${body.slice(0, 300)}`, serverMs, phrases: [] })
-            }
-            const data: any = await r.json()
-            const raw = data?.choices?.[0]?.message?.content || ''
-            // Drop any Qwen reasoning block that slipped through.
-            const content = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-            return json(res, 200, { phrases: parsePhrases(content), serverMs, model: cfg.model })
-          } catch (e: any) {
-            return json(res, 500, { error: e?.message || String(e), phrases: [] })
-          }
-        }
 
         // --- POST /api/clean-transcript: raw STT chunk -> cleaned marked text ---
         if (url.startsWith('/api/clean-transcript') && req.method === 'POST') {
@@ -636,59 +579,11 @@ export function apiPlugin(): Plugin {
           return json(res, 200, await fetchUrlMeta(target))
         }
 
-        // --- GET /api/deepgram-key: hand the browser a key for direct WS ---
-        // Throwaway-prototype shortcut. NOT production-safe (exposes the key to
-        // the page). Fine for a local single-user demo; replace with temp-token
-        // minting before anything ships.
-        if (url.startsWith('/api/deepgram-key')) {
-          return json(res, 200, { key: process.env.DEEPGRAM_API_KEY || '' })
-        }
-
         // Soniox real-time multilingual key + model (same throwaway shortcut).
         if (url.startsWith('/api/soniox-key')) {
           return json(res, 200, {
             key: process.env.SONIOX_API_KEY || '',
             model: process.env.SONIOX_MODEL || 'stt-rt-v5'
-          })
-        }
-
-        // Speechmatics: mint a short-lived RT JWT (browser WS can't send headers).
-        if (url.startsWith('/api/speechmatics-token')) {
-          const rtUrl = process.env.SPEECHMATICS_RT_URL || 'wss://eu2.rt.speechmatics.com/v2'
-          const language = process.env.SPEECHMATICS_LANGUAGE || 'en'
-          const key = process.env.SPEECHMATICS_API_KEY
-          if (!key) return json(res, 200, { token: '', url: rtUrl, language })
-          try {
-            const r = await fetch('https://mp.speechmatics.com/v1/api_keys?type=rt', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-              body: JSON.stringify({ ttl: 3600 }),
-              dispatcher: getDispatcher()
-            } as any)
-            const d: any = await r.json()
-            return json(res, 200, { token: d?.key_value || '', url: rtUrl, language })
-          } catch (e: any) {
-            return json(res, 500, { token: '', url: rtUrl, language, error: e?.message })
-          }
-        }
-
-        // iFlytek 讯飞 RTASR: build the HMAC-signed wss URL. Proxy-free in CN.
-        if (url.startsWith('/api/iflytek-url')) {
-          const appid = process.env.IFLYTEK_APPID
-          const apiKey = process.env.IFLYTEK_API_KEY
-          if (!appid || !apiKey) return json(res, 200, { url: '' })
-          const ts = Math.floor(Date.now() / 1000).toString()
-          const md5 = crypto.createHash('md5').update(appid + ts).digest('hex')
-          const signa = crypto.createHmac('sha1', apiKey).update(md5).digest('base64')
-          const wss = `wss://rtasr.xfyun.cn/v1/ws?appid=${appid}&ts=${ts}&signa=${encodeURIComponent(signa)}`
-          return json(res, 200, { url: wss })
-        }
-
-        // Gemini Live (experimental combined transcript+highlight) key + model.
-        if (url.startsWith('/api/gemini-key')) {
-          return json(res, 200, {
-            key: process.env.GEMINI_API_KEY || '',
-            model: process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-live-001'
           })
         }
 
@@ -909,19 +804,6 @@ async function streamOpenModel(
   }
   if (line) emitLine(line)
   return searchQuery
-}
-
-function parsePhrases(s: string): string[] {
-  const out = s
-    .split('\n')
-    .map((l) =>
-      l
-        .replace(/^[\s\-*\d.)\]]+/, '') // strip bullets / numbering
-        .replace(/^["'`]+|["'`]+$/g, '') // strip wrapping quotes
-        .trim()
-    )
-    .filter((l) => l.length > 1)
-  return [...new Set(out)]
 }
 
 function getReasoningParams(model: string): Record<string, string | boolean> {
