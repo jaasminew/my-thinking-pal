@@ -137,6 +137,39 @@ export class CleanupEngine {
     }
   }
 
+  /** Apply a whole-section edit (contentEditable blur). Entries arrive in DOM
+   *  order; ones carrying a known line id keep that line's ts, new/split lines
+   *  inherit the ts of the line above so drag-anchoring still works. An emptied
+   *  frozen section is removed. `sectionId` null targets the open tail. */
+  applyBlockEdit(sectionId: string | null, header: string | null, entries: { id?: string; text: string }[]) {
+    const sec = sectionId ? this.frozenSections.find((s) => s.id === sectionId) : null
+    if (sectionId && !sec) return
+    const old = sec ? sec.lines : this.tail
+    const byId = new Map(old.map((l) => [l.id, l]))
+    const next: Line[] = []
+    let lastTs = old[0]?.ts ?? Date.now()
+    for (const e of entries) {
+      const text = e.text.trim()
+      if (!text) continue
+      const existing = e.id ? byId.get(e.id) : undefined
+      if (existing) {
+        existing.text = text
+        next.push(existing)
+        lastTs = existing.ts
+      } else {
+        next.push({ id: uid('l'), text, ts: lastTs })
+      }
+    }
+    if (sec) {
+      sec.lines = next
+      if (header != null && header.trim()) sec.header = header.trim()
+      if (next.length === 0) this.frozenSections = this.frozenSections.filter((s) => s.id !== sec.id)
+    } else {
+      this.tail = next
+    }
+    this.onRender()
+  }
+
   private setStatus(s: EngineStatus) {
     this.onStatus(s)
   }

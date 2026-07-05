@@ -154,31 +154,22 @@ body { background: var(--bg); color: var(--ink); }
 .transcript .clean-block.tail { color: #9a9aa0; }
 .transcript .section-header {
   margin: 0 0 8px; font-size: 13px; font-weight: 700; letter-spacing: .01em;
-  color: #3a3a3c; cursor: text; border-radius: 4px; padding: 1px 3px; display: inline-block;
+  color: #3a3a3c; cursor: text;
 }
-.transcript .section-header:hover { background: #0000000a; }
 .transcript .section-header.pending { color: var(--muted); font-weight: 400; font-style: italic; cursor: default; }
-.transcript .section-header.pending:hover { background: none; }
-.transcript .section-header-input {
-  margin: 0 0 8px; font-size: 13px; font-weight: 700; color: #3a3a3c;
-  border: 0; border-bottom: 1.5px solid var(--accent); outline: none;
-  background: transparent; padding: 1px 2px; width: 100%; font-family: inherit;
-}
-/* Cleaned thought block: preserve the model's line breaks / bullet layout. */
-/* Text-editor feel: an I-beam on hover, no line highlight. Drag = select a
-   keyword, plain click = edit the line. */
-.transcript .clean-block { white-space: pre-wrap; margin: 0 0 10px; border-radius: 5px; padding: 1px 3px; cursor: text; }
+/* Cleaned thought block: preserve the model's line breaks / bullet layout.
+   Plain flowing text — no per-line box; the section edits as one block. */
+.transcript .clean-block { white-space: pre-wrap; margin: 0 0 10px; cursor: text; }
+/* Editing (double-click): same layout as display, no box or border — the text
+   just turns from gray to ink and the caret blinks. */
+.transcript .tsection.editing { outline: none; color: var(--ink); caret-color: var(--ink); }
+.transcript .tsection.editing .clean-block.tail { color: var(--ink); }
+.transcript .tsection.editing .section-header { color: var(--ink); }
 /* A phrase already dragged onto the canvas: faint orange mark so it's
    recognizable in the transcript; hovering it links to its keyword note. */
 .transcript .kw-hl {
   background: var(--accent-soft); color: inherit;
   border-radius: 3px; padding: 0 1px; cursor: text;
-}
-.transcript .block-edit {
-  display: block; width: 100%; margin: 0 0 10px; resize: vertical;
-  font: inherit; font-size: 16px; line-height: 1.85; color: var(--ink);
-  border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px;
-  background: #fff; outline: none; caret-color: var(--accent);
 }
 .transcript .status-caption { color: var(--muted); font-style: italic; font-size: 13px; margin-top: 6px; }
 .transcript .placeholder { color: var(--muted); font-size: 14px; line-height: 1.6; }

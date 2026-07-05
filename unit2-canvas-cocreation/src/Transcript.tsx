@@ -49,7 +49,7 @@ function attachDragTs(e: React.DragEvent) {
 const snapFrozen = (f: Section[]): Section[] => f.map((s) => ({ ...s, lines: s.lines.map((l) => ({ ...l })) }))
 const snapTail = (t: Line[]): Line[] => t.map((l) => ({ ...l }))
 
-type EditTarget = { kind: 'line'; lineId: string } | { kind: 'header'; sid: string } | null
+type EditTarget = { kind: 'section'; sid: string } | { kind: 'tail' } | null
 
 /** A dragged-out phrase to faintly mark in the transcript, linked to its note. */
 export type Highlight = { noteId: string; ts: number; text: string }
@@ -80,7 +80,11 @@ export function Transcript({
   const [status, setStatus] = useState<EngineStatus>('idle')
   const [err, setErr] = useState('')
   const [editing, setEditing] = useState<EditTarget>(null)
-  const [draft, setDraft] = useState('')
+  // Bumped when an edit ends so the section remounts and React re-owns the DOM
+  // the browser mutated while it was contentEditable.
+  const [editEpoch, setEditEpoch] = useState(0)
+  const cancelEditRef = useRef(false)
+  const editElRef = useRef<HTMLElement | null>(null)
 
   const engineRef = useRef<CleanupEngine | null>(null)
   const sttRef = useRef<STTProvider | null>(null)
@@ -181,46 +185,37 @@ export function Transcript({
     if (el) el.scrollTop = el.scrollHeight
   }, [frozen, tail, status])
 
-  function startEdit(target: EditTarget, current: string) {
-    setEditing(target)
-    setDraft(current)
-  }
-  function commitEdit() {
-    const t = editing
-    const eng = engineRef.current
-    if (t && eng) {
-      if (t.kind === 'line') eng.editLine(t.lineId, draft)
-      else eng.editHeader(t.sid, draft)
-    }
-    setEditing(null)
-  }
+  // Focus the section once it turns contentEditable so the caret starts blinking
+  // right where the user double-clicked (the browser keeps that selection).
+  useEffect(() => {
+    if (editing && editElRef.current) editElRef.current.focus()
+  }, [editing])
 
-  function renderHeader(sec: Section) {
-    if (editing?.kind === 'header' && editing.sid === sec.id) {
-      return (
-        <input
-          className="section-header-input"
-          value={draft}
-          autoFocus
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitEdit}
-          onKeyDown={(e) => {
-            if (isImeEvent(e)) return
-            if (e.key === 'Enter') commitEdit()
-            if (e.key === 'Escape') setEditing(null)
-          }}
-        />
-      )
+  // Read the edited DOM back into the engine: the header (if any) plus every
+  // line block in order. Blocks the browser cloned on Enter can carry a
+  // duplicate line id — only the first occurrence keeps it, the rest count as
+  // new lines.
+  function commitSectionEdit(el: HTMLElement, target: Exclude<EditTarget, null>) {
+    const eng = engineRef.current
+    if (eng) {
+      const header = target.kind === 'section' ? (el.querySelector('.section-header')?.textContent ?? null) : null
+      const seen = new Set<string>()
+      const entries = Array.from(el.querySelectorAll<HTMLElement>('.clean-block')).map((b) => {
+        const id = b.dataset.lineId
+        const text = b.textContent ?? ''
+        if (id && !seen.has(id)) {
+          seen.add(id)
+          return { id, text }
+        }
+        return { text }
+      })
+      eng.applyBlockEdit(target.kind === 'section' ? target.sid : null, header, entries)
     }
-    return (
-      <h4
-        className="section-header"
-        title="Click to rename this section"
-        onClick={() => startEdit({ kind: 'header', sid: sec.id }, sec.header)}
-      >
-        {sec.header}
-      </h4>
-    )
+    endEdit()
+  }
+  function endEdit() {
+    setEditing(null)
+    setEditEpoch((n) => n + 1)
   }
 
   // Split a cleaned line into plain text + faintly-marked spans for every
@@ -256,42 +251,60 @@ export function Transcript({
     return out
   }
 
-  // A single idea line. Double-click to edit — single click / drag-select stays
-  // free so any phrase can be selected and dragged onto the canvas. `open` = a
+  // A single idea line. Plain text — single click / drag-select stays free so
+  // any phrase can be selected and dragged onto the canvas. `open` = a
   // still-in-progress tail line (rendered fainter, not yet organized).
   function renderLine(line: Line, open: boolean) {
-    if (editing?.kind === 'line' && editing.lineId === line.id) {
-      return (
-        <textarea
-          key={line.id}
-          className="block-edit"
-          value={draft}
-          autoFocus
-          rows={Math.max(2, draft.split('\n').length)}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitEdit}
-          onKeyDown={(e) => {
-            if (isImeEvent(e)) return
-            if (e.key === 'Escape') setEditing(null)
-          }}
-        />
-      )
-    }
     return (
       <div
         key={line.id}
         className={`clean-block${open ? ' tail' : ''}`}
         data-ts={line.ts}
-        onClick={() => {
-          // A drag that selected text is a "grab a keyword" gesture, not an edit
-          // intent — only a plain click (collapsed caret) opens the editor.
-          const sel = window.getSelection()
-          if (sel && !sel.isCollapsed) return
-          startEdit({ kind: 'line', lineId: line.id }, line.text)
-        }}
+        data-line-id={line.id}
       >
         {renderLineText(cleanText(line.text), line.ts)}
       </div>
+    )
+  }
+
+  // A section reads as one text block. Double-click makes the whole section
+  // (header + lines) contentEditable in place — same layout, text turns from
+  // gray to ink with a live caret. Blur commits, Escape discards. `sec` null =
+  // the open tail.
+  function renderSection(sec: Section | null, lines: Line[]) {
+    const target: Exclude<EditTarget, null> = sec ? { kind: 'section', sid: sec.id } : { kind: 'tail' }
+    const isEditing =
+      sec ? editing?.kind === 'section' && editing.sid === sec.id : editing?.kind === 'tail'
+    return (
+      <section
+        key={`${sec ? sec.id : 'tail'}:${editEpoch}`}
+        className={`tsection${sec ? '' : ' open'}${isEditing ? ' editing' : ''}`}
+        ref={isEditing ? (el) => (editElRef.current = el) : undefined}
+        contentEditable={isEditing}
+        suppressContentEditableWarning
+        onDoubleClick={() => {
+          if (!isEditing) {
+            cancelEditRef.current = false
+            setEditing(target)
+          }
+        }}
+        onBlur={(e) => {
+          if (!isEditing) return
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return
+          if (cancelEditRef.current) endEdit()
+          else commitSectionEdit(e.currentTarget, target)
+        }}
+        onKeyDown={(e) => {
+          if (!isEditing || isImeEvent(e)) return
+          if (e.key === 'Escape') {
+            cancelEditRef.current = true
+            e.currentTarget.blur()
+          }
+        }}
+      >
+        {sec && <h4 className="section-header">{sec.header}</h4>}
+        {lines.map((l) => renderLine(l, !sec))}
+      </section>
     )
   }
 
@@ -302,22 +315,13 @@ export function Transcript({
     <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
       <div className="hint">
         {recording
-          ? 'Speak freely — thoughts are cleaned and organized into sections as you go. Select any text and drag it onto the canvas. Click a line to edit, click a header to rename.'
+          ? 'Speak freely — thoughts are cleaned and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a section to edit it.'
           : ''}
       </div>
 
-      {frozen.map((sec) => (
-        <section className="tsection" key={sec.id}>
-          {renderHeader(sec)}
-          {sec.lines.map((l) => renderLine(l, false))}
-        </section>
-      ))}
+      {frozen.map((sec) => renderSection(sec, sec.lines))}
 
-      {tail.length > 0 && (
-        <section className="tsection open">
-          {tail.map((l) => renderLine(l, true))}
-        </section>
-      )}
+      {tail.length > 0 && renderSection(null, tail)}
 
       {!hasContent && (
         <div className="placeholder">
