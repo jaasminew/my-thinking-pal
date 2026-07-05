@@ -85,6 +85,12 @@ export interface KeywordNote {
    * rolling 2min window). Typed/command notes have none.
    */
   originTs?: number
+  /**
+   * The exact phrase dragged out of the transcript, kept immutable (unlike
+   * `keyword`, which the user may later edit). Lets the transcript re-find and
+   * faintly mark its source text, and link a hover back to this note.
+   */
+  sourceText?: string
 }
 
 export const isBullet = (i: NoteItem): i is BulletItem => i.kind === 'bullet'

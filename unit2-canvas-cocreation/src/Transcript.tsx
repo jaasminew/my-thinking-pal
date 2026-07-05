@@ -51,16 +51,26 @@ const snapTail = (t: Line[]): Line[] => t.map((l) => ({ ...l }))
 
 type EditTarget = { kind: 'line'; lineId: string } | { kind: 'header'; sid: string } | null
 
+/** A dragged-out phrase to faintly mark in the transcript, linked to its note. */
+export type Highlight = { noteId: string; ts: number; text: string }
+
 export function Transcript({
   recording,
   onRawFinal,
-  storageSuffix = ''
+  storageSuffix = '',
+  highlights = [],
+  onHoverNote
 }: {
   recording: boolean
   /** Every final verbatim STT segment, timestamped — feeds the AI context window. */
   onRawFinal?: (text: string, ts: number) => void
   /** Per-idea-space persistence: '' keeps the original keys, '.<id>' scopes new spaces. */
   storageSuffix?: string
+  /** Phrases already dragged onto the canvas — each gets a faint orange mark. */
+  highlights?: Highlight[]
+  /** Hovering a marked phrase reports its note id (null on leave) so the canvas
+   *  can fade that note's header to orange. */
+  onHoverNote?: (noteId: string | null) => void
 }) {
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes;
@@ -213,6 +223,39 @@ export function Transcript({
     )
   }
 
+  // Split a cleaned line into plain text + faintly-marked spans for every
+  // dragged-out phrase anchored to this line (matched by the line's ts, then by
+  // substring). Overlaps are skipped; unmatched phrases (line edited since the
+  // drag) simply don't mark. Hovering a mark links back to its note.
+  function renderLineText(text: string, lineTs: number) {
+    const hits = highlights
+      .filter((h) => h.ts === lineTs && h.text)
+      .map((h) => ({ ...h, at: text.indexOf(h.text) }))
+      .filter((h) => h.at >= 0)
+      .sort((a, b) => a.at - b.at)
+    if (hits.length === 0) return text
+
+    const out: React.ReactNode[] = []
+    let cursor = 0
+    for (const h of hits) {
+      if (h.at < cursor) continue // overlaps a previous mark — skip
+      if (h.at > cursor) out.push(text.slice(cursor, h.at))
+      out.push(
+        <mark
+          key={h.noteId}
+          className="kw-hl"
+          onMouseEnter={() => onHoverNote?.(h.noteId)}
+          onMouseLeave={() => onHoverNote?.(null)}
+        >
+          {text.slice(h.at, h.at + h.text.length)}
+        </mark>
+      )
+      cursor = h.at + h.text.length
+    }
+    if (cursor < text.length) out.push(text.slice(cursor))
+    return out
+  }
+
   // A single idea line. Double-click to edit — single click / drag-select stays
   // free so any phrase can be selected and dragged onto the canvas. `open` = a
   // still-in-progress tail line (rendered fainter, not yet organized).
@@ -238,11 +281,16 @@ export function Transcript({
       <div
         key={line.id}
         className={`clean-block${open ? ' tail' : ''}`}
-        title="Double-click to edit"
         data-ts={line.ts}
-        onDoubleClick={() => startEdit({ kind: 'line', lineId: line.id }, line.text)}
+        onClick={() => {
+          // A drag that selected text is a "grab a keyword" gesture, not an edit
+          // intent — only a plain click (collapsed caret) opens the editor.
+          const sel = window.getSelection()
+          if (sel && !sel.isCollapsed) return
+          startEdit({ kind: 'line', lineId: line.id }, line.text)
+        }}
       >
-        {cleanText(line.text)}
+        {renderLineText(cleanText(line.text), line.ts)}
       </div>
     )
   }
@@ -254,7 +302,7 @@ export function Transcript({
     <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
       <div className="hint">
         {recording
-          ? 'Speak freely — thoughts are cleaned and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a line to edit, click a header to rename.'
+          ? 'Speak freely — thoughts are cleaned and organized into sections as you go. Select any text and drag it onto the canvas. Click a line to edit, click a header to rename.'
           : ''}
       </div>
 

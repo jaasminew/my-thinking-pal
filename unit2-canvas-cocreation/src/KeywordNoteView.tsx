@@ -251,6 +251,7 @@ function KeywordEditor({
 export function KeywordNoteView({
   note,
   selected,
+  hovered,
   onPointerDownNote,
   onKeywordEdit,
   onKeywordChange,
@@ -272,6 +273,8 @@ export function KeywordNoteView({
 }: {
   note: KeywordNote
   selected: boolean
+  /** The transcript phrase this note came from is hovered → fade header orange. */
+  hovered: boolean
   onPointerDownNote: (e: React.PointerEvent) => void
   onKeywordEdit: () => void
   onKeywordChange: (text: string) => void
@@ -609,8 +612,9 @@ export function KeywordNoteView({
           <i className="handle bl" /><i className="handle br" />
         </>
       )}
-      {/* keyword header (hand-circled in the design) */}
-      <div className="kw-header">
+      {/* keyword header — plain black text; fades to orange only while its
+          transcript source phrase is hovered */}
+      <div className={`kw-header ${hovered ? 'hovered' : ''}`}>
         {note.keywordEditing ? (
           <KeywordEditor value={note.keyword} onChange={onKeywordChange} onCommit={onKeywordCommit} />
         ) : (

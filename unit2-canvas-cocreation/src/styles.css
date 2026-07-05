@@ -165,8 +165,15 @@ body { background: var(--bg); color: var(--ink); }
   background: transparent; padding: 1px 2px; width: 100%; font-family: inherit;
 }
 /* Cleaned thought block: preserve the model's line breaks / bullet layout. */
-.transcript .clean-block { white-space: pre-wrap; margin: 0 0 10px; border-radius: 5px; padding: 1px 3px; }
-.transcript .clean-block:hover { background: #0000000a; }        /* double-click-to-edit affordance */
+/* Text-editor feel: an I-beam on hover, no line highlight. Drag = select a
+   keyword, plain click = edit the line. */
+.transcript .clean-block { white-space: pre-wrap; margin: 0 0 10px; border-radius: 5px; padding: 1px 3px; cursor: text; }
+/* A phrase already dragged onto the canvas: faint orange mark so it's
+   recognizable in the transcript; hovering it links to its keyword note. */
+.transcript .kw-hl {
+  background: var(--accent-soft); color: inherit;
+  border-radius: 3px; padding: 0 1px; cursor: text;
+}
 .transcript .block-edit {
   display: block; width: 100%; margin: 0 0 10px; resize: vertical;
   font: inherit; font-size: 16px; line-height: 1.85; color: var(--ink);
@@ -246,28 +253,27 @@ body { background: var(--bg); color: var(--ink); }
   border: 1px solid var(--accent); background: #ff7a4514;
 }
 
-/* keyword header — hand-circled in the design, approximated with an ellipse */
+/* keyword header — plain black text by default; fades to orange only while its
+   source phrase in the transcript is hovered (linking the two). */
 .kw-header { margin: 2px 4px 10px; }
 .kw-text {
   position: relative; display: inline-block; max-width: 100%;
-  color: var(--accent); font-weight: 700; font-size: 18px; padding: 2px 10px;
+  color: var(--ink); font-weight: 700; font-size: 18px; padding: 2px 10px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.4;
-  cursor: text;
+  cursor: text; transition: color .35s ease;
 }
-.kw-text::after {
-  content: ''; position: absolute; inset: -4px -6px;
-  border: 1.5px solid #2a2a2a; border-radius: 50%;
-  transform: rotate(-3deg); opacity: .8;
-}
+.kw-header.hovered .kw-text { color: var(--accent); }
 /* Starting a note = just a blinking cursor. No box, no underline, no placeholder. */
 .kw-input {
   display: inline-block; min-width: 120px; max-width: 100%;
-  color: var(--accent); font-weight: 700; font-size: 18px; line-height: 1.4;
+  color: var(--ink); font-weight: 700; font-size: 18px; line-height: 1.4;
   border: 0; outline: none; caret-color: var(--accent); cursor: text;
   background: transparent; padding: 2px 2px;
   white-space: pre-wrap; word-break: break-word;
   user-select: text; -webkit-user-select: text;
+  transition: color .35s ease;
 }
+.kw-header.hovered .kw-input { color: var(--accent); }
 
 /* one ordered flow of items: bullet rows + inline url cards */
 .items { margin: 0; padding: 0; }

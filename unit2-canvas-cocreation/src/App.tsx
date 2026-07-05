@@ -140,6 +140,9 @@ function CanvasSpace({
   const [images, setImages] = useState<CanvasImage[]>(() => loadJSON<CanvasImage[]>(k('images'), []))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null)
+  // The note whose transcript source phrase is currently hovered — its header
+  // fades to orange. null = every header stays plain black.
+  const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null)
   // Expanded view of an inline bullet image (click to open, Esc/click-away to
   // close). Shows the image large over a blurred scrim + its source url below.
   // The open/close uses a FLIP transition: the image grows from the clicked
@@ -760,7 +763,7 @@ function CanvasSpace({
       ...ns,
       {
         id, x, y, keyword: text, keywordEditing: false, aiRunning: false,
-        kept: [], rejected: [], lastFiredWords: 0,
+        kept: [], rejected: [], lastFiredWords: 0, sourceText: text,
         ...(Number.isFinite(originTs) ? { originTs } : {}),
         items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
       }
@@ -1021,9 +1024,22 @@ function CanvasSpace({
     void runAi(id, command)
   }
 
+  // Which transcript phrases to faintly mark: one per note born from a drag
+  // (keeps its immutable sourceText + the source line's ts). Deriving from notes
+  // means a deleted note's mark disappears on its own.
+  const highlights = notes
+    .filter((n) => n.sourceText && n.originTs !== undefined)
+    .map((n) => ({ noteId: n.id, ts: n.originTs as number, text: n.sourceText as string }))
+
   return (
     <>
-      <Transcript recording={recording} onRawFinal={onRawFinal} storageSuffix={storageSuffix} />
+      <Transcript
+        recording={recording}
+        onRawFinal={onRawFinal}
+        storageSuffix={storageSuffix}
+        highlights={highlights}
+        onHoverNote={setHoveredNoteId}
+      />
       <div
         className="canvas"
           ref={canvasRef}
@@ -1065,6 +1081,7 @@ function CanvasSpace({
               key={n.id}
               note={n}
               selected={selectedIds.has(n.id)}
+              hovered={hoveredNoteId === n.id}
               onPointerDownNote={onNotePointerDown(n.id)}
               onKeywordEdit={onKeywordEdit(n.id)}
               onKeywordChange={onKeywordChange(n.id)}
