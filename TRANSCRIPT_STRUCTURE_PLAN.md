@@ -38,7 +38,7 @@ tail: Line[]                // lines after the last frozen header (open topic)
 ```
 
 - **A "line" = one idea** emitted by cleanup (one idea per line). Lines are the
-  atomic unit of segmentation, so a topic switch **inside** a single 30s cleanup
+  atomic building block of segmentation, so a topic switch **inside** a single 30s cleanup
   is still splittable (split falls between lines, not only between 30s blocks).
 
 ## Triggers
@@ -84,7 +84,7 @@ Output (strict JSON — parsed, never printed to the UI):
 
 ## File-by-file changes
 
-- **`unit2-canvas-cocreation/src/cleanup-engine.ts`** (rewrite): new state machine
+- **`canvas-cocreation/src/cleanup-engine.ts`** (rewrite): new state machine
   (`frozenSections` + `tail`), 30s cleanup timer, 2min segmentation timer, stop
   flow; `applySegments()` moves tail lines into `frozenSections`. Remove the old
   `NEW_TOPIC` logic, `liveSection`, and pause-based firing.
@@ -97,13 +97,13 @@ Output (strict JSON — parsed, never printed to the UI):
   - `getReasoningParams`: return `reasoning_format: 'hidden'` for `gpt-oss-120b`.
 - **`services/llm/types.ts` + `client.ts`**: drop `newTopic`; add `requestSegment`
   + its request/result types.
-- **`unit2-canvas-cocreation/src/Transcript.tsx`**: render `frozenSections`
+- **`canvas-cocreation/src/Transcript.tsx`**: render `frozenSections`
   (header + lines) and `tail` (unnamed, current/faint styling); remove keyword
   highlight rendering + drag; keep drag-select; add an English status caption;
   keep double-click-line edit and click-header rename.
-- **`unit2-canvas-cocreation/src/App.tsx`**: remove highlight references; record
+- **`canvas-cocreation/src/App.tsx`**: remove highlight references; record
   start/stop already wired.
-- **`unit2-canvas-cocreation/src/styles.css`**: tail vs frozen styling, status
+- **`canvas-cocreation/src/styles.css`**: tail vs frozen styling, status
   caption; remove `.kw` highlight styles.
 
 ## Status captions (English)

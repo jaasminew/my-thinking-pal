@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { isImeEvent } from './ime'
 
-// Tier-3 command pill, floating at the bottom of the canvas. Left: the record
-// toggle (STT lives in Unit 1; here it's the capture affordance). Right: an
-// explicit command to the AI ("go search some voice-to-text products").
+// Tier-3 command pill, floating at the bottom of the canvas. Left: a capture
+// affordance placeholder. Right: an explicit command to the AI.
 export function CommandBar({
   recording,
   onToggleRecord,

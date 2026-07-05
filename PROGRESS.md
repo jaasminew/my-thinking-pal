@@ -41,13 +41,12 @@ and announce changes (see `shared-contract/README.md`).
 ## 4. Repo map
 
 - **Branches**
-  - `main` — the Unit 1 / Unit 2 web prototypes (the demo's base).
+  - `main` — the canvas web prototype (the demo's base).
   - `electron-client` — partner's production Electron rewrite (parked for the demo).
-  - `integrate-transcript` — **current working branch** (off `main`); Unit 1↔Unit 2
+  - `integrate-transcript` — **current working branch** (off `main`); transcript/canvas
     integration (see §6). Uncommitted as of this writing unless noted.
 - **Key directories**
-  - `unit1-stt-highlight/` — Unit 1: live STT → cleaned + highlighted transcript.
-  - `unit2-canvas-cocreation/` — Unit 2: canvas with keyword notes + AI co-creation.
+  - `canvas-cocreation/` — canvas with live transcript, keyword notes, and AI co-creation.
   - `services/stt/` — pluggable STT providers (Soniox, Speechmatics, iFlytek…).
   - `services/llm/` — LLM client + co-creation calls (browser → `/api/*`).
   - `server/api-plugin.ts` — the backend, currently a **Vite dev-server middleware**
@@ -75,15 +74,15 @@ and announce changes (see `shared-contract/README.md`).
 
 ## 6. What's done most recently (2026-07-01)
 
-Unit 2's left panel is a working live transcript (branch `integrate-transcript`),
+The canvas left panel is a working live transcript (branch `integrate-transcript`),
 built on an **append-only, sectioned** architecture. Two rounds of work:
 
-### 6a. Base integration (Unit 1 → Unit 2)
-- `unit2-canvas-cocreation/src/cleanup-engine.ts` — Unit 1's cleanup + `==highlight==`
+### 6a. Base integration
+- `canvas-cocreation/src/cleanup-engine.ts` — cleanup + `==highlight==`
   engine, ported in with **latency code removed**.
-- `unit2-canvas-cocreation/src/Transcript.tsx` — live Soniox STT feeds the engine;
+- `canvas-cocreation/src/Transcript.tsx` — live Soniox STT feeds the engine;
   cleaned thoughts render with `==marks==` as draggable `.kw` keywords.
-- `unit2-canvas-cocreation/src/App.tsx` — start/stop driven by Unit 2's existing
+- `canvas-cocreation/src/App.tsx` — start/stop driven by the existing
   record button (● bottom of canvas); live transcript fed to the AI as context
   (replaced the static `TRANSCRIPT_TEXT`).
 
@@ -117,7 +116,7 @@ yet exercised with a real mic. ⚠ restart `npm run dev` after server edits.
 
 ### 6d. AI co-creation switch (2026-07-02)
 
-Unit 2's ambient co-creation is now a user-controlled mode. A plain switch
+Canvas ambient co-creation is now a user-controlled mode. A plain switch
 labeled "AI co-creation mode" sits at the top-right of the canvas, default ON.
 
 - **OFF** suppresses the ambient every-20-words trigger AND aborts any
@@ -207,7 +206,7 @@ after any server edit; it does not hot-reload.
 ```bash
 npm install
 npm run dev          # Vite + the api middleware, on http://localhost:5173
-# Unit 1: http://localhost:5173/          Unit 2: http://localhost:5173/unit2.html
+# Canvas: http://localhost:5173/
 ```
 Requires `.env` with `SONIOX_API_KEY` + `GROQ_API_KEY` (+ `TAVILY_API_KEY` for web
 search). Both STT/LLM keys are present in the local `.env`.

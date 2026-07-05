@@ -30,7 +30,7 @@ _面向工程伙伴的技术文档。基于 `integrate-transcript` 分支当前�
 
 转写不是"把语音变成文字"这么简单。原始 STT 文本**从不直接展示**给用户——它太碎、太口语、带口水词。真正呈现的是一份**逐步结晶的书面化笔记**。
 
-实现上把"即时清洗"和"异步结构化"**解耦**成两个独立的节奏（`unit2-canvas-cocreation/src/cleanup-engine.ts`）：
+实现上把"即时清洗"和"异步结构化"**解耦**成两个独立的节奏（`canvas-cocreation/src/cleanup-engine.ts`）：
 
 ```
 原始语音

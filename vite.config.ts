@@ -2,8 +2,8 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { apiPlugin } from './server/api-plugin'
 
-// Single-process dev: Vite serves the frontend AND mounts the /api/* backend
-// (LLM proxy + Deepgram key) via apiPlugin. One `npm run dev`, HMR included.
+// Single-process dev: Vite serves the frontend and mounts the /api/* backend
+// for local co-creation experiments. One `npm run dev`, HMR included.
 export default defineConfig(({ mode }) => {
   // Load every var from .env into process.env so the Node-side plugin can read them.
   // Skip empty values so a blank line in .env doesn't wipe a var that launch.json
@@ -15,6 +15,5 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), apiPlugin()],
     server: { port: 5173, open: true }
-    // index.html serves Unit 2 (the co-creation canvas) at the root path.
   }
 })

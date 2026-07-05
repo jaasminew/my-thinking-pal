@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 
-// Spawn the local coding-agent CLIs in HEADLESS mode so Unit 2 can route Tier-2
+// Spawn the local coding-agent CLIs in HEADLESS mode so the canvas can route
 // co-creation through your *subscription* (Claude / ChatGPT) instead of a paid
 // per-token API key. The browser never sees any of this — it only calls
 // /api/cocreate, which calls these.

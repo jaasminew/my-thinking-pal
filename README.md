@@ -1,8 +1,8 @@
-# Thinking Pal Units
+# Thinking Pal Canvas
 
-Prototype units for **My Thinking Pal**, a real-time thinking workspace for creators.
-These pages are not production architecture; they are test rigs for interaction feel,
-model choice, latency, and prompt behavior.
+Prototype for **My Thinking Pal**, a real-time thinking workspace for creators.
+This is not production architecture; it is a test rig for canvas interaction feel,
+model choice, search cards, latency, and prompt behavior.
 
 ## Quick Start
 
@@ -14,58 +14,7 @@ npm run dev
 
 Open:
 
-- Unit 1: http://127.0.0.1:5173/
-- Unit 2: http://127.0.0.1:5173/unit2.html
-
-Use Chrome for microphone / tab-audio capture.
-
-## Environment
-
-Fill only the providers you are testing in `.env`.
-
-Required for the current Unit 1 happy path:
-
-```bash
-SONIOX_API_KEY=...
-GROQ_API_KEY=...
-```
-
-Optional in China / proxied networks:
-
-```bash
-HTTPS_PROXY=http://127.0.0.1:7890
-AGENT_PROXY=http://127.0.0.1:7890
-```
-
-Do not commit `.env`. It is intentionally gitignored.
-
-## Unit 1 - STT To Structured Thinking Notes
-
-Current workflow:
-
-1. Browser captures mic / tab audio.
-2. Soniox produces raw streaming STT.
-3. Raw STT is **not displayed**.
-4. After a natural pause and minimum chunk threshold, the new raw chunk goes to Groq.
-5. Groq updates one visible, concise, structured thinking note.
-6. The UI renders only Groq's cleaned note; `==highlighted ideas==` become highlights.
-
-Important behavior:
-
-- The visible note is replaced with the updated structured note each model call.
-- Raw STT chunks are not resent as raw text.
-- Existing cleaned notes are sent as context so the model can merge, dedupe, and revise.
-- The output should match the user's dominant language.
-- The default model is `openai/gpt-oss-20b`; `qwen/qwen3.6-27b` also works.
-
-Useful controls:
-
-- `Audio source`: mic, tab audio, or both.
-- `STT provider`: Soniox is the preferred default.
-- `Groq model`: switch between GPT-OSS, Qwen, Llama, etc.
-- `Pause`: default `1500ms`.
-- `Minimum chunk`: prevents tiny speech fragments from being sent to the model.
-- `System prompt`: controls how raw speech is converted into structured notes.
+- Canvas co-creation: http://127.0.0.1:5173/
 
 Validation:
 
@@ -73,78 +22,59 @@ Validation:
 npm run build
 ```
 
-API smoke test:
+## Environment
 
-```bash
-curl -sS http://127.0.0.1:5173/api/clean-transcript \
-  -H 'Content-Type: application/json' \
-  --data '{
-    "provider":"groq",
-    "model":"qwen/qwen3.6-27b",
-    "systemPrompt":"You turn rough live STT into concise structured thinking notes. Match the user language. Mark key ideas with ==double equals==.",
-    "existingNotes":"",
-    "rawText":"qwen 三点六做得很好 但是它输出的语言没有匹配用户"
-  }'
-```
+Fill only the providers you are testing in `.env`. Do not commit `.env`; it is
+intentionally gitignored.
 
-Expected shape:
+Common variables:
 
-```json
-{"markedText":"* ==Qwen 3.6 表现良好==，但输出语言需要匹配用户输入"}
-```
+- `CLAUDE_CODE_OAUTH_TOKEN`: Claude Code subscription route via local CLI.
+- `TAVILY_API_KEY`: web-search inspiration cards.
+- `GROQ_API_KEY`: hosted open-model backend for `Open + Tavily`.
+- `CEREBRAS_API_KEY`: optional hosted open-model backend.
+- `OLLAMA_BASE_URL` / `OLLAMA_MODEL`: local open-model backend.
+- `HTTPS_PROXY`: hosted API proxy when needed.
+- `AGENT_PROXY`: proxy override for Claude/Codex CLI calls.
 
-## Unit 2 - Canvas Co-Creation
+## Canvas Co-Creation
 
-Unit 2 is a working canvas interaction prototype:
+The app is a working canvas interaction prototype:
 
 - Static transcript on the left.
 - Canvas on the right.
 - Drag highlighted transcript phrases onto the canvas.
 - Click blank canvas to create a freeform note.
-- Human notes are editable.
+- Human notes are editable and always treated as kept.
 - AI appends adjacent suggestions, never overwrites human text.
 - Hover AI suggestions or URL cards for keep / reject.
-- Bottom command bar tests Tier-3 explicit commands and web-search inspiration.
+- Bottom command bar tests explicit commands and web-search inspiration.
 
-Open:
-
-```bash
-npm run dev
-# http://127.0.0.1:5173/unit2.html
-```
-
-Backends:
+Available backends:
 
 - `Claude Code`: subscription route via local Claude CLI.
 - `Codex`: subscription route via local Codex CLI.
 - `Open + Tavily`: Groq / Ollama + Tavily search.
 
-Unit 2 currently uses a custom absolute-positioned canvas UI. `tldraw` is installed,
-but the active prototype is not wired to tldraw yet.
+The active prototype uses a custom absolute-positioned canvas UI. `tldraw` is
+installed, but the app is not wired to tldraw yet.
 
 ## Project Layout
 
 ```text
 services/
-  stt/                 Shared STT adapters and audio-source helpers
-  llm/                 Browser clients for /api/highlight, /api/clean-transcript, /api/cocreate
+  llm/                 Browser client for /api/cocreate
 server/
-  api-plugin.ts        Vite backend: provider keys, Groq/Cerebras proxy, STT key endpoints
-  agents.ts            Claude Code / Codex CLI bridge for Unit 2
-  search.ts            Tavily search bridge for Unit 2
-unit1-stt-highlight/
-  src/cleanup.ts       Hidden raw STT -> evolving structured note engine
-  src/render.ts        Renders ==highlight== markers
-unit2-canvas-cocreation/
+  api-plugin.ts        Vite backend: Groq/Cerebras/Ollama proxy and /api/cocreate
+  agents.ts            Claude Code / Codex CLI bridge
+  search.ts            Tavily search bridge
+canvas-cocreation/
   src/App.tsx          Canvas co-creation prototype
-index.html             Unit 1 entry
-unit2.html             Unit 2 entry
+index.html             App entry
 ```
 
 ## Notes For Partners
 
 - This repo intentionally keeps the prototype simple: Vite serves frontend and local API routes in one process.
-- Browser code never reads provider keys directly except local prototype STT key endpoints.
-- Production should replace local key endpoints with temporary-token minting.
-- Do not reintroduce raw transcript rendering in Unit 1 unless explicitly testing raw STT quality.
-- Keep the model output visible only after server-side sanitization; reasoning leaks are rejected.
+- Browser code should not read provider keys directly; hosted model keys stay in the local API layer.
+- AI suggestions should remain adjacent, visually distinct, and keep/reject-able.
