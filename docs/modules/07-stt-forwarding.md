@@ -34,7 +34,12 @@ sequenceDiagram
     Go->>STT: 转发音频
     STT-->>Go: interim / final transcript (+ 语种)
     Go-->>Client: transcript 事件
-    Client->>Client: 渲染 transcript 面板 + 喂 agent 上下文
+    alt interim（未定稿）
+      Client->>Client: 仅本地实时灰字，不入 CRDT
+    else final（定稿）
+      Client->>Client: append 到 transcript CRDT（持久化 + 同步）
+    end
+    Client->>Client: 喂 agent 上下文
   end
   Client->>Go: close
   Go->>STT: close
@@ -46,7 +51,8 @@ sequenceDiagram
 - `getUserMedia({ audio: true })` → `AudioWorklet` / `MediaRecorder` 取帧。
 - 编码：优先 PCM16（16kHz 单声道）或上游支持的 Opus。
 - 经 `/stt` WS 上行；接收 interim（灰字实时）+ final（定稿）。
-- 定稿文本替换 `Transcript.tsx` 的静态占位（`LINES`/`TRANSCRIPT_TEXT`），并作为 agent 的 `transcriptWindow`（见现有 `App.tsx` 用法）。
+- **持久化边界**：interim 仅渲染为本地实时灰字（本地态）；**final 段落 append 到 transcript CRDT**（模块 04 的 `transcript` 数组），从而与画布一起持久化、跨端同步、可就地编辑。
+- transcript 文本同时作为 agent 的 `transcriptWindow`（见现有 `App.tsx` 用法）。
 
 ## 7.5 服务端消息（`/stt`）
 

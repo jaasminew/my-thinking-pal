@@ -13,24 +13,47 @@
 
 ## 4.2 CRDT 文档结构（Yjs）
 
+**一个 board = 一次思考会话 = transcript + 画布笔记**，两者同属一个 Yjs 文档、一起持久化与同步。transcript 不是临时上下文，而是会话的核心资产（且现有原型里 transcript 段落可就地编辑）。
+
 ```text
 doc
-├─ meta   : Y.Map    { title: string, createdAt: number, schemaVersion: number }
-└─ notes  : Y.Map<noteId, Y.Map>
-             ├─ x        : number
-             ├─ y        : number
-             ├─ keyword  : string
-             ├─ bullets  : Y.Array<Y.Map>
-             │              { id: string,
-             │                origin: 'human' | 'ai',
-             │                text: Y.Text,
-             │                status: 'pending' | 'kept',
-             │                fireId?: string }
-             ├─ cards    : Y.Array<Y.Map>
-             │              { id, title, url, snippet?, image?, status }
-             ├─ kept     : Y.Array<string>
-             └─ rejected : Y.Array<string>
+├─ meta       : Y.Map    { title: string, createdAt: number, schemaVersion: number }
+├─ transcript : Y.Array<Y.Map>            // 有序的“定稿”转写段落（interim 不入）
+│                ├─ id       : string
+│                ├─ text     : Y.Text      // 可就地编辑、协作合并
+│                ├─ tStart   : number      // 相对会话起点的毫秒
+│                ├─ tEnd     : number
+│                ├─ lang     : string       // STT 返回的语种（自动）
+│                ├─ speaker? : string       // 预留（多说话人/后期）
+│                └─ marks?   : Y.Array<{ start, end, label? }>  // 关键词高亮范围
+└─ notes      : Y.Map<noteId, Y.Map>
+                ├─ x        : number
+                ├─ y        : number
+                ├─ keyword  : string
+                ├─ srcSeg?  : string        // 溯源：由哪条 transcript 段落拖拽而来
+                ├─ bullets  : Y.Array<Y.Map>
+                │              { id: string,
+                │                origin: 'human' | 'ai',
+                │                text: Y.Text,
+                │                status: 'pending' | 'kept',
+                │                fireId?: string }
+                ├─ cards    : Y.Array<Y.Map>
+                │              { id, title, url, snippet?, image?, status }
+                ├─ kept     : Y.Array<string>
+                └─ rejected : Y.Array<string>
 ```
+
+### transcript 设计要点
+
+- **只持久化定稿（final）段落**：STT 的 interim（实时灰字）是本地瞬态，不入 CRDT；某段 `final` 时才 append 到 `transcript`（模块 07）。
+- `text` 用 `Y.Text`：支持用户就地纠正转写错误，并可多端/多人协作合并（对应现有 "Edit transcript sections in place"）。
+- `marks`：关键词高亮范围（现有 `<mark className="kw">` 的可拖拽短语），可由客户端规则或 agent 标注；纯本地阶段可省略、运行时派生。
+- `notes[].srcSeg`：可选溯源，记录某 note 由哪条 transcript 段落拖拽而来，便于双向定位（点 note 跳到来源、点段落看衍生笔记）。
+- **体量与压缩**：长会话下 `transcript` 会增长，但与画布共用同一套快照压缩机制（模块 05）即可控制 update 日志体积；若单会话超长（如数小时连续语音），可选升级为"transcript 独立 Yjs 文档"（见 4.2b）。
+
+### 4.2b 可选：超长会话拆分文档
+
+默认 transcript 与画布同文档（原子同步、模型简单）。当出现超长连续语音导致文档过大时，可拆成两个 Yjs 文档：`board:<id>:canvas` 与 `board:<id>:transcript`，各自同步与压缩，`notes[].srcSeg` 跨文档引用段落 id。首版不拆，作为规模化预案。
 
 ### 进 / 不进 CRDT 对照（对照现有 `canvas-types.ts`）
 
@@ -46,6 +69,9 @@ doc
 | `aiRunning` | 顶层 | **本地态** |
 | `lastFiredWords` | 顶层 | **本地态**（触发器计数） |
 | `selectedIds` / `marquee` | App 顶层 | **本地态**（多人协作用 awareness） |
+| transcript **定稿段落** | `Transcript.tsx` 静态 `LINES` | CRDT（`transcript`） |
+| transcript **interim（实时灰字）** | — | **本地态**（未定稿不入 CRDT） |
+| `录音中(recording)` | `App.tsx` 顶层 | **本地态** |
 
 ### 关于 `bullets[].text` 用 Y.Text
 
@@ -58,11 +84,29 @@ doc
 
 ```ts
 // packages/core/model.ts
+export interface BoardView {
+  transcript: TranscriptSegmentView[]   // 定稿段落（CRDT）
+  interim?: string                      // 实时灰字（本地态，未定稿）
+  notes: NoteView[]
+}
+
+export interface TranscriptSegmentView {
+  id: string
+  text: string
+  tStart: number
+  tEnd: number
+  lang: string
+  speaker?: string
+  marks?: { start: number; end: number; label?: string }[]
+  editing?: boolean // 本地态：就地编辑中
+}
+
 export interface NoteView {
   id: string
   x: number
   y: number
   keyword: string
+  srcSeg?: string          // 溯源到 transcript 段落
   bullets: BulletView[]
   cards: CardView[]
   kept: string[]
