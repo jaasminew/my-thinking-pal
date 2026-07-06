@@ -24,6 +24,12 @@ const COCREATE_SYSTEM =
   `and what they KEPT (liked) / REJECTED (disliked) from your earlier suggestions — kept and ` +
   `rejected entries may carry "[offered because: …]" tags showing why each was offered; use ` +
   `them to learn which KINDS of help this user wants, not just which texts. ` +
+  `You may also receive HIGHLIGHTS extracted from the conversation, each tagged by kind — ` +
+  `judgment, objection, example, or decision (with speaker tags in multi-speaker sessions). ` +
+  `Weight your contribution by the kind of thought you respond to: an objection wants ` +
+  `counter-evidence or a resolution path; a judgment wants supporting or challenging evidence; ` +
+  `an example wants the general principle behind it; a decision wants consequences or execution ` +
+  `risks. Never mention these tags. ` +
   `Work in two steps. ` +
   `STEP 1 — DIAGNOSE: find the ONE spot in the note that most needs outside input right now ` +
   `(an unsupported claim, a vague idea needing a concrete real-world case, a stalled direction ` +
@@ -56,6 +62,70 @@ const COMMAND_SYSTEM =
   `You are an assistant inside a keyword note on a thinking canvas. The user gives an ` +
   `explicit command, with the transcript and their notes as context. Carry it out and ` +
   `reply with ONE concise bullet (≤ 14 words) starting with "- ". No preamble, no extra lines.`
+
+// ---- Tier-3 command CHAT (select text → bubble → side panel) -----------------
+// A conversational assistant, not the cocreate bullet format: it answers in
+// prose and may propose canvas actions via the ACTION line protocol below.
+// Actions are structure smuggled through a text-only stream (the CLIs emit
+// plain text) — the server strips ACTION lines out and forwards them as typed
+// NDJSON events; the user only ever sees buttons.
+const COMMAND_CHAT_SYSTEM =
+  `You are a contextual AI assistant in a chat side panel of a "thinking canvas" app. ` +
+  `The user summoned you from text they selected in one of their keyword notes (or from a ` +
+  `command box). You may receive: the SELECTED TEXT (your primary referent), the source ` +
+  `note's keyword and bullets, reaction signals (KEPT / REJECTED), and a 1-minute window ` +
+  `of the user's spoken transcript. ` +
+  `Answer conversationally and concretely; keep replies short and useful. Match the ` +
+  `user's language. Never rewrite or restate their content — the canvas belongs to them. ` +
+  `When, and only when, the user's request implies ADDING something to the canvas, append ` +
+  `proposal lines AFTER your prose, each on its own line, at most 4 per reply, exactly: ` +
+  `ACTION: {"type":"insert-bullet","text":"<one concise bullet, ≤25 words>"} ` +
+  `ACTION: {"type":"add-card","title":"<page title>","url":"https://…","snippet":"<one line>"} ` +
+  `ACTION: {"type":"append-image","caption":"<≤12 words naming what the image shows>","url":"https://<PAGE url, not an image file>","title":"<case name>"} ` +
+  `ACTION: {"type":"create-note","keyword":"<2-5 word header>","bullets":["<bullet>","<bullet>"]} ` +
+  `The JSON must be valid and single-line; one action per line; never mention these lines ` +
+  `in your prose (the user sees them as buttons). Card/image URLs must be REAL pages you ` +
+  `found via search or genuinely know — never invent URLs. Do not reveal reasoning.`
+
+// CLI providers have a native web search tool; make them actually use it when
+// the user asks for anything current, and keep proposed URLs grounded in it.
+const COMMAND_CHAT_CLI_SEARCH =
+  `\n\nYou have a web search tool. When the user asks for products, examples, links, ` +
+  `evidence, or anything current — actually RUN a search before answering, and base any ` +
+  `add-card / append-image actions only on pages the search returned.`
+
+// Line filter for the ACTION protocol: whole lines only (a chunk boundary can
+// split "ACT|ION:", so classifying anything smaller would leak protocol text
+// into chat). ACTION lines go to onAction as raw JSON; all other lines stream
+// through as chat text, blank lines included (they are paragraph breaks).
+function makeCommandActionFilter(
+  emitText: (t: string) => void,
+  onAction: (rawJson: string) => void
+) {
+  let buf = ''
+  const handleLine = (l: string) => {
+    const m = l.match(/^\s*ACTION:\s*(\{.*\})\s*$/)
+    if (m) {
+      onAction(m[1])
+      return
+    }
+    emitText(l + '\n')
+  }
+  return {
+    push(text: string) {
+      buf += text
+      let i: number
+      while ((i = buf.indexOf('\n')) >= 0) {
+        handleLine(buf.slice(0, i))
+        buf = buf.slice(i + 1)
+      }
+    },
+    flush() {
+      if (buf.trim()) handleLine(buf)
+      buf = ''
+    }
+  }
+}
 
 // Open-model path can't search on its own, so we ask it to name the query it
 // would search — that reasoned query drives Tavily (CLIs search natively).
@@ -248,35 +318,39 @@ export function apiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url || ''
 
-        // --- POST /api/clean-transcript: raw STT chunk -> cleaned marked text ---
-        if (url.startsWith('/api/clean-transcript') && req.method === 'POST') {
+        // --- POST /api/extract-signals: raw speech window -> typed pending signals ---
+        // Precision over recall: the model KEEPS only the six signal types and
+        // discards greetings/fillers/small talk. A parsed empty list is a real
+        // answer (the engine discards the window); skipped=true means "nothing
+        // parseable" (the engine puts the raw back and retries).
+        if (url.startsWith('/api/extract-signals') && req.method === 'POST') {
           try {
-            const { systemPrompt, rawText, existingNotes, provider, model } = await readBody(req)
+            const { systemPrompt, rawText, existingSignals, provider, model } = await readBody(req)
             if (!rawText || typeof rawText !== 'string') {
-              return json(res, 400, { error: 'rawText is required', markedText: '', serverMs: 0 })
+              return json(res, 400, { error: 'rawText is required', signals: [], serverMs: 0 })
             }
 
             const cfg = (LLM[provider] || LLM.groq)()
             if (model) cfg.model = model
             if (cfg.proxy && !cfg.key) {
-              return json(res, 400, { error: `${provider} needs an API key in .env`, markedText: '' })
+              return json(res, 400, { error: `${provider} needs an API key in .env`, signals: [] })
             }
 
-            const reasoningParams = getReasoningParams(cfg.model)
+            // Classification wants real thinking; keep it hidden and leave room
+            // for the JSON after the reasoning so the answer is never starved.
+            const reasoningParams = /gpt-oss/i.test(cfg.model)
+              ? { reasoning_effort: 'medium', reasoning_format: 'hidden' }
+              : getReasoningParams(cfg.model)
+
             const sys =
               `${systemPrompt}\n\n` +
-              `You clean ONLY the new raw speech into concise, written-style notes that are APPENDED below the existing notes. ` +
-              `Never rewrite, repeat, or restate the existing notes — they are read-only context. ` +
-              `Output ONE idea per line. Each line is a single complete idea in polished written language — ` +
-              `not a repeated keyword, not a verbatim quote. Aim for 1-4 lines covering only the new speech; drop filler and side chatter. ` +
-              `Match the user's dominant language. If the new speech is mostly Chinese, write Chinese; ` +
-              `if mostly English, write English. Preserve code-switching only when it carries meaning. ` +
-              `Do NOT use any Markdown: no **bold**, *italics*, # headings, backticks, or ==marks==. Plain text lines only. ` +
-              `Do not explain what you changed. ` +
-              `Do not include raw transcript labels, JSON, code fences, or commentary.`
-            const userText = /qwen3/i.test(cfg.model)
-              ? buildCleanTranscriptUserText(rawText, existingNotes) + '\n\n/no_think'
-              : buildCleanTranscriptUserText(rawText, existingNotes)
+              `Return ONLY a JSON object of exactly this shape: ` +
+              `{"signals":[{"type":"<judgment|objection|example|decision>",` +
+              `"text":"<one concise, written-style sentence>","speaker":"<S1|S2|… if speaker tags appear in the raw, else omit>"}]}. ` +
+              `The only valid types are judgment, objection, example, decision — there is NO question or hesitation type. ` +
+              `An EMPTY signals list is the NORMAL answer for most windows; only rare, genuinely thought-changing statements earn a slot. ` +
+              `No prose, no markdown, no code fences — output only the JSON object.`
+            const userText = buildExtractSignalsUserText(rawText, existingSignals)
 
             const t0 = performance.now()
             const r = await fetch(`${cfg.base}/chat/completions`, {
@@ -287,8 +361,8 @@ export function apiPlugin(): Plugin {
               },
               body: JSON.stringify({
                 model: cfg.model,
-                temperature: 0.25,
-                max_tokens: 700,
+                temperature: 0.2,
+                max_tokens: 3000,
                 ...reasoningParams,
                 messages: [
                   { role: 'system', content: sys },
@@ -301,19 +375,20 @@ export function apiPlugin(): Plugin {
             const serverMs = Math.round(performance.now() - t0)
             if (!r.ok) {
               const body = await r.text()
-              return json(res, 502, { error: `LLM ${r.status}: ${body.slice(0, 300)}`, serverMs, markedText: '' })
+              // skipped=true → the engine keeps the raw and retries next tick.
+              return json(res, 200, { error: `LLM ${r.status}: ${body.slice(0, 300)}`, skipped: true, signals: [], serverMs })
             }
             const data: any = await r.json()
             const raw = data?.choices?.[0]?.message?.content || ''
-            const markedText = sanitizeCleanedTranscript(raw)
-            // Empty output (e.g. reasoning ate the budget) is a silent skip, never
-            // an error: the engine keeps the raw and retries next cleanup tick.
-            if (!markedText) {
-              return json(res, 200, { markedText: '', skipped: true, serverMs, model: cfg.model })
+            const signals = parseSignals(raw)
+            if (signals === null) {
+              // Nothing parseable (e.g. reasoning ate the budget) — retry case,
+              // NOT the legitimate-empty case.
+              return json(res, 200, { signals: [], skipped: true, serverMs, model: cfg.model })
             }
-            return json(res, 200, { markedText, serverMs, model: cfg.model })
+            return json(res, 200, { signals, serverMs, model: cfg.model })
           } catch (e: any) {
-            return json(res, 500, { error: e?.message || String(e), markedText: '', serverMs: 0 })
+            return json(res, 200, { error: e?.message || String(e), skipped: true, signals: [], serverMs: 0 })
           }
         }
 
@@ -368,18 +443,42 @@ export function apiPlugin(): Plugin {
           }
         }
 
-        // --- POST /api/segment: open tail (numbered lines) -> topic sections ---
-        // The structuring pass. A THINKING model reads only the open tail and
-        // returns closed segments {endLine, header}. Runs async every ~2min + on
-        // stop. Never returns an HTTP error to the browser: any failure yields
-        // empty sections, which the engine treats as "no split this round". The
-        // model's raw reply is PARSED (not printed), so leaked reasoning can't
-        // reach the UI even if it slips past reasoning_format:'hidden'.
-        if (url.startsWith('/api/segment') && req.method === 'POST') {
+        // --- POST /api/organize: pending signals (numbered) -> titled sections ---
+        // The organize pass. A THINKING model reads only the pending tail and
+        // returns sections whose items REFERENCE input lines by index (so a
+        // rewrite keeps its source timestamps/types). Runs async every ~5min +
+        // on stop. Never returns an HTTP error to the browser: any failure
+        // yields empty sections, which the engine treats as "no organize this
+        // round". The model's raw reply is PARSED (not printed), so leaked
+        // reasoning can't reach the UI even if it slips past
+        // reasoning_format:'hidden'.
+        if (url.startsWith('/api/organize') && req.method === 'POST') {
           try {
             const { lines, closing, provider, model } = await readBody(req)
             if (!lines || typeof lines !== 'string') {
               return json(res, 400, { error: 'lines is required', sections: [], serverMs: 0 })
+            }
+
+            // Subscription CLI backends (chosen globally alongside co-creation):
+            // organize is the highest-judgment, lowest-frequency, most latency-
+            // tolerant pass, so it's the one worth spending a strong model on.
+            // The CLI streams plain text; we collect it whole and parse the JSON.
+            if (provider === 'claude-code' || provider === 'codex') {
+              const t0 = performance.now()
+              try {
+                const raw = await runAgentToText(
+                  provider,
+                  buildOrganizeSystem(!!closing),
+                  String(lines).slice(0, 8000)
+                )
+                const serverMs = Math.round(performance.now() - t0)
+                return json(res, 200, { sections: parseOrganize(raw), serverMs, model: `${provider} (subscription)` })
+              } catch (e: any) {
+                const serverMs = Math.round(performance.now() - t0)
+                // Surface (empty sections keep the engine safe): a misconfigured
+                // CLI would otherwise silently no-op every organize round.
+                return json(res, 200, { error: e?.message || String(e), sections: [], serverMs })
+              }
             }
 
             const cfg = (LLM[provider] || LLM.groq)()
@@ -404,8 +503,8 @@ export function apiPlugin(): Plugin {
                 max_tokens: 3000,
                 ...reasoningParams,
                 messages: [
-                  { role: 'system', content: buildSegmentSystem(!!closing) },
-                  { role: 'user', content: String(lines).slice(0, 6000) }
+                  { role: 'system', content: buildOrganizeSystem(!!closing) },
+                  { role: 'user', content: String(lines).slice(0, 8000) }
                 ]
               }),
               ...(cfg.proxy ? { dispatcher: getDispatcher() } : {})
@@ -419,7 +518,7 @@ export function apiPlugin(): Plugin {
             }
             const data: any = await r.json()
             const rawReply = data?.choices?.[0]?.message?.content || ''
-            return json(res, 200, { sections: parseSegments(rawReply), serverMs, model: cfg.model })
+            return json(res, 200, { sections: parseOrganize(rawReply), serverMs, model: cfg.model })
           } catch (e: any) {
             return json(res, 200, { error: e?.message || String(e), sections: [], serverMs: 0 })
           }
@@ -438,8 +537,10 @@ export function apiPlugin(): Plugin {
           }
           const {
             seedText,
+            seedType,
             contextNotes,
             transcriptWindow,
+            signalWindow,
             kept,
             rejected,
             existingIdeas,
@@ -457,8 +558,8 @@ export function apiPlugin(): Plugin {
           const signals = { kept, rejected, existingIdeas }
           const system = isCommand ? COMMAND_SYSTEM : COCREATE_SYSTEM
           const userText = isCommand
-            ? buildCommandContext(command, contextNotes, transcriptWindow)
-            : buildCocreateContext(seedText, contextNotes, transcriptWindow, signals)
+            ? buildCommandContext(command, contextNotes, transcriptWindow, signalWindow)
+            : buildCocreateContext(seedText, contextNotes, transcriptWindow, signals, signalWindow, seedType)
 
           res.statusCode = 200
           res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
@@ -572,6 +673,135 @@ export function apiPlugin(): Plugin {
           return
         }
 
+        // --- POST /api/command-chat: Tier-3 chat turn -> streamed NDJSON ---
+        // Stateless: the client sends the FULL history + freshly captured
+        // context every turn; we flatten it into one prompt and make one
+        // fresh backend call. Events: {type:'text'|'action'|'done'|'error'}.
+        if (url.startsWith('/api/command-chat') && req.method === 'POST') {
+          let body: any
+          try {
+            body = await readBody(req)
+          } catch (e: any) {
+            return json(res, 400, { error: `bad request body: ${e?.message || e}` })
+          }
+          const { provider = 'codex', openSub = 'groq', model, webSearch = false, messages, context } = body
+          if (!Array.isArray(messages) || !messages.length) {
+            return json(res, 400, { error: 'messages[] is required' })
+          }
+          // Actions land in the SOURCE note; the model never sees note ids —
+          // we inject this one, so it can't be wrong. No source note (bottom-
+          // bar session) → only create-note actions are possible.
+          const sourceNoteId = typeof context?.sourceNoteId === 'string' ? context.sourceNoteId : undefined
+
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-cache')
+          const send = (obj: unknown) => res.write(JSON.stringify(obj) + '\n')
+
+          const userText = buildCommandChatPrompt(messages, context)
+
+          try {
+            let resolvedModel: string | undefined
+            let actionCount = 0
+            // append-image actions defer until after the stream: the model
+            // names a PAGE url; we resolve its og:image (no image → degrade
+            // to a link card so the reference isn't lost).
+            const pendingImages: { caption: string; url: string; title?: string }[] = []
+
+            // Validate + retype one raw ACTION json. Malformed or unknown →
+            // dropped silently (never show the user a broken protocol line).
+            const handleActionJson = (raw: string) => {
+              if (actionCount >= 6) return
+              let a: any
+              try {
+                a = JSON.parse(raw)
+              } catch {
+                console.warn('[command-chat] dropping malformed ACTION json:', raw.slice(0, 120))
+                return
+              }
+              if (a?.type === 'insert-bullet' && sourceNoteId && typeof a.text === 'string' && a.text.trim()) {
+                actionCount++
+                send({ type: 'action', action: { type: 'insert-bullet', noteId: sourceNoteId, text: a.text.trim() } })
+              } else if (a?.type === 'add-card' && sourceNoteId && typeof a.title === 'string' && typeof a.url === 'string' && /^https?:\/\//.test(a.url)) {
+                actionCount++
+                send({
+                  type: 'action',
+                  action: {
+                    type: 'add-card',
+                    noteId: sourceNoteId,
+                    title: a.title,
+                    url: a.url,
+                    snippet: typeof a.snippet === 'string' ? a.snippet : undefined
+                  }
+                })
+              } else if (a?.type === 'append-image' && sourceNoteId && typeof a.caption === 'string' && typeof a.url === 'string' && /^https?:\/\//.test(a.url)) {
+                actionCount++
+                pendingImages.push({ caption: a.caption, url: a.url, title: typeof a.title === 'string' ? a.title : undefined })
+              } else if (a?.type === 'create-note' && typeof a.keyword === 'string' && a.keyword.trim() && Array.isArray(a.bullets)) {
+                actionCount++
+                send({
+                  type: 'action',
+                  action: {
+                    type: 'create-note',
+                    keyword: a.keyword.trim(),
+                    bullets: a.bullets.filter((b: any) => typeof b === 'string' && b.trim())
+                  }
+                })
+              } else {
+                console.warn('[command-chat] dropping invalid ACTION:', raw.slice(0, 120))
+              }
+            }
+
+            const filter = makeCommandActionFilter((t) => send({ type: 'text', text: t }), handleActionJson)
+
+            if (provider === 'claude-code' || provider === 'codex') {
+              const run = provider === 'claude-code' ? runClaude : runCodex
+              resolvedModel = provider === 'claude-code' ? 'claude (subscription)' : 'codex (subscription)'
+              const sys = COMMAND_CHAT_SYSTEM + (webSearch ? COMMAND_CHAT_CLI_SEARCH : '')
+              for await (const ev of run({ prompt: userText, system: sys, webSearch })) {
+                if (ev.type === 'text') filter.push(ev.text)
+                // raw 'url' harvest events ignored: chat cards come only from
+                // ACTION proposals the model deliberately made.
+              }
+              filter.flush()
+            } else {
+              // provider === 'open': text-only chat (no native search tool;
+              // the prompt forbids invented URLs, so actions stay grounded).
+              const cfg = (LLM[openSub as string] || LLM.groq)()
+              if (model) cfg.model = model
+              resolvedModel = cfg.model
+              if (cfg.proxy && !cfg.key) {
+                send({ type: 'error', error: `${openSub} needs an API key in .env` })
+                return res.end()
+              }
+              await streamOpenModel(cfg, COMMAND_CHAT_SYSTEM, userText, (t) => filter.push(t))
+              filter.flush()
+            }
+
+            for (const im of pendingImages) {
+              const src = await fetchOgImage(im.url)
+              if (src) {
+                send({
+                  type: 'action',
+                  action: { type: 'append-image', noteId: sourceNoteId!, src, sourceUrl: im.url, title: im.title, caption: im.caption }
+                })
+              } else {
+                send({
+                  type: 'action',
+                  action: { type: 'add-card', noteId: sourceNoteId!, title: im.title || im.caption, url: im.url }
+                })
+              }
+            }
+
+            send({ type: 'done', model: resolvedModel, provider })
+            res.end()
+          } catch (e: any) {
+            send({ type: 'error', error: e?.message || String(e) })
+            res.end()
+          }
+          return
+        }
+
         // --- GET /api/url-meta?url=… : og description + image for a card ---
         if (url.startsWith('/api/url-meta')) {
           const target = new URL(url, 'http://localhost').searchParams.get('url') || ''
@@ -615,6 +845,22 @@ function json(res: ServerResponse, code: number, obj: unknown) {
   res.end(JSON.stringify(obj))
 }
 
+// Run a subscription CLI backend (Claude Code / Codex) to completion and return
+// its full text output — for non-streamed, parse-the-whole-reply passes like
+// organize. webSearch is off (organize reasons over the given signals only).
+async function runAgentToText(
+  provider: 'claude-code' | 'codex',
+  system: string,
+  prompt: string
+): Promise<string> {
+  const run = provider === 'claude-code' ? runClaude : runCodex
+  let text = ''
+  for await (const ev of run({ prompt, system, webSearch: false })) {
+    if (ev.type === 'text') text += ev.text
+  }
+  return text
+}
+
 // Context engineering for Tier-2: the seed idea + nearby canvas notes + the
 // transcript window it came from. Deliberately small — this is the knob Jasmine
 // tunes (what to send) and hands to Vandark.
@@ -622,11 +868,19 @@ function buildCocreateContext(
   seedText: string,
   contextNotes?: string[],
   transcriptWindow?: string,
-  signals?: { kept?: string[]; rejected?: string[]; existingIdeas?: string[] }
+  signals?: { kept?: string[]; rejected?: string[]; existingIdeas?: string[] },
+  signalWindow?: string,
+  seedType?: string
 ): string {
   const parts: string[] = []
   if (transcriptWindow && transcriptWindow.trim()) {
     parts.push(`Full transcript so far:\n${transcriptWindow.trim()}`)
+  }
+  if (signalWindow && signalWindow.trim()) {
+    parts.push(
+      `Signals extracted from this conversation, tagged by kind (the user never sees these tags — ` +
+        `use them to judge what kind of contribution fits):\n${signalWindow.trim()}`
+    )
   }
   if (Array.isArray(contextNotes) && contextNotes.length) {
     // Numbered so the model can name its ANCHOR; leading spaces = outline depth.
@@ -641,7 +895,8 @@ function buildCocreateContext(
   if (rejected?.length) parts.push(`The user REJECTED these (AVOID this direction):\n- ${rejected.join('\n- ')}`)
   const existing = signals?.existingIdeas?.filter(Boolean)
   if (existing?.length) parts.push(`Already on the canvas — do NOT repeat any of these:\n- ${existing.join('\n- ')}`)
-  parts.push(`The user's current focus:\n${seedText.trim()}\n\nAdd your single new increment now.`)
+  const typed = seedType && seedType.trim() ? ` (spoken as a ${seedType.trim()})` : ''
+  parts.push(`The user's current focus${typed}:\n${seedText.trim()}\n\nAdd your single new increment now.`)
   return parts.join('\n\n')
 }
 
@@ -649,11 +904,15 @@ function buildCocreateContext(
 function buildCommandContext(
   command: string,
   contextNotes?: string[],
-  transcriptWindow?: string
+  transcriptWindow?: string,
+  signalWindow?: string
 ): string {
   const parts: string[] = []
   if (transcriptWindow && transcriptWindow.trim()) {
     parts.push(`Transcript so far:\n${transcriptWindow.trim()}`)
+  }
+  if (signalWindow && signalWindow.trim()) {
+    parts.push(`Signals extracted from the conversation (typed):\n${signalWindow.trim()}`)
   }
   if (Array.isArray(contextNotes) && contextNotes.length) {
     parts.push(`Notes already on the canvas:\n- ${contextNotes.join('\n- ')}`)
@@ -662,41 +921,122 @@ function buildCommandContext(
   return parts.join('\n\n')
 }
 
-function buildCleanTranscriptUserText(rawText: string, existingNotes?: string): string {
-  const cleaned = typeof existingNotes === 'string' ? existingNotes.trim() : ''
+// Tier-3 command-chat prompt: flatten the full chat history + this turn's
+// freshly captured context into ONE prompt (the backends are stateless one-
+// shot calls — this replay IS the session memory).
+function buildCommandChatPrompt(
+  messages: { role: string; text: string }[],
+  context: any
+): string {
   const parts: string[] = []
-  if (cleaned) {
-    parts.push(`Existing visible cleaned notes (context only, do NOT restate):\n${cleaned}`)
+  if (typeof context?.transcriptWindow === 'string' && context.transcriptWindow.trim()) {
+    parts.push(`Spoken transcript around this note (1 min):\n${context.transcriptWindow.trim()}`)
   }
-  parts.push(`New raw STT chunk to clean (append below as one idea per line):\n${rawText.trim()}`)
+  const sn = context?.sourceNote
+  if (sn && typeof sn === 'object') {
+    const lines: string[] = [`Keyword: ${sn.keyword || '(untitled)'}`]
+    if (Array.isArray(sn.humanBullets) && sn.humanBullets.length) {
+      lines.push(`The user's bullets (indented lines are sub-points):\n${sn.humanBullets.map((t: string) => `- ${t}`).join('\n')}`)
+    }
+    if (Array.isArray(sn.keptAi) && sn.keptAi.length) {
+      lines.push(`AI contributions the user already KEPT:\n${sn.keptAi.map((t: string) => `- ${t}`).join('\n')}`)
+    }
+    parts.push(`Source note:\n${lines.join('\n')}`)
+    if (Array.isArray(sn.kept) && sn.kept.length) {
+      parts.push(`The user KEPT these earlier suggestions (do MORE like this):\n- ${sn.kept.join('\n- ')}`)
+    }
+    if (Array.isArray(sn.rejected) && sn.rejected.length) {
+      parts.push(`The user REJECTED these (AVOID this direction):\n- ${sn.rejected.join('\n- ')}`)
+    }
+  }
+  if (typeof context?.selectedText === 'string' && context.selectedText.trim()) {
+    parts.push(`SELECTED TEXT (the user summoned you about this):\n"${context.selectedText.trim()}"`)
+  }
+  const hist = messages
+    .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${String(m.text ?? '')}`)
+    .join('\n\n')
+  parts.push(`Conversation so far:\n${hist}\n\nRespond to the last user message now.`)
   return parts.join('\n\n')
 }
 
-// System prompt for the structuring pass. Asks for a strict JSON object of
-// closed sections. On a normal pass the trailing (still-open) topic is left
-// uncut; on the closing pass every line must be assigned so nothing is untitled.
-function buildSegmentSystem(closing: boolean): string {
+function buildExtractSignalsUserText(rawText: string, existingSignals?: string): string {
+  const existing = typeof existingSignals === 'string' ? existingSignals.trim() : ''
+  const parts: string[] = []
+  if (existing) {
+    parts.push(
+      `Highlights already extracted (context only — do NOT re-emit these or near-duplicates of them, ` +
+        `UNLESS the new speech sharpens one into a firmer statement, e.g. a tentative judgment that became a decision):\n${existing}`
+    )
+  }
+  parts.push(`New raw speech window ([S1]/[S2] tags mark speaker turns):\n${rawText.trim()}`)
+  return parts.join('\n\n')
+}
+
+// Backstop: only these four labels survive. If the model slips and emits a
+// "question"/"hesitation" despite the prompt, it is dropped here — a highlight
+// is never a question, structurally enforced rather than merely requested.
+const SIGNAL_TYPES = new Set(['judgment', 'objection', 'example', 'decision'])
+
+// Extract the {signals:[...]} object from the model's reply. Tolerant of code
+// fences, leaked <think> blocks, and surrounding prose. Returns null when
+// nothing parseable (→ the engine retries the raw); a parsed empty array is the
+// legitimate "no signals in this window".
+function parseSignals(raw: string): { type: string; text: string; speaker?: string }[] | null {
+  const s = raw
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+  const start = s.indexOf('{')
+  const end = s.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    const obj = JSON.parse(s.slice(start, end + 1))
+    const arr = obj?.signals
+    if (!Array.isArray(arr)) return null
+    const out: { type: string; text: string; speaker?: string }[] = []
+    for (const it of arr) {
+      const type = typeof it?.type === 'string' ? it.type.trim().toLowerCase() : ''
+      const text = typeof it?.text === 'string' ? it.text.trim() : ''
+      if (!text || !SIGNAL_TYPES.has(type)) continue
+      const speaker = typeof it?.speaker === 'string' && it.speaker.trim() ? it.speaker.trim() : undefined
+      out.push({ type, text, ...(speaker ? { speaker } : {}) })
+    }
+    return out
+  } catch {
+    return null
+  }
+}
+
+// System prompt for the organize pass. The model groups pending signals into
+// titled sections and may MERGE/REWORD unlocked lines — every item references
+// its source line numbers so rewrites keep their timestamps/types client-side.
+// On a normal pass the trailing (still-open) topic is left unassigned; on the
+// closing pass every line must be assigned so nothing is left unorganized.
+function buildOrganizeSystem(closing: boolean): string {
   return (
-    `You segment a running stream of a person's thinking notes into topic sections. ` +
-    `The user message is the notes, one idea per numbered line (0-indexed). ` +
-    `Find where the topic clearly SHIFTS to a different subject. ` +
+    `You organize a queue of meeting HIGHLIGHTS — judgments, objections, examples, decisions — ` +
+    `into titled topic sections. ` +
+    `The user message lists the highlights, one per numbered line (0-indexed), each tagged with its [type]; ` +
+    `some carry [LOCKED] (user-edited: you may place them in a section but NEVER reword or merge them). ` +
+    `You may merge redundant signals and reword wordy ones, but never invent content beyond the input lines. ` +
     `Return ONLY a JSON object of exactly this shape: ` +
-    `{"sections":[{"endLine":<int>,"header":"<3-6 word title>"}]}. ` +
-    `Each entry closes a section that ENDS at endLine (inclusive); the header titles the lines up to that point ` +
-    `(from just after the previous section's end). endLine values MUST be strictly increasing. ` +
-    `Write headers in the language of the notes (Chinese notes -> Chinese header), sentence case, no punctuation. ` +
+    `{"sections":[{"header":"<3-6 word title>","items":[{"src":[<line numbers>],"text":"<merged/reworded text — omit this field to keep the original wording>"}]}]}. ` +
+    `Sections and their items MUST follow the original line order; each line number may appear at most ONCE overall; ` +
+    `never give an item containing a [LOCKED] line a "text" field. ` +
+    `Write headers and rewrites in the language of the signals (Chinese signals -> Chinese header), sentence case, no punctuation in headers. ` +
     (closing
-      ? `This is the FINAL pass: assign EVERY line to a section — the last endLine MUST equal the last line index. `
-      : `Leave the final, still-in-progress topic UNcut: do not emit a section whose endLine is the last line. ` +
-        `If there is no clear topic shift yet, return {"sections":[]}. `) +
+      ? `This is the FINAL pass: assign EVERY line to a section. `
+      : `Leave the final, still-in-progress topic's lines UNassigned — do not section the lines still being developed. ` +
+        `If no coherent grouping has emerged yet, return {"sections":[]}. `) +
     `No prose, no markdown, no code fences — output only the JSON object.`
   )
 }
 
-// Extract the {sections:[...]} object from the model's reply. Tolerant of code
+// Extract the {sections:[...]} object from the organize reply. Tolerant of code
 // fences, leaked <think> blocks, and surrounding prose; returns [] on any doubt
-// so the engine treats the round as "no split".
-function parseSegments(raw: string): { endLine: number; header: string }[] {
+// so the engine treats the round as "no organize". Index validation (range,
+// reuse, locked lines) happens client-side in the engine.
+function parseOrganize(raw: string): { header: string; items: { src: number[]; text?: string }[] }[] {
   const s = raw
     .replace(/```json/gi, '')
     .replace(/```/g, '')
@@ -707,11 +1047,20 @@ function parseSegments(raw: string): { endLine: number; header: string }[] {
   try {
     const obj = JSON.parse(s.slice(start, end + 1))
     const arr = Array.isArray(obj?.sections) ? obj.sections : []
-    const out: { endLine: number; header: string }[] = []
-    for (const it of arr) {
-      const endLine = Math.floor(Number(it?.endLine))
-      const header = typeof it?.header === 'string' ? it.header.trim() : ''
-      if (Number.isFinite(endLine) && header) out.push({ endLine, header })
+    const out: { header: string; items: { src: number[]; text?: string }[] }[] = []
+    for (const sec of arr) {
+      const header = typeof sec?.header === 'string' ? sec.header.trim() : ''
+      const rawItems = Array.isArray(sec?.items) ? sec.items : []
+      const items: { src: number[]; text?: string }[] = []
+      for (const it of rawItems) {
+        const src = (Array.isArray(it?.src) ? it.src : [])
+          .map((n: unknown) => Math.floor(Number(n)))
+          .filter((n: number) => Number.isFinite(n) && n >= 0)
+        if (src.length === 0) continue
+        const text = typeof it?.text === 'string' && it.text.trim() ? it.text.trim() : undefined
+        items.push({ src, ...(text ? { text } : {}) })
+      }
+      if (header && items.length) out.push({ header, items })
     }
     return out
   } catch {

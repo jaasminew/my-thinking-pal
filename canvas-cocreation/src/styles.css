@@ -13,6 +13,7 @@
   --ok: #19b36b;
   --no: #d05a5a;
   --shadow: 0 1px 3px #0000001a, 0 8px 24px #0000000f;
+  --panel-handle: 44px; /* .panel-spine width — the transcript pane sits to its right */
   font-family: ui-sans-serif, -apple-system, system-ui, 'Segoe UI', 'PingFang SC', sans-serif;
 }
 * { box-sizing: border-box; }
@@ -86,10 +87,13 @@ body { background: var(--bg); color: var(--ink); }
 .side-controls .seg button:last-child { border-right: 0; }
 .side-controls .seg button.on { background: var(--ink); color: #fff; }
 .side-controls select { font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.side-controls .save-local,
 .side-controls .clear-saved {
   border: 1px solid var(--line); background: #fff; color: #999; font-size: 12px;
   padding: 5px 10px; border-radius: 8px; cursor: pointer;
 }
+.side-controls .save-local { color: #3a3a3c; }
+.side-controls .save-local:hover { border-color: #b8d4f4; background: #f4f9ff; }
 .side-controls .clear-saved:hover { color: #c0392b; border-color: #e8b4ac; }
 
 /* ---- workspace: overlapping paper-stack of canvases (Obsidian-like) ----
@@ -133,15 +137,29 @@ body { background: var(--bg); color: var(--ink); }
 /* Inactive panels dim their spine so the active one reads at a glance. */
 .panel:not(.active) .spine-title, .panel:not(.active) .panel-spine svg { color: var(--muted); }
 .panel-body { flex: 1; min-width: 0; display: flex; }
-.panel-body > .transcript { width: 400px; flex: none; border-right: 1px solid var(--line); }
+.panel-body > .transcript-pane { width: 400px; flex: none; border-right: 1px solid var(--line); }
 .panel-body > .canvas { flex: 1; min-width: 0; }
 
 /* transcript */
+.transcript-pane { position: relative; display: flex; flex-direction: column; min-height: 0; }
 .transcript {
+  flex: 1; min-height: 0;
   padding: 26px 20px 26px 8px; overflow-y: auto;
   font-size: 16px; line-height: 1.85; color: #5b5b60;
   user-select: text;
 }
+/* Recording control docked at the pane's bottom-center, over a gradient that
+   fades from solid white (fully hides scrolled-up text) to transparent. */
+.transcript-record-dock {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 110px;
+  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 22px;
+  background: linear-gradient(to top, #fff 0%, #fff 30%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none; /* only the button itself is clickable */
+}
+/* Centered on (spine handle + transcript pane), not just the pane: the spine
+   sits to the pane's left, so the visual "transcript section" the user reads
+   is wider than .transcript-pane alone — shift left by half the handle. */
+.transcript-record-dock .record { pointer-events: auto; transform: translateX(calc(var(--panel-handle) / -2)); }
 /* The panel can be wide (canvas slid away) — keep the text a readable column. */
 .transcript > * { max-width: 480px; }
 .transcript .hint { font-size: 12px; color: var(--muted); margin-bottom: 18px; line-height: 1.5; }
@@ -185,7 +203,7 @@ body { background: var(--bg); color: var(--ink); }
 }
 /* The pan/zoom layer that holds the notes. transform set inline from App. */
 .canvas-layer { position: absolute; inset: 0; transform-origin: 0 0; }
-.ai-switch, .command-bar { cursor: default; }
+.ai-switch { cursor: default; }
 .canvas-hint {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   color: var(--muted); font-size: 14px; text-align: center; pointer-events: none; max-width: 320px;
@@ -409,29 +427,114 @@ body { background: var(--bg); color: var(--ink); }
 }
 .canvas-image.selected { outline: 1px solid var(--accent); outline-offset: 2px; }
 
-/* ---- command pill (Tier-3) ---- */
-.command-bar {
-  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 12px; z-index: 50;
-}
-.command-bar .record {
+/* ---- recording control (used in the transcript's bottom dock) ---- */
+.record {
   width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line);
   background: #fff; box-shadow: var(--shadow); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
-.command-bar .record .rec-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--no); }
-.command-bar .record.on { background: #fff; }
-.command-bar .record .stop-sq { width: 13px; height: 13px; border-radius: 3px; background: var(--no); }
+.record .rec-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--no); }
+.record.on { background: #fff; }
+.record .stop-sq { width: 13px; height: 13px; border-radius: 3px; background: var(--no); }
 
-.cmd-input {
+/* ---- Tier-3: persistent context highlight (select → summon AI) ---- */
+/* Painted via the CSS Custom Highlight API from the frozen SelectionSnapshot —
+   survives the native selection collapsing when the bubble input takes focus,
+   and clears only when the conversation is officially closed. */
+::highlight(cmd-ctx) { background: #f6c9e8; color: var(--ink); }
+
+/* ---- Tier-3: inline command bubble ---- */
+.cmd-bubble {
+  position: fixed; z-index: 1200;
   display: flex; align-items: center; gap: 8px;
+  width: 384px;
   background: #fff; border: 1px solid var(--line); border-radius: 26px;
-  padding: 7px 8px 7px 16px; box-shadow: var(--shadow); width: 360px;
+  padding: 7px 8px 7px 16px; box-shadow: var(--shadow);
 }
-.cmd-input .spark { color: var(--accent); font-size: 14px; }
-.cmd-input input { flex: 1; border: 0; outline: none; font-size: 14px; background: transparent; color: var(--ink); }
-.cmd-input .send {
+.cmd-bubble .spark { color: var(--accent); font-size: 14px; }
+.cmd-bubble input { flex: 1; border: 0; outline: none; font-size: 14px; background: transparent; color: var(--ink); }
+.cmd-bubble .send {
   width: 30px; height: 30px; border-radius: 50%; border: 0; cursor: pointer;
-  background: var(--ink); color: #fff; font-size: 15px;
+  background: var(--ink); color: #fff; font-size: 15px; flex: none;
 }
-.cmd-input .send:hover { background: #000; }
+.cmd-bubble .send:hover { background: #000; }
+
+/* ---- Tier-3: temporary command side panel ---- */
+/* Lives INSIDE its CanvasSpace's .panel-body (absolute overlay on the canvas
+   side), so a session never covers the other paper-stack sheet. */
+.panel-body { position: relative; }
+.cmd-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 900;
+  width: min(420px, 80%);
+  display: flex; flex-direction: column;
+  background: #fff; border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px #0000000d;
+}
+.cmd-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px;
+}
+.cmd-panel-title { font-size: 14px; font-weight: 600; }
+.cmd-panel-close {
+  border: 0; background: transparent; cursor: pointer; color: var(--muted);
+  font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px;
+}
+.cmd-panel-close:hover { background: #00000010; color: var(--ink); }
+.cmd-context-chip {
+  margin: 0 16px 8px; padding: 6px 10px;
+  background: #f6c9e880; border-radius: 8px;
+  font-size: 12px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cmd-msgs {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 8px 16px 12px; display: flex; flex-direction: column; gap: 14px;
+}
+.cmd-msg.user { align-self: flex-end; max-width: 85%; }
+.cmd-msg.user .cmd-msg-text {
+  background: #f2f2f0; border-radius: 10px; padding: 8px 12px;
+  font-size: 13.5px; white-space: pre-wrap;
+}
+.cmd-msg.assistant { align-self: stretch; }
+.cmd-msg.assistant .cmd-msg-text { font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+.cmd-thinking { color: var(--muted); font-style: italic; }
+.cmd-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.cmd-action {
+  text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  padding: 7px 10px; font-size: 12.5px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cmd-action:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.cmd-action.applied { color: var(--muted); cursor: default; background: #fafaf8; }
+.cmd-panel-input {
+  display: flex; align-items: flex-end; gap: 8px;
+  margin: 10px 16px 16px; padding: 8px 8px 8px 12px;
+  border: 1px solid var(--line); border-radius: 14px; background: #fff;
+}
+.cmd-panel-input textarea {
+  flex: 1; border: 0; outline: none; resize: none; background: transparent;
+  font: inherit; font-size: 13.5px; color: var(--ink); max-height: 96px;
+}
+.cmd-panel-input .send {
+  width: 28px; height: 28px; border-radius: 50%; border: 0; cursor: pointer;
+  background: var(--ink); color: #fff; font-size: 14px; flex: none;
+}
+.cmd-panel-input .send:disabled { background: var(--muted); cursor: default; }
+
+/* ---- right-click note menu: duplicate / rename / delete ---- */
+.note-menu {
+  position: fixed; z-index: 1200;
+  display: flex; flex-direction: column;
+  min-width: 140px; padding: 6px;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.note-menu button {
+  text-align: left; cursor: pointer;
+  border: 0; background: transparent; border-radius: 6px;
+  padding: 7px 10px; font-size: 13px; color: var(--ink);
+}
+.note-menu button:hover { background: #00000010; }
+.note-menu button.danger { color: var(--no); }
+.note-menu button.danger:hover { background: #d05a5a1a; }

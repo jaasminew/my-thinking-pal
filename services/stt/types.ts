@@ -6,6 +6,8 @@ export interface TranscriptEvent {
   isFinal: boolean
   /** performance.now() when this text reached the browser. */
   timestamp: number
+  /** Diarized speaker tag ('S1', 'S2', …) when the provider identifies one. */
+  speaker?: string
 }
 
 export interface STTStartOpts {

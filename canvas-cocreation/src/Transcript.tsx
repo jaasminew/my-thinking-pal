@@ -2,29 +2,42 @@ import { useEffect, useRef, useState } from 'react'
 import { SonioxSTT } from '../../services/stt/soniox'
 import { getAudioStream } from '../../services/stt/audio-source'
 import type { STTProvider } from '../../services/stt/types'
-import { CleanupEngine } from './cleanup-engine'
+import { SignalEngine } from './signal-engine'
 import { isImeEvent } from './ime'
-import type { Line, Section, EngineStatus } from './cleanup-engine'
+import type { Line, Section, EngineStatus } from './signal-engine'
 import { loadJSON, saveJSON } from './persist'
 
-// Cleanup system prompt: turn rough live STT into concise, written-style thinking
-// notes — one idea per line. No highlight marks anymore; structure comes from the
-// async segmentation pass, and any transcript text is drag-selectable to the canvas.
-const CLEANUP_PROMPT =
-  `You turn rough live STT from a brainstorming session into concise structured thinking notes. ` +
-  `Do NOT preserve the speaker's wording. Remove fillers, hedges, repeated starts, and conversational phrasing. ` +
-  `Rewrite freely into polished, written language while preserving only the user's actual meaning. ` +
-  `Match the user's language. If the user mainly speaks Chinese, write Chinese. If they mainly speak English, write English. ` +
-  `If they code-switch, preserve that mix only when the mixed wording carries meaning; otherwise use the dominant language. ` +
-  `Output one complete idea per line. Do not create keyword-only fragments. Do not repeat the same idea in Chinese and English. ` +
-  `If two fragments mean the same thing, merge them into one line. ` +
-  `Do not add new claims, examples, or conclusions beyond the raw input. ` +
-  `Never use Markdown: no **bold**, no *italics*, no # headings, no backticks, no ==marks==. Plain text lines only.`
+// Extraction system prompt: distill a raw multi-speaker speech window into
+// MEETING HIGHLIGHTS. This is a strict quality FILTER, not a summarizer — the
+// selection criterion comes first (would this still matter later? does it
+// change how you think?), and the type label is attached to what survives, as
+// metadata for co-creation. Questions and hesitations are NOT highlights and
+// are never kept. The server appends the strict JSON output contract.
+const EXTRACT_PROMPT =
+  `You distill a window of raw live STT from a meeting into MEETING HIGHLIGHTS — the very few ` +
+  `statements that would still matter a week later. You are a strict quality filter, NOT a summarizer: ` +
+  `do not record what was discussed; select the rare statements worth keeping. A typical 2-minute window ` +
+  `yields ZERO, ONE, or TWO highlights — never more than three. An empty result is a normal, correct answer. ` +
+  `KEEP a statement only if it changes how the reader thinks rather than informing them what happened. Prefer: ` +
+  `universal insights over contextual remarks; counter-intuitive claims over common-sense confirmations; ` +
+  `ways of thinking over isolated observations; transferable reasoning over idiosyncratic detail. ` +
+  `Committed opinions, sharp disagreements, decisions, and concrete cases that prove a principle can qualify — ` +
+  `IF they clear that bar. ` +
+  `NEVER output a question — a question is not a highlight. Never output hedges, process talk, or anything ` +
+  `that merely records the flow of conversation. Discard greetings, fillers, logistics, scheduling, jokes, ` +
+  `back-channel agreement, restarts, and small talk entirely. ` +
+  `Rewrite each kept highlight into ONE concise, polished, written-style sentence; do not preserve spoken wording. ` +
+  `Label each with the kind of statement it is — "judgment" (a committed opinion or claim), "objection" ` +
+  `(a disagreement with a position), "decision" (something settled), or "example" (a concrete case used as ` +
+  `evidence). The label is metadata attached AFTER selection — never keep a weak statement just to fill a kind. ` +
+  `Attribute the speaker tag ([S1]/[S2]…) the words came from. ` +
+  `Do not add claims or conclusions beyond the raw input. Do not emit near-duplicates of already-extracted highlights. ` +
+  `Match the dominant language of the speech (Chinese speech -> Chinese highlights); preserve code-switching only when the mix carries meaning.`
 
 const STATUS_CAPTION: Record<EngineStatus, string> = {
   idle: '',
   listening: 'Listening…',
-  summarizing: 'Summarizing…',
+  extracting: 'Extracting…',
   organizing: 'Organizing…'
 }
 
@@ -33,16 +46,20 @@ function cleanText(t: string): string {
   return t.replace(/==/g, '').replace(/[*_`]/g, '').replace(/^#{1,6}\s+/gm, '')
 }
 
-// On a selection drag, find the first selected cleaned line and attach its
-// spoken-at timestamp, so a dropped keyword note can anchor its ±1min verbatim
-// transcript window (rule B) to when the idea was actually said.
+// On a selection drag, find the first selected signal line and attach its
+// spoken-at timestamp (so a dropped keyword note can anchor its ±1min verbatim
+// transcript window, rule B) plus its signal type (so co-creation knows what
+// KIND of thought the seed was — a decision, an objection…).
 function attachDragTs(e: React.DragEvent) {
   const sel = window.getSelection()
   if (!sel || sel.rangeCount === 0) return
   const start = sel.getRangeAt(0).startContainer
   const el = start instanceof Element ? start : start.parentElement
-  const ts = el?.closest('[data-ts]')?.getAttribute('data-ts')
+  const block = el?.closest('[data-ts]')
+  const ts = block?.getAttribute('data-ts')
   if (ts) e.dataTransfer.setData('application/x-transcript-ts', ts)
+  const type = block?.getAttribute('data-signal-type')
+  if (type) e.dataTransfer.setData('application/x-signal-type', type)
 }
 
 // Shallow snapshots so React sees new refs after the engine mutates in place.
@@ -56,14 +73,23 @@ export type Highlight = { noteId: string; ts: number; text: string }
 
 export function Transcript({
   recording,
+  onToggleRecord,
   onRawFinal,
+  onSignals,
+  organizeProvider = 'groq',
   storageSuffix = '',
   highlights = [],
   onHoverNote
 }: {
   recording: boolean
+  onToggleRecord: () => void
   /** Every final verbatim STT segment, timestamped — feeds the AI context window. */
   onRawFinal?: (text: string, ts: number) => void
+  /** Each batch of freshly extracted typed signals — feeds the co-creation signal log. */
+  onSignals?: (lines: Line[]) => void
+  /** Backend for the organize pass, following the global provider choice:
+   *  'groq' | 'claude-code' | 'codex'. Extraction always stays on Groq. */
+  organizeProvider?: string
   /** Per-idea-space persistence: '' keeps the original keys, '.<id>' scopes new spaces. */
   storageSuffix?: string
   /** Phrases already dragged onto the canvas — each gets a faint orange mark. */
@@ -86,24 +112,30 @@ export function Transcript({
   const cancelEditRef = useRef(false)
   const editElRef = useRef<HTMLElement | null>(null)
 
-  const engineRef = useRef<CleanupEngine | null>(null)
+  const engineRef = useRef<SignalEngine | null>(null)
   const sttRef = useRef<STTProvider | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
   const onRawFinalRef = useRef(onRawFinal)
   useEffect(() => {
     onRawFinalRef.current = onRawFinal
   }, [onRawFinal])
-
-  // One engine for the component's life. Cleanup (30s) appends idea lines to the
-  // tail; segmentation (2min + on stop) freezes them into titled sections.
+  const onSignalsRef = useRef(onSignals)
   useEffect(() => {
-    const engine = new CleanupEngine({
+    onSignalsRef.current = onSignals
+  }, [onSignals])
+
+  // One engine for the component's life. Extraction (2min) distills raw speech
+  // into typed pending signals appended to the tail; the organize pass (5min +
+  // on stop) freezes them into titled sections. Both are thinking-model tasks.
+  useEffect(() => {
+    const engine = new SignalEngine({
       provider: 'groq',
-      cleanupModel: 'openai/gpt-oss-20b',
-      segmentModel: 'openai/gpt-oss-120b',
-      systemPrompt: CLEANUP_PROMPT,
-      cleanupIntervalMs: 30000,
-      segmentIntervalMs: 120000,
+      organizeProvider,
+      extractModel: 'openai/gpt-oss-120b',
+      organizeModel: 'openai/gpt-oss-120b',
+      systemPrompt: EXTRACT_PROMPT,
+      extractIntervalMs: 120000,
+      organizeIntervalMs: 300000,
       minWords: 8,
       minCjkChars: 8
     })
@@ -113,6 +145,7 @@ export function Transcript({
     }
     engine.onStatus = (s) => setStatus(s)
     engine.onError = (msg) => setErr(`⚠ ${msg}`)
+    engine.onSignals = (lines) => onSignalsRef.current?.(lines)
     // Seed the engine with the restored transcript so editing a restored line
     // or header still works. A new recording resets this, as before.
     engine.frozenSections = snapFrozen(frozen)
@@ -120,6 +153,13 @@ export function Transcript({
     engineRef.current = engine
     return () => engine.reset()
   }, [])
+
+  // Keep the organize backend in sync with the global provider choice (the
+  // engine lives across renders, so flipping the button mid-session applies to
+  // the next organize round).
+  useEffect(() => {
+    if (engineRef.current) engineRef.current.config.organizeProvider = organizeProvider
+  }, [organizeProvider])
 
   // Start/stop live capture from Unit 2's existing record button (App.recording).
   useEffect(() => {
@@ -151,7 +191,7 @@ export function Transcript({
       stt.onError((e) => setErr(`⚠ ${e.message}`))
       stt.onTranscript((ev) => {
         if (ev.isFinal) {
-          engineRef.current?.pushFinal(ev.text)
+          engineRef.current?.pushFinal(ev.text, ev.speaker)
           if (ev.text.trim()) onRawFinalRef.current?.(ev.text.trim(), Date.now())
         } else engineRef.current?.pushInterim(ev.text)
       })
@@ -261,6 +301,7 @@ export function Transcript({
         className={`clean-block${open ? ' tail' : ''}`}
         data-ts={line.ts}
         data-line-id={line.id}
+        data-signal-type={line.type}
       >
         {renderLineText(cleanText(line.text), line.ts)}
       </div>
@@ -312,27 +353,42 @@ export function Transcript({
   const caption = STATUS_CAPTION[status]
 
   return (
-    <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
-      <div className="hint">
-        {recording
-          ? 'Speak freely — thoughts are cleaned and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a section to edit it.'
-          : ''}
-      </div>
-
-      {frozen.map((sec) => renderSection(sec, sec.lines))}
-
-      {tail.length > 0 && renderSection(null, tail)}
-
-      {!hasContent && (
-        <div className="placeholder">
+    <div className="transcript-pane">
+      <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
+        <div className="hint">
           {recording
-            ? 'Listening… cleaned thoughts will appear here after a few seconds.'
-            : 'Press ●, allow the mic, and start speaking. Cleaned, sectioned notes appear here.'}
+            ? 'Speak freely — key signals are distilled from the conversation and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a section to edit it.'
+            : ''}
         </div>
-      )}
 
-      {caption && <div className="status-caption">{caption}</div>}
-      {err && <div className="placeholder err">{err}</div>}
-    </aside>
+        {frozen.map((sec) => renderSection(sec, sec.lines))}
+
+        {tail.length > 0 && renderSection(null, tail)}
+
+        {!hasContent && (
+          <div className="placeholder">
+            {recording
+              ? 'Listening… key signals from the conversation will appear here every couple of minutes.'
+              : 'Press ●, allow the mic, and start talking. Key signals — judgments, questions, decisions — appear here, organized into sections.'}
+          </div>
+        )}
+
+        {caption && <div className="status-caption">{caption}</div>}
+        {err && <div className="placeholder err">{err}</div>}
+      </aside>
+
+      {/* Recording control: bottom-center of the transcript pane, on a white
+          gradient (solid at the bottom, fading to transparent) so it reads
+          clearly over scrolled-up text without a hard edge. */}
+      <div className="transcript-record-dock">
+        <button
+          className={`record ${recording ? 'on' : ''}`}
+          title={recording ? 'Stop recording' : 'Start recording'}
+          onClick={onToggleRecord}
+        >
+          {recording ? <span className="stop-sq" /> : <span className="rec-dot" />}
+        </button>
+      </div>
+    </div>
   )
 }

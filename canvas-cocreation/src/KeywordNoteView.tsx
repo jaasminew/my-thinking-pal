@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { isBullet, isImage, type BulletItem, type CardItem, type ImageItem, type KeywordNote } from './canvas-types'
+import type { SelectionSnapshot, SelectionSegment } from './command-session'
 import { isImeEvent } from './ime'
 
 const hostOf = (u: string) => {
@@ -253,6 +254,7 @@ export function KeywordNoteView({
   selected,
   hovered,
   onPointerDownNote,
+  onContextMenuNote,
   onKeywordEdit,
   onKeywordChange,
   onKeywordCommit,
@@ -269,13 +271,15 @@ export function KeywordNoteView({
   onRemoveImage,
   onInsertAfter,
   onIndentBullet,
-  onOpenImage
+  onOpenImage,
+  onTextSelection
 }: {
   note: KeywordNote
   selected: boolean
   /** The transcript phrase this note came from is hovered → fade header orange. */
   hovered: boolean
   onPointerDownNote: (e: React.PointerEvent) => void
+  onContextMenuNote: (e: React.MouseEvent) => void
   onKeywordEdit: () => void
   onKeywordChange: (text: string) => void
   onKeywordCommit: () => void
@@ -293,6 +297,13 @@ export function KeywordNoteView({
   onRemoveImage: (imageId: string) => void
   onInsertAfter: (itemId: string) => void
   onOpenImage: (img: { src: string; sourceUrl?: string; title?: string; originRect?: DOMRect }) => void
+  /**
+   * A text selection inside this note's bullets settled (drag or double-click).
+   * The payload is already snapshot-shaped: per-bullet segments + a viewport-
+   * space rect. Fires only for non-empty selections — dismissal is the
+   * canvas's business (click-outside / Escape), not this view's.
+   */
+  onTextSelection?: (sel: SelectionSnapshot) => void
 }) {
   const itemsRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -365,6 +376,42 @@ export function KeywordNoteView({
     }, 0)
   }
 
+  // Read the CURRENT browser selection and, if it lives inside this note's
+  // bullets, report it upward in snapshot shape (per-bullet character segments
+  // + viewport rect). The canvas freezes this into the Tier-3 command bubble's
+  // SelectionSnapshot — after that, the native selection collapsing is
+  // irrelevant. Keyword header / card / image selections are not reported.
+  const reportSelection = () => {
+    if (!onTextSelection) return
+    const s = window.getSelection()
+    if (!s || s.rangeCount === 0 || s.isCollapsed) return
+    const a = bulletLocate(s.anchorNode, s.anchorOffset)
+    const f = bulletLocate(s.focusNode, s.focusOffset)
+    if (!a || !f) return
+    const [start, end] = a.idx <= f.idx ? [a, f] : [f, a]
+    const segments: SelectionSegment[] = []
+    for (let i = start.idx; i <= end.idx; i++) {
+      const item = note.items[i]
+      if (!item || !isBullet(item)) continue // cards/images inside the span are skipped
+      const sameBullet = start.idx === end.idx
+      const from = i === start.idx ? (sameBullet ? Math.min(start.off, end.off) : start.off) : 0
+      const to = i === end.idx ? (sameBullet ? Math.max(start.off, end.off) : end.off) : item.text.length
+      if (to > from) segments.push({ itemId: item.id, start: from, end: to, textAtCapture: item.text })
+    }
+    const selectedText = s.toString().trim()
+    if (!segments.length || !selectedText) return
+    const rect = s.getRangeAt(0).getBoundingClientRect()
+    // Empty range rect (rare) → fall back to the note's own rect.
+    const rr = rect.width || rect.height ? rect : rootRef.current?.getBoundingClientRect()
+    if (!rr) return
+    onTextSelection({
+      noteId: note.id,
+      selectedText,
+      segments,
+      screenRect: { top: rr.top, left: rr.left, width: rr.width, height: rr.height }
+    })
+  }
+
   // Drag across bullets to select text: the browser confines a native drag to
   // the one contentEditable it began in, so we extend the selection ourselves
   // from the press point to wherever the pointer is. Plain clicks (no movement)
@@ -390,6 +437,9 @@ export function KeywordNoteView({
     const up = () => {
       document.removeEventListener('pointermove', move)
       document.removeEventListener('pointerup', up)
+      // Let the selection settle before reading it (same tick it can lag the
+      // final setBaseAndExtent). Only drags report — plain clicks never moved.
+      if (moved) setTimeout(reportSelection, 0)
     }
     document.addEventListener('pointermove', move)
     document.addEventListener('pointerup', up)
@@ -603,6 +653,7 @@ export function KeywordNoteView({
       data-noteid={note.id}
       style={{ left: note.x, top: note.y }}
       onPointerDown={onPointerDownNote}
+      onContextMenu={onContextMenuNote}
       onKeyDown={onNoteKeyDown}
     >
       {/* Figma-style selection: rectangle border + square handles at the corners */}
@@ -625,7 +676,13 @@ export function KeywordNoteView({
       </div>
 
       {/* one ordered flow: bullets and inline URL cards */}
-      <div className="items" ref={itemsRef} onPointerDown={onItemsPointerDown}>
+      {/* onDoubleClick: a dbl-click word-selection is a selection too — report it. */}
+      <div
+        className="items"
+        ref={itemsRef}
+        onPointerDown={onItemsPointerDown}
+        onDoubleClick={() => setTimeout(reportSelection, 0)}
+      >
         {note.items.map((item, i) => (isBullet(item) ? bulletRow(item, i) : isImage(item) ? imageRow(item, i) : cardRow(item, i)))}
       </div>
     </div>

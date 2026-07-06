@@ -22,6 +22,18 @@ export interface CocreateRequest {
    */
   transcriptWindow?: string
   /**
+   * Typed pending signals extracted from the same window, one per line as
+   * "[decision] …" / "[objection] …" (speaker-prefixed when diarized). The
+   * user never sees these tags — they let the model weight its contribution
+   * by what KIND of thought it is responding to.
+   */
+  signalWindow?: string
+  /**
+   * When the seed is a phrase dragged from the transcript, the signal type of
+   * the line it came from ('decision', 'objection', …).
+   */
+  seedType?: string
+  /**
    * Reaction signals — AI suggestions the user KEPT (positive) / REJECTED
    * (negative). Each entry may carry the fire's diagnosis inline, e.g.
    * "Notion stores… [offered because: bullet 2 needs a real case]", so the

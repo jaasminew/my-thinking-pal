@@ -1,36 +1,40 @@
 import type {
-  CleanTranscriptRequest,
-  CleanTranscriptResult,
+  ExtractSignalsRequest,
+  ExtractSignalsResult,
+  OrganizeRequest,
+  OrganizeResult,
   SectionHeaderRequest,
-  SectionHeaderResult,
-  SegmentRequest,
-  SegmentResult
+  SectionHeaderResult
 } from './types'
 
-export async function requestCleanTranscript(req: CleanTranscriptRequest): Promise<CleanTranscriptResult> {
+// Extraction pass: raw speech window -> typed pending signals. A transport
+// failure returns skipped=true so the engine puts the raw back and retries —
+// only a successfully parsed EMPTY list means "discard this window".
+export async function requestExtractSignals(req: ExtractSignalsRequest): Promise<ExtractSignalsResult> {
   try {
-    const r = await fetch('/api/clean-transcript', {
+    const r = await fetch('/api/extract-signals', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req)
     })
-    return (await r.json()) as CleanTranscriptResult
+    return (await r.json()) as ExtractSignalsResult
   } catch (e: any) {
-    return { markedText: '', serverMs: 0, error: e?.message || String(e) }
+    return { signals: [], skipped: true, serverMs: 0, error: e?.message || String(e) }
   }
 }
 
-// Structuring pass: send the open tail; get back the closed segments + headers.
-// Async, higher-latency (thinking model). On any failure it returns empty
-// sections so the engine simply treats the round as "no split" — never an error.
-export async function requestSegment(req: SegmentRequest): Promise<SegmentResult> {
+// Organize pass: pending signals -> titled sections (may merge/reword unlocked
+// lines). Async, higher-latency (thinking model). On any failure it returns
+// empty sections so the engine simply treats the round as "no organize" — never
+// an error.
+export async function requestOrganize(req: OrganizeRequest): Promise<OrganizeResult> {
   try {
-    const r = await fetch('/api/segment', {
+    const r = await fetch('/api/organize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req)
     })
-    return (await r.json()) as SegmentResult
+    return (await r.json()) as OrganizeResult
   } catch (e: any) {
     return { sections: [], serverMs: 0, error: e?.message || String(e) }
   }

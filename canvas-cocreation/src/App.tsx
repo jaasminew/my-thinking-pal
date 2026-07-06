@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Transcript } from './Transcript'
-import { CommandBar } from './CommandBar'
 import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
-import { loadJSON, saveJSON, clearSaved } from './persist'
+import { loadJSON, saveJSON, clearSaved, downloadSavedData } from './persist'
 import { requestCocreate } from '../../services/llm/cocreate'
 import type { CocreateProvider, OpenSub } from '../../services/llm/cocreate-types'
+import { requestCommandChat } from '../../services/llm/command-chat'
+import { InlineCommandBubble } from './InlineCommandBubble'
+import { CommandSidePanel } from './CommandSidePanel'
+import {
+  applyAction,
+  buildTurnContext,
+  paintContextHighlight,
+  clearContextHighlight,
+  type SelectionSnapshot,
+  type CommandSession,
+  type CommandMessage
+} from './command-session'
 import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
 
 const PROVIDERS: { id: CocreateProvider; label: string }[] = [
@@ -77,6 +88,14 @@ const insertAnchored = (items: NoteItem[], nb: BulletItem, anchorId?: string): N
 const withDiag = (text: string, diagnosis?: string) =>
   diagnosis ? `${text} [offered because: ${diagnosis}]` : text
 
+const settledCommandSession = (s: CommandSession | null): CommandSession | null =>
+  s
+    ? {
+        ...s,
+        messages: s.messages.map((m) => (m.pending ? { ...m, pending: false } : m))
+      }
+    : null
+
 // URLs the user types/pastes into a bullet get pulled out into inline cards.
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
 const hostOf = (u: string) => {
@@ -140,6 +159,8 @@ function CanvasSpace({
   const [images, setImages] = useState<CanvasImage[]>(() => loadJSON<CanvasImage[]>(k('images'), []))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null)
+  // Right-click on a note: duplicate/rename/delete. Closes on click-away/Escape.
+  const [noteMenu, setNoteMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   // The note whose transcript source phrase is currently hovered — its header
   // fades to orange. null = every header stays plain black.
   const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null)
@@ -215,6 +236,23 @@ function CanvasSpace({
   // ones. Tier-3 commands stay live — an explicit command is an invitation.
   const [aiEnabled, setAiEnabled] = useState(true)
 
+  // ---- Tier-3 command sessions: select text → bubble → side-panel chat ----
+  // bubbleSel is the FROZEN SelectionSnapshot the bubble was opened from; the
+  // live browser selection collapsing afterwards is expected and ignored. One
+  // session at a time (demo scope), restored per idea space so local backups
+  // include the right-side AI chat.
+  const [bubbleSel, setBubbleSel] = useState<SelectionSnapshot | null>(null)
+  const [session, setSession] = useState<CommandSession | null>(() =>
+    settledCommandSession(loadJSON<CommandSession | null>(k('command-session'), null))
+  )
+  const [chatStreaming, setChatStreaming] = useState(false)
+  const sessionRef = useRef<CommandSession | null>(null)
+  useEffect(() => { sessionRef.current = session }, [session])
+  const chatAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    saveJSON(k('command-session'), settledCommandSession(session))
+  }, [session])
+
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
   // Canvas view transform: pinch = zoom (around the cursor), two-finger swipe
@@ -249,6 +287,23 @@ function CanvasSpace({
   const transcriptSlice = useCallback((from: number, to: number): string | undefined => {
     const parts = rawTranscriptRef.current.filter((e) => e.ts >= from && e.ts <= to).map((e) => e.text)
     return parts.length ? parts.join(' ') : undefined
+  }, [])
+  // Typed pending signals extracted by the transcript engine (append-only log,
+  // per idea space). Types/speakers are never rendered — they exist to make
+  // co-creation type-aware: runAi slices this by the same window rules as the
+  // verbatim transcript.
+  const signalLogRef = useRef<{ text: string; type?: string; speaker?: string; ts: number }[]>(
+    loadJSON(k('signal-log'), [])
+  )
+  const onSignals = useCallback((lines: { text: string; type?: string; speaker?: string; ts: number }[]) => {
+    for (const l of lines) signalLogRef.current.push({ text: l.text, type: l.type, speaker: l.speaker, ts: l.ts })
+    saveJSON(k('signal-log'), signalLogRef.current)
+  }, [])
+  const signalSlice = useCallback((from: number, to: number): string | undefined => {
+    const parts = signalLogRef.current
+      .filter((e) => e.ts >= from && e.ts <= to)
+      .map((e) => `[${e.type || 'judgment'}]${e.speaker ? ` [${e.speaker}]` : ''} ${e.text}`)
+    return parts.length ? parts.join('\n') : undefined
   }, [])
 
   // Autosave notes + view (debounced — note state churns on every keystroke
@@ -363,6 +418,21 @@ function CanvasSpace({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Note context menu: dismiss on Escape, click-away, or scroll (position would go stale).
+  useEffect(() => {
+    if (!noteMenu) return
+    const close = () => setNoteMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('wheel', close)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('wheel', close)
+    }
+  }, [noteMenu])
+
   const patchNote = useCallback((id: string, fn: (n: KeywordNote) => KeywordNote) => {
     setNotes((ns) => ns.map((n) => (n.id === id ? fn(n) : n)))
   }, [])
@@ -464,6 +534,10 @@ function CanvasSpace({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       const rect = el.getBoundingClientRect()
+      // Pan/zoom moves the canvas under the bubble's frozen screen-space rect —
+      // dismiss it rather than let it float over the wrong spot. (The context
+      // HIGHLIGHT lives on the text itself, so it moves correctly and stays.)
+      setBubbleSel(null)
       setView((v) => {
         if (e.ctrlKey || e.metaKey) {
           const cx = e.clientX - rect.left, cy = e.clientY - rect.top
@@ -517,10 +591,18 @@ function CanvasSpace({
         note.originTs !== undefined
           ? transcriptSlice(note.originTs - 60_000, note.originTs + 60_000)
           : transcriptSlice(Date.now() - 120_000, Infinity)
+      // Typed signals follow the same window rules, except rule A widens to the
+      // extraction cadence (signals land every ~2min, so a 2min window is often
+      // empty right after a batch).
+      const signalWindow =
+        note.originTs !== undefined
+          ? signalSlice(note.originTs - 60_000, note.originTs + 60_000)
+          : signalSlice(Date.now() - 300_000, Infinity)
 
       const result = await requestCocreate(
         {
           seedText: seed,
+          seedType: note.originSignalType,
           command,
           // Leading spaces mirror outline depth so the model sees the structure
           // it anchors into (the server numbers these lines for ANCHOR).
@@ -529,6 +611,7 @@ function CanvasSpace({
           rejected: note.rejected,
           existingIdeas,
           transcriptWindow,
+          signalWindow,
           ...providerArgs()
         },
         {
@@ -682,6 +765,156 @@ function CanvasSpace({
     setAiEnabled(next)
   }, [])
 
+  // ---- Tier-3: persistent context highlight --------------------------------
+  // Painted from the frozen snapshot (bubble open or session running), rebuilt
+  // after every notes render (React replaces the DOM nodes). It lives on the
+  // real text, so pan/zoom/drag move it for free. Clears when the conversation
+  // officially ends (panel close / bubble dismissed without submitting).
+  const activeSnapshot = session?.source ?? bubbleSel
+  useEffect(() => {
+    if (!activeSnapshot) {
+      clearContextHighlight()
+      return
+    }
+    paintContextHighlight(activeSnapshot, notes.find((n) => n.id === activeSnapshot.noteId))
+  }, [activeSnapshot, notes])
+  useEffect(() => () => clearContextHighlight(), []) // unmount (space closed)
+
+  // Click anywhere outside the bubble dismisses it (the bubble stops its own
+  // pointerdown from reaching the document). No session started → the
+  // highlight clears with it via the effect above.
+  useEffect(() => {
+    if (!bubbleSel) return
+    // Belt and braces: the bubble already stops its own pointerdown from
+    // bubbling, but ALSO check the target — event-order quirks (touch,
+    // synthetic events) must never let a click INSIDE the bubble dismiss it.
+    const onDown = (e: PointerEvent) => {
+      if ((e.target as HTMLElement | null)?.closest?.('.cmd-bubble')) return
+      setBubbleSel(null)
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [bubbleSel])
+
+  // A settled text selection inside a note summons the bubble (already
+  // snapshot-shaped — freezing IS receiving it).
+  const onNoteTextSelection = useCallback((sel: SelectionSnapshot) => {
+    setBubbleSel(sel)
+  }, [])
+
+  // One chat turn: append the user message + a streaming assistant message,
+  // send the FULL history plus freshly captured context (the backends are
+  // stateless), and stream text/action events into the assistant message.
+  const sendTurn = useCallback(async (text: string) => {
+    const cur = sessionRef.current
+    if (!cur) return
+    const userMsg: CommandMessage = { id: uid('m'), role: 'user', text }
+    const asstMsg: CommandMessage = { id: uid('m'), role: 'assistant', text: '', pending: true }
+    const history = [...cur.messages, userMsg]
+    const next = { ...cur, messages: [...history, asstMsg] }
+    sessionRef.current = next
+    setSession(next)
+    setChatStreaming(true)
+
+    const note = cur.source ? notesRef.current.find((n) => n.id === cur.source!.noteId) : undefined
+    // 1 min TOTAL of verbatim transcript (Tier-3 window is half of Tier-2's):
+    // dragged note → ±30s around when its keyword was spoken; else last 60s.
+    const transcriptWindow =
+      note?.originTs !== undefined
+        ? transcriptSlice(note.originTs - 30_000, note.originTs + 30_000)
+        : transcriptSlice(Date.now() - 60_000, Infinity)
+
+    const controller = new AbortController()
+    chatAbortRef.current = controller
+    const fireId = uid('cf')
+    firesRef.current.set(fireId, { controller, isCommand: true })
+
+    const patchAsst = (fn: (m: CommandMessage) => CommandMessage) =>
+      setSession((s) => {
+        if (!s) return s
+        const upd = { ...s, messages: s.messages.map((m) => (m.id === asstMsg.id ? fn(m) : m)) }
+        sessionRef.current = upd
+        return upd
+      })
+
+    const result = await requestCommandChat(
+      {
+        ...providerArgs(),
+        messages: history.map((m) => ({ role: m.role, text: m.text })),
+        context: buildTurnContext(note, cur.source, transcriptWindow)
+      },
+      {
+        onText: (t) => patchAsst((m) => ({ ...m, text: m.text + t })),
+        onAction: (action) =>
+          patchAsst((m) => ({ ...m, actions: [...(m.actions || []), { id: uid('a'), action }] }))
+      },
+      controller.signal
+    )
+
+    firesRef.current.delete(fireId)
+    setChatStreaming(false)
+    if (result.aborted) return // panel closed / session replaced mid-stream
+    patchAsst((m) => ({
+      ...m,
+      pending: false,
+      text: result.error ? (m.text ? `${m.text}\n⚠ ${result.error}` : `⚠ ${result.error}`) : m.text
+    }))
+  }, [providerArgs, transcriptSlice])
+
+  // Open a session from the bubble (snapshot) or the bottom bar (null source),
+  // replacing any previous one — its stream is aborted, its highlight replaced.
+  const openCommandSession = useCallback((source: SelectionSnapshot | null, firstCommand: string) => {
+    chatAbortRef.current?.abort()
+    const title = firstCommand.length > 42 ? firstCommand.slice(0, 42) + '…' : firstCommand
+    const s: CommandSession = { id: uid('cs'), source, title, messages: [], createdAt: Date.now() }
+    sessionRef.current = s
+    setSession(s)
+    setBubbleSel(null)
+    void sendTurn(firstCommand)
+  }, [sendTurn])
+
+  // Officially close the conversation: abort the stream; the highlight clears
+  // via the snapshot effect.
+  const closeCommandSession = useCallback(() => {
+    chatAbortRef.current?.abort()
+    sessionRef.current = null
+    setSession(null)
+    setChatStreaming(false)
+  }, [])
+
+  // Apply one proposed action: content lands as PENDING AI items (the user's
+  // ✓ is what settles it), and the button locks as applied.
+  const onApplyAction = useCallback((messageId: string, actionId: string) => {
+    const cur = sessionRef.current
+    const msg = cur?.messages.find((m) => m.id === messageId)
+    const pa = msg?.actions?.find((a) => a.id === actionId)
+    if (!cur || !pa || pa.applied) return
+    // Where a create-note action lands: beside the source note, else at a
+    // visible spot in the current view.
+    const src = cur.source ? notesRef.current.find((n) => n.id === cur.source!.noteId) : undefined
+    let createAt = { x: 80, y: 80 }
+    if (src) createAt = { x: src.x + 340, y: src.y }
+    else if (canvasRef.current) {
+      const r = canvasRef.current.getBoundingClientRect()
+      const v = viewRef.current
+      createAt = { x: (r.width * 0.35 - v.x) / v.scale, y: (r.height * 0.3 - v.y) / v.scale }
+    }
+    setNotes((ns) => applyAction(ns, pa.action, createAt))
+    setSession((s) => {
+      if (!s) return s
+      const upd = {
+        ...s,
+        messages: s.messages.map((m) =>
+          m.id === messageId
+            ? { ...m, actions: m.actions?.map((a) => (a.id === actionId ? { ...a, applied: true } : a)) }
+            : m
+        )
+      }
+      sessionRef.current = upd
+      return upd
+    })
+  }, [])
+
   // ---- canvas: drag blank = marquee-select (框选); plain click = new note ----
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.target !== canvasRef.current && e.target !== layerRef.current) return // only on truly blank space
@@ -757,6 +990,9 @@ function CanvasSpace({
     // of its first selected line — the note keeps it for life (rule B anchor).
     const tsData = e.dataTransfer.getData('application/x-transcript-ts')
     const originTs = tsData ? Number(tsData) : undefined
+    // The dragged line's signal type rides along (recorded, never rendered) so
+    // co-creation knows what kind of thought seeded this note.
+    const originSignalType = e.dataTransfer.getData('application/x-signal-type') || undefined
     const { x, y } = toWorld(e.clientX, e.clientY)
     const id = uid('n')
     setNotes((ns) => [
@@ -765,6 +1001,7 @@ function CanvasSpace({
         id, x, y, keyword: text, keywordEditing: false, aiRunning: false,
         kept: [], rejected: [], lastFiredWords: 0, sourceText: text,
         ...(Number.isFinite(originTs) ? { originTs } : {}),
+        ...(originSignalType ? { originSignalType } : {}),
         items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
       }
     ])
@@ -878,6 +1115,44 @@ function CanvasSpace({
       next.delete(id)
       return next
     })
+  }
+
+  // Right-click a note: select it (so the menu clearly targets one note) and
+  // open the duplicate/rename/delete menu at the cursor.
+  const onNoteContextMenu = (id: string) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedIds(new Set([id]))
+    setNoteMenu({ id, x: e.clientX, y: e.clientY })
+  }
+
+  // Clone a note with fresh ids (note + every item) so it doesn't collide with
+  // the original in localStorage, offset a bit so the copy is visibly distinct,
+  // and select the copy (not the original) since that's what the user just made.
+  const onDuplicateNote = (id: string) => {
+    const n = notesRef.current.find((x) => x.id === id)
+    if (!n) return
+    const copy: KeywordNote = {
+      ...n,
+      id: uid('n'),
+      x: n.x + 24,
+      y: n.y + 24,
+      keywordEditing: false,
+      items: n.items.map((it) => ({ ...it, id: uid(it.kind) }))
+    }
+    setNotes((ns) => [...ns, copy])
+    setSelectedIds(new Set([copy.id]))
+    setNoteMenu(null)
+  }
+
+  const onRenameNote = (id: string) => {
+    patchNote(id, (n) => ({ ...n, keywordEditing: true }))
+    setNoteMenu(null)
+  }
+
+  const onDeleteNoteFromMenu = (id: string) => {
+    onDeleteNote(id)()
+    setNoteMenu(null)
   }
 
   // ⏎ on a focused inline URL card: start a new line right after it.
@@ -1015,15 +1290,6 @@ function CanvasSpace({
     beginDrag(dragTargets(id), e.clientX, e.clientY, im ? () => setImgPreview({ src: im.src, originRect: rect }) : undefined)
   }
 
-  // ---- Tier-3 command pill ----
-  const onCommand = (command: string) => {
-    const { x, y } = { x: 80, y: 60 + notes.length * 6 }
-    const id = uid('n')
-    // Pre-set lastFiredWords so the every-20 effect doesn't ALSO fire this note.
-    setNotes((ns) => [...ns, { id, x, y, keyword: command, keywordEditing: false, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: countWords(command) }])
-    void runAi(id, command)
-  }
-
   // Which transcript phrases to faintly mark: one per note born from a drag
   // (keeps its immutable sourceText + the source line's ts). Deriving from notes
   // means a deleted note's mark disappears on its own.
@@ -1035,7 +1301,12 @@ function CanvasSpace({
     <>
       <Transcript
         recording={recording}
+        onToggleRecord={onToggleRecord}
         onRawFinal={onRawFinal}
+        onSignals={onSignals}
+        // The organize pass follows the global provider; 'open' maps to Groq
+        // (organize always uses gpt-oss-120b, not the weaker open-model picker).
+        organizeProvider={provider === 'open' ? 'groq' : provider}
         storageSuffix={storageSuffix}
         highlights={highlights}
         onHoverNote={setHoveredNoteId}
@@ -1083,6 +1354,7 @@ function CanvasSpace({
               selected={selectedIds.has(n.id)}
               hovered={hoveredNoteId === n.id}
               onPointerDownNote={onNotePointerDown(n.id)}
+              onContextMenuNote={onNoteContextMenu(n.id)}
               onKeywordEdit={onKeywordEdit(n.id)}
               onKeywordChange={onKeywordChange(n.id)}
               onKeywordCommit={onKeywordCommit(n.id)}
@@ -1100,6 +1372,7 @@ function CanvasSpace({
               onInsertAfter={onInsertAfter(n.id)}
               onRemoveImage={removeImageItem(n.id)}
               onOpenImage={setImgPreview}
+              onTextSelection={onNoteTextSelection}
             />
           ))}
           {/* standalone floating images — no note wrapper, no header */}
@@ -1117,13 +1390,43 @@ function CanvasSpace({
             />
           ))}
           </div>
-
-          <CommandBar
-            recording={recording}
-            onToggleRecord={onToggleRecord}
-            onSubmit={onCommand}
-          />
       </div>
+
+      {/* Right-click on a note: duplicate/rename/delete. Viewport-space (fixed),
+          same as the click that opened it — not affected by canvas pan/zoom. */}
+      {noteMenu && (
+        <div
+          className="note-menu"
+          style={{ left: noteMenu.x, top: noteMenu.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button onClick={() => onDuplicateNote(noteMenu.id)}>Duplicate</button>
+          <button onClick={() => onRenameNote(noteMenu.id)}>Rename</button>
+          <button className="danger" onClick={() => onDeleteNoteFromMenu(noteMenu.id)}>Delete</button>
+        </div>
+      )}
+
+      {/* Tier-3: inline AI bubble at the frozen selection (viewport-space) */}
+      {bubbleSel && (
+        <InlineCommandBubble
+          snapshot={bubbleSel}
+          onSubmit={(cmd) => openCommandSession(bubbleSel, cmd)}
+          onDismiss={() => setBubbleSel(null)}
+        />
+      )}
+
+      {/* Tier-3: temporary chat panel — sibling of .canvas inside .panel-body,
+          so it overlays only THIS space and never eats the canvas's wheel. */}
+      {session && (
+        <CommandSidePanel
+          session={session}
+          streaming={chatStreaming}
+          onSend={sendTurn}
+          onApplyAction={onApplyAction}
+          onClose={closeCommandSession}
+        />
+      )}
 
       {/* Expanded image previewer: blurred scrim, image large, source url below. */}
       {imgPreview && (
@@ -1412,6 +1715,9 @@ export function App() {
                 {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
               </select>
             )}
+            <button className="save-local" title="Download a local JSON backup of saved transcript, reflections, and canvas data" onClick={downloadSavedData}>
+              Save local copy
+            </button>
             <button className="clear-saved" title="Delete all saved notes and transcript data" onClick={clearAll}>
               Clear saved
             </button>

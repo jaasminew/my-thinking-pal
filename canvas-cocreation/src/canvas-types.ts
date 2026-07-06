@@ -91,6 +91,12 @@ export interface KeywordNote {
    * faintly mark its source text, and link a hover back to this note.
    */
   sourceText?: string
+  /**
+   * The signal type ('decision', 'objection', …) of the transcript line the
+   * dragged phrase came from — recorded, never rendered; passed to co-creation
+   * as seedType so the model knows what KIND of thought seeded this note.
+   */
+  originSignalType?: string
 }
 
 export const isBullet = (i: NoteItem): i is BulletItem => i.kind === 'bullet'

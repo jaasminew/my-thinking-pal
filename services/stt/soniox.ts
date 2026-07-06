@@ -41,7 +41,10 @@ export class SonioxSTT implements STTProvider {
           sample_rate: this.TARGET_RATE,
           num_channels: 1,
           enable_language_identification: true,
-          language_hints: ['en', 'zh']
+          language_hints: ['en', 'zh'],
+          // Meetings are multi-speaker: tag tokens per speaker so downstream
+          // signal extraction can attribute decisions/objections.
+          enable_speaker_diarization: true
         })
       )
 
@@ -71,11 +74,24 @@ export class SonioxSTT implements STTProvider {
       const tokens = data?.tokens
       if (!Array.isArray(tokens) || tokens.length === 0) return
 
-      // Newly-final tokens -> permanent chunk; the rest -> live interim.
-      const finalText = tokens.filter((t: any) => t.is_final).map((t: any) => t.text).join('')
-      const interimText = tokens.filter((t: any) => !t.is_final).map((t: any) => t.text).join('')
+      // Newly-final tokens -> permanent chunks, one event per speaker run (so a
+      // turn change mid-batch is not glued into one chunk); the rest -> interim.
       const ts = performance.now()
-      if (finalText.trim()) this.cb?.({ text: finalText, isFinal: true, timestamp: ts })
+      const finals = tokens.filter((t: any) => t.is_final)
+      let run = ''
+      let runSpeaker: string | undefined
+      const flushRun = () => {
+        if (run.trim()) this.cb?.({ text: run, isFinal: true, timestamp: ts, speaker: runSpeaker })
+        run = ''
+      }
+      for (const t of finals) {
+        const spk = t.speaker != null && t.speaker !== '' ? `S${t.speaker}` : undefined
+        if (run && spk !== runSpeaker) flushRun()
+        runSpeaker = spk
+        run += t.text
+      }
+      flushRun()
+      const interimText = tokens.filter((t: any) => !t.is_final).map((t: any) => t.text).join('')
       if (interimText.trim()) this.cb?.({ text: interimText, isFinal: false, timestamp: ts })
     }
 
