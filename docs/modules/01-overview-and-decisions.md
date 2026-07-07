@@ -10,23 +10,24 @@ Thinking Pal 是实时思考工作台，不是会议纪要工具。核心约束�
 - 输出语言跟随用户主导口语。
 - AI 建议保持**相邻、视觉可区分、可 keep/reject**。
 
-## 1.2 现状评估：为什么现在还不是产品
+## 1.2 现状评估与进度（Phase 0/1 已落地，Phase 2 进行中）
 
-| 维度 | 现状 | 结论 |
+| 维度 | 原始现状 | 进度 |
 | --- | --- | --- |
-| 后端 | `server/api-plugin.ts` 是 **Vite dev 中间件**，仅 `npm run dev` 时挂载 | 无法独立部署，需重建 |
-| LLM 密钥 | 握在 dev 层 `LLM` 注册表，经 `/api/cocreate` 中转 | 改为前端持有、直连 MaaS |
-| CLI 路线 | `server/agents.ts` spawn 本机 `claude`/`codex` 复用订阅 | 仅本机实验，产品下线 |
-| 持久化 | 笔记只在 `App.tsx` 的 `useState`，刷新即丢 | 引入本地优先 CRDT + 云端同步 |
-| 账号 | 无 | 新建账号体系 |
-| STT | `Transcript.tsx` 静态占位；`CommandBar` 录音按钮仅切布尔值 | 真实 STT，经后端转发 |
-| 构建产物 | `out/` 有陈旧 Electron 产物，源码已无 electron 配置 | 早期试过，可重建 |
+| 后端 | `server/api-plugin.ts` 是 **Vite dev 中间件** | ✅ **已瘦身**为最小 relay（仅 `/api/search`、`/api/url-meta`）；dev key 握手端点 `/api/llm-config`、`/api/soniox-key` **已下线**，改为编译期 dev 注入（`services/dev-keys.ts`）；LLM 逻辑全迁至 `packages/core/llm`。✅ **Go 后端 `server-go/` 已起**（Auth/JWT/argon2id + documents + `/sync` 同步中继） |
+| LLM 密钥 | 握在 dev 层注册表，经 `/api/cocreate` 中转 | ✅ **前端直连 MaaS**：key 存浏览器（`localStorage`，dev 经编译期注入回退 `.env`，prod 不打进包），设置弹窗可编辑 provider/模型/key |
+| CLI 路线 | `server/agents.ts` spawn 本机 `claude`/`codex` | ✅ **已下线** `agents.ts`；Web 默认 Groq 直连，移除 CLI 选择器 |
+| 持久化 | 笔记只在 `App.tsx` 的 `useState`/`localStorage` | ✅ **本地优先 CRDT**（Yjs + `y-indexeddb`，`packages/core/doc`）；✅ 云端同步哑中继 `/sync` 已实现，✅ **前端已接线**：登录后每个 space 映射一个 server 文档，`BoardSync` 挂上 `board.doc`（`VITE_API_URL` 开启，未配置则纯本地） |
+| 账号 | 无 | ✅ **Go 后端已实现**（注册/登录/刷新轮换/me，argon2id + HS256 JWT）；✅ **SQLite 持久化**（`modernc.org/sqlite` 纯 Go，重启不丢，`ACCOUNT_STORE=sqlite`）；✅ **前端登录 UI 已接**（`AuthPanel` + `useBackend`，token 存浏览器，401 自动刷新） |
+| STT | 浏览器直连 Soniox（`/api/soniox-key` 取 key） | ✅ **Go `/stt` 后端转发已实现**（可插拔 soniox/tencent/mock，后端持 key）；✅ **前端已接线**：登录后 Transcript 用 `BackendSTT` 经后端转发，未登录回退浏览器直连 Soniox（key 走 dev 编译期注入，`/api/soniox-key` 已下线） |
+| 构建产物 | `out/` 陈旧 Electron 产物 | ⏳ Electron 壳后置（Phase 3） |
 
 ### 现有关键文件
 
-- 前端画布：`canvas-cocreation/src/App.tsx`、`KeywordNoteView.tsx`、`Transcript.tsx`、`CommandBar.tsx`、`canvas-types.ts`
-- LLM 契约：`services/llm/cocreate.ts`、`services/llm/cocreate-types.ts`
-- Dev 后端：`server/api-plugin.ts`、`server/agents.ts`、`server/search.ts`、`server/proxy.ts`
+- 前端画布：`apps/web/src/App.tsx`、`KeywordNoteView.tsx`、`Transcript.tsx`、`CommandBar.tsx`、`canvas-types.ts`
+- CRDT 本地优先：`packages/core/doc`（schema/board）、`apps/web/src/board-persistence.ts`
+- LLM 客户端直连：`packages/core/llm/*`、`services/llm/{client,cocreate,command-chat,provider-config,web-search}.ts`
+- 最小 dev 后端：`server/api-plugin.ts`、`server/search.ts`、`server/url-meta.ts`、`server/proxy.ts`（search relay 用；`agents.ts` 已删）
 - 入口构建：`index.html`、`vite.config.ts`
 
 ## 1.3 决策一：LLM 前端直连 MaaS，不走后端
@@ -58,10 +59,10 @@ Thinking Pal 是实时思考工作台，不是会议纪要工具。核心约束�
 3. 隐私：思考内容不经我方服务器。
 4. 本地优先契合：agent 直接读写本地 Yjs 文档。
 
-唯一取舍——**Web 搜索**（现用我方 Tavily key，见 `server/search.ts`）：
+唯一取舍——**Web 搜索 / og:image**（见 `server/search.ts`、`server/url-meta.ts`）：
 
-- 初期：用户自配搜索 key，前端直连。
-- 后期：像 STT 一样做成带计费的后端可选服务。
+- **已定（Phase 0）**：保留**最小后端 relay**（`/api/search` + `/api/url-meta`）承载真实搜索与 og:image 抓取——浏览器受 CORS 限制、且 Tavily key + 国内代理更适合在服务端；对应「URL 卡片只来自真实搜索」。前端 LLM 已直连，仅这两项走后端。
+- 后期：并入 Go 后端，像 STT 一样加账号识别与计费/限流。
 
 ## 1.5 决策汇总
 
@@ -72,4 +73,4 @@ Thinking Pal 是实时思考工作台，不是会议纪要工具。核心约束�
 | 账号体系 | Go 后端 | — |
 | LLM 推理 / agent | 客户端 | 用户 |
 | STT 语音转写 | Go 后端转发 | 我方 |
-| Web 搜索 | 初期客户端 / 后期后端 | 用户 → 我方 |
+| Web 搜索 / og:image | 最小后端 relay（`/api/search`+`/api/url-meta`） | 我方（Tavily） |

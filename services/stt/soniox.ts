@@ -1,10 +1,13 @@
 import type { STTProvider, STTStartOpts, TranscriptEvent } from './types'
+import { devSonioxKey } from './soniox-key'
 
 // Real-time multilingual STT with code-switching (中英混说). Soniox auto-detects
 // language per token and handles Chinese+English in one utterance — which
 // WebSpeech (single language) and Deepgram (weak Mandarin) cannot.
 //
-// Needs SONIOX_API_KEY in .env (browser fetches it + model from /api/soniox-key).
+// This is the LOCAL, browser-direct fallback: it pulls the key from the dev-only
+// compile-time inject (see soniox-key.ts / dev-keys.ts). When signed in the app
+// uses the backend `/stt` proxy (BackendSTT) instead, so this never runs then.
 // Streams raw 16kHz PCM16 over WebSocket. Verify the model id against current
 // Soniox docs if the connection is rejected.
 export class SonioxSTT implements STTProvider {
@@ -19,8 +22,12 @@ export class SonioxSTT implements STTProvider {
   private readonly TARGET_RATE = 16000
 
   async start(opts: STTStartOpts): Promise<void> {
-    const { key, model } = await (await fetch('/api/soniox-key')).json()
-    if (!key) throw new Error('No SONIOX_API_KEY in .env — add one or use WebSpeech.')
+    const { key, model } = devSonioxKey()
+    if (!key) {
+      throw new Error(
+        'No Soniox key available. Sign in to use backend STT, or run `npm run dev` with SONIOX_API_KEY in .env for the local browser-direct path.'
+      )
+    }
 
     this.stream = opts.stream ?? (await navigator.mediaDevices.getUserMedia({ audio: true }))
     this.ctx = new AudioContext()

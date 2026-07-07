@@ -62,15 +62,17 @@ installed, but the app is not wired to tldraw yet.
 ## Project Layout
 
 ```text
+apps/
+  web/src/App.tsx      Canvas co-creation renderer (Vite root stays the repo root)
+packages/
+  core/                Shared: CRDT doc schema/board, LLM parsing, settings
 services/
-  llm/                 Browser client for /api/cocreate
+  api/ sync/ stt/ llm/ Browser clients: auth+documents, BoardSync, STT, LLM
 server/
-  api-plugin.ts        Vite backend: Groq/Cerebras/Ollama proxy and /api/cocreate
-  agents.ts            Claude Code / Codex CLI bridge
+  api-plugin.ts        Dev-only Vite middleware: Tavily search + og:image relay
   search.ts            Tavily search bridge
-canvas-cocreation/
-  src/App.tsx          Canvas co-creation prototype
-index.html             App entry
+server-go/             Optional Go backend (auth, /sync, /stt) — opt-in via VITE_API_URL
+index.html             App entry (loads /apps/web/src/main.tsx)
 ```
 
 ## Notes For Partners

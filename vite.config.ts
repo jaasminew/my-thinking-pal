@@ -12,8 +12,25 @@ export default defineConfig(({ mode }) => {
   for (const [k, v] of Object.entries(env)) {
     if (v !== '') process.env[k] = v
   }
+  // Dev-only key inject (replaces the retired /api/llm-config + /api/soniox-key
+  // handoffs). In production this is `null` so the browser relies on the in-app
+  // settings UI / OS keychain — no keys are baked into the shipped bundle.
+  const devLlmKeys =
+    mode === 'production'
+      ? null
+      : {
+          groq: { key: env.GROQ_API_KEY || '', model: env.GROQ_MODEL || 'openai/gpt-oss-20b' },
+          cerebras: { key: env.CEREBRAS_API_KEY || '', model: env.CEREBRAS_MODEL || 'llama3.1-8b' },
+          ollama: {
+            key: '',
+            model: env.OLLAMA_MODEL || 'qwen3:1.7b',
+            baseUrl: env.OLLAMA_BASE_URL || 'http://localhost:11434/v1'
+          },
+          soniox: { key: env.SONIOX_API_KEY || '', model: env.SONIOX_MODEL || 'stt-rt-v5' }
+        }
   return {
     plugins: [react(), apiPlugin()],
+    define: { __DEV_LLM_KEYS__: JSON.stringify(devLlmKeys) },
     server: { port: 5173, open: true }
   }
 })

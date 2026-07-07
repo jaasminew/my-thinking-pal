@@ -1,0 +1,30 @@
+# electron-builder packaging config (docs module 11.7). Run `npm run build:desktop`
+# to produce installers. Code signing / notarization (macOS) and auto-update are
+# deferred (docs 11.7) — add certificates + electron-updater when shipping.
+appId: com.mythinkingpal.desktop
+productName: Thinking Pal
+directories:
+  # Repo root is the Vite root, so packaged files come from ./dist plus the
+  # desktop main/preload entry points.
+  output: apps/desktop/release
+  buildResources: apps/desktop/build
+files:
+  - dist/**/*
+  - apps/desktop/main.cjs
+  - apps/desktop/preload.cjs
+  - package.json
+extraMetadata:
+  # electron-builder reads the main entry from package.json; point it at the
+  # desktop main process for the packaged app only.
+  main: apps/desktop/main.cjs
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+  category: Office

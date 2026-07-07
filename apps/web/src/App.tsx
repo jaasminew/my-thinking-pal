@@ -3,9 +3,9 @@ import { Transcript } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
 import { loadJSON, saveJSON, clearSaved, downloadSavedData } from './persist'
-import { requestCocreate } from '../../services/llm/cocreate'
-import type { CocreateProvider, OpenSub } from '../../services/llm/cocreate-types'
-import { requestCommandChat } from '../../services/llm/command-chat'
+import { requestCocreate } from '../../../services/llm/cocreate'
+import type { CocreateProvider, OpenSub } from '../../../services/llm/cocreate-types'
+import { requestCommandChat } from '../../../services/llm/command-chat'
 import { InlineCommandBubble } from './InlineCommandBubble'
 import { CommandSidePanel } from './CommandSidePanel'
 import {
@@ -18,12 +18,21 @@ import {
   type CommandMessage
 } from './command-session'
 import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
+import { LlmSettingsPanel } from './LlmSettingsPanel'
+import { openBoard, type Board } from '../../../packages/core/doc'
+import { indexeddbPersistence, hydrateNotes, boardDocId, clearAllBoards } from './board-persistence'
+import { BoardSync } from '../../../services/sync/board-sync'
+import { websocketTransport } from '../../../services/sync/board-sync'
+import { BackendSTT } from '../../../services/stt/backend'
+import type { STTProvider } from '../../../services/stt/types'
+import { wsUrl } from '../../../services/api/config'
+import { useBackend, type SyncParams } from './backend'
+import { AuthPanel } from './AuthPanel'
+import { DocumentsPanel } from './DocumentsPanel'
 
-const PROVIDERS: { id: CocreateProvider; label: string }[] = [
-  { id: 'claude-code', label: 'Claude Code' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'open', label: 'Open + Tavily' }
-]
+// The model runs CLIENT-DIRECT now (docs module 08): the browser calls the
+// OpenAI-compatible provider itself. The retired Claude/Codex CLIs can't run in
+// a browser, so the web build offers only these direct models.
 const OPEN_MODELS: { sub: OpenSub; model: string; label: string }[] = [
   { sub: 'groq', model: 'llama-3.3-70b-versatile', label: 'Groq · Llama 3.3 70B' },
   { sub: 'groq', model: 'openai/gpt-oss-120b', label: 'Groq · GPT-OSS 120B' },
@@ -131,7 +140,10 @@ function CanvasSpace({
   recording,
   onToggleRecord,
   provider,
-  openIdx
+  openIdx,
+  sync,
+  makeStt,
+  seedFromLocal = true
 }: {
   storageSuffix: string
   isActive: boolean
@@ -139,6 +151,13 @@ function CanvasSpace({
   onToggleRecord: () => void
   provider: CocreateProvider
   openIdx: number
+  /** When signed in + this space is mapped to a server doc, attach live sync. */
+  sync?: SyncParams | null
+  /** STT provider factory (backend proxy when signed in; else browser Soniox). */
+  makeStt?: () => STTProvider
+  /** Seed a fresh board from local canvas content (migrate). False when adopting
+   *  an existing/blank server document — that board comes from the server. */
+  seedFromLocal?: boolean
 }) {
   const k = (key: string) => key + storageSuffix
   // Notes are restored from localStorage so testing data survives refreshes.
@@ -157,6 +176,82 @@ function CanvasSpace({
   // Free-floating pictures on the canvas (dropped onto blank space) — no note
   // wrapper. Share the note selection set (ids are globally unique).
   const [images, setImages] = useState<CanvasImage[]>(() => loadJSON<CanvasImage[]>(k('images'), []))
+  // Local-first CRDT persistence (Phase 1): notes + images mirror into a Yjs
+  // board backed by IndexedDB. localStorage stays a mirror (instant first paint
+  // + backup/export); IndexedDB is authoritative across sessions and the seam
+  // Phase 2's y-websocket sync plugs into. Live-editing UI flags never persist.
+  const boardRef = useRef<Board | null>(null)
+  const boardReadyRef = useRef(false)
+  const notesLatestRef = useRef(notes)
+  notesLatestRef.current = notes
+  const imagesLatestRef = useRef(images)
+  imagesLatestRef.current = images
+  const seedRef = useRef(seedFromLocal)
+  seedRef.current = seedFromLocal
+  // Set when React state was just updated FROM a remote board change, so the
+  // next autosave skips mirroring it back to the board (which would otherwise
+  // ping-pong full-state updates between synced clients).
+  const remoteNotesRef = useRef(false)
+  const remoteImagesRef = useRef(false)
+  // The board's persistence/doc id: a bound server document gets its OWN local
+  // store (shared across this account's devices via /sync); otherwise the local
+  // per-space id (original behavior, unchanged when signed out).
+  const boardKey = sync?.docId ? `${boardDocId('')}.srv.${sync.docId}` : boardDocId(storageSuffix)
+  useEffect(() => {
+    const board = openBoard(boardKey, { persistence: indexeddbPersistence })
+    boardRef.current = board
+    let cancelled = false
+    void board.whenSynced.then(() => {
+      if (cancelled) return
+      if (board.isEmpty()) {
+        if (seedRef.current) {
+          // First run on this device: seed the board from the localStorage restore.
+          board.replaceContent({ notes: notesLatestRef.current, images: imagesLatestRef.current })
+        } else {
+          // Adopting an existing/blank server doc: start from the doc, not this
+          // device's canvas. Remote content arrives via BoardSync below.
+          setNotes([])
+          setImages([])
+        }
+      } else {
+        // Returning session: IndexedDB wins (survives a full localStorage clear).
+        setNotes(hydrateNotes(board.notes()))
+        setImages(board.images())
+      }
+      boardReadyRef.current = true
+    })
+    // Reflect REMOTE updates (from BoardSync) in the UI. Local edits transact with
+    // origin 'local' and are skipped here (they already live in React state); the
+    // 300ms autosave mirrors React state back to the board.
+    const onRemote = (_u: Uint8Array, origin: unknown) => {
+      if (origin === 'local' || cancelled) return
+      remoteNotesRef.current = true
+      remoteImagesRef.current = true
+      setNotes(hydrateNotes(board.notes()))
+      setImages(board.images())
+    }
+    board.doc.on('update', onRemote)
+    return () => {
+      cancelled = true
+      boardReadyRef.current = false
+      boardRef.current = null
+      board.doc.off('update', onRemote)
+      void board.destroy()
+    }
+  }, [boardKey])
+
+  // Live sync (Phase 2): when signed in and this space is mapped to a server
+  // document, attach BoardSync to the board's Y.Doc. The relay is a dumb
+  // broadcaster (docs module 05); updates converge via CRDT. Runs alongside the
+  // IndexedDB local-first store — offline still works, sync is additive.
+  useEffect(() => {
+    const board = boardRef.current
+    if (!board || !sync) return
+    const url = wsUrl(sync.baseUrl, `/sync/${encodeURIComponent(sync.docId)}`, sync.token)
+    const bs = new BoardSync(board.doc, websocketTransport(url), { snapshotDebounceMs: 15000 })
+    return () => bs.destroy()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardKey, sync?.baseUrl, sync?.token, sync?.docId])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null)
   // Right-click on a note: duplicate/rename/delete. Closes on click-away/Escape.
@@ -309,11 +404,23 @@ function CanvasSpace({
   // Autosave notes + view (debounced — note state churns on every keystroke
   // and during streaming AI fires).
   useEffect(() => {
-    const t = setTimeout(() => saveJSON(k('notes'), notes), 300)
+    const t = setTimeout(() => {
+      saveJSON(k('notes'), notes)
+      if (boardReadyRef.current) {
+        if (remoteNotesRef.current) remoteNotesRef.current = false // came from sync; don't echo back
+        else boardRef.current?.setNotes(notes)
+      }
+    }, 300)
     return () => clearTimeout(t)
   }, [notes])
   useEffect(() => {
-    const t = setTimeout(() => saveJSON(k('images'), images), 300)
+    const t = setTimeout(() => {
+      saveJSON(k('images'), images)
+      if (boardReadyRef.current) {
+        if (remoteImagesRef.current) remoteImagesRef.current = false
+        else boardRef.current?.setImages(images)
+      }
+    }, 300)
     return () => clearTimeout(t)
   }, [images])
   useEffect(() => {
@@ -1310,6 +1417,7 @@ function CanvasSpace({
         storageSuffix={storageSuffix}
         highlights={highlights}
         onHoverNote={setHoveredNoteId}
+        makeStt={makeStt}
       />
       <div
         className="canvas"
@@ -1538,10 +1646,38 @@ export function App() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   // Only ONE canvas records at a time — the id of the recording space, or null.
   const [recordingId, setRecordingId] = useState<string | null>(null)
-  const [provider, setProvider] = useState<CocreateProvider>('codex')
+  // Client-direct: the only web provider is the OpenAI-compatible 'open' path;
+  // the model picker below chooses which model. (CLI backends retired.)
+  const [provider] = useState<CocreateProvider>('open')
   const [openIdx, setOpenIdx] = useState(0)
+  const [showLlmSettings, setShowLlmSettings] = useState(false)
+  const [showAuth, setShowAuth] = useState(false)
+  const [showDocs, setShowDocs] = useState(false)
+  const backend = useBackend()
   const workspaceRef = useRef<HTMLDivElement>(null)
   const [ww, setWw] = useState(1200)
+
+  // When signed in, back open spaces with a server document so BoardSync has a
+  // room to join — but ONLY auto-create for a brand-new account (zero documents).
+  // On a device that already has documents (e.g. a second device, fresh docMap),
+  // auto-creating would spawn duplicate empty docs; instead the user opens an
+  // existing one via the Documents panel ("Open here"). ensureDoc is idempotent.
+  const { user: backendUser, docsLoaded, ensureDoc } = backend
+  const hasDocs = backend.documents.length > 0
+  useEffect(() => {
+    if (!backendUser || !docsLoaded || hasDocs) return
+    for (const id of open.ids) {
+      void ensureDoc(id, findNode(tree, id)?.name ?? 'Untitled')
+    }
+    // Depend on stable/primitive values, NOT the whole `backend` object (a fresh
+    // reference every render would re-run this constantly).
+  }, [backendUser, docsLoaded, hasDocs, ensureDoc, open.ids, tree])
+
+  // A backend-proxied STT factory (docs module 07) once signed in; left undefined
+  // otherwise so the Transcript falls back to browser-direct Soniox.
+  const makeStt: (() => STTProvider) | undefined = backend.user
+    ? () => new BackendSTT({ url: backend.sttUrl() ?? '' })
+    : undefined
 
   useEffect(() => saveJSON('sidebar-collapsed', collapsed), [collapsed])
   useEffect(() => saveJSON('workspace-tree', tree), [tree])
@@ -1567,7 +1703,9 @@ export function App() {
   const clearAll = useCallback(() => {
     if (!window.confirm('Clear all saved notes and transcript data?')) return
     clearSaved()
-    window.location.reload()
+    // Boards live in IndexedDB — wipe them too, else cleared notes resurrect on
+    // reload (IndexedDB is authoritative on load).
+    void clearAllBoards().finally(() => window.location.reload())
   }, [])
 
   // Resolve fractions to px and enforce the stack invariant: each sheet at
@@ -1703,18 +1841,30 @@ export function App() {
         onMoveNode={onMoveNode}
         footer={
           <div className="side-controls">
-            <div className="seg">
-              {PROVIDERS.map((p) => (
-                <button key={p.id} className={provider === p.id ? 'on' : ''} onClick={() => setProvider(p.id)}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {provider === 'open' && (
-              <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
-                {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
-              </select>
+            <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
+              {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
+            </select>
+            {backend.enabled && (
+              <button
+                className="save-local"
+                title={backend.user ? `Signed in as ${backend.user.email} — sync + backend STT active` : 'Sign in to sync boards across devices'}
+                onClick={() => setShowAuth(true)}
+              >
+                {backend.user ? `Account · ${backend.user.email}` : 'Sign in'}
+              </button>
             )}
+            {backend.user && (
+              <button
+                className="save-local"
+                title="Open a synced document on this canvas (across devices)"
+                onClick={() => setShowDocs(true)}
+              >
+                Documents
+              </button>
+            )}
+            <button className="save-local" title="Configure the LLM provider + API key (stored in this browser)" onClick={() => setShowLlmSettings(true)}>
+              LLM settings
+            </button>
             <button className="save-local" title="Download a local JSON backup of saved transcript, reflections, and canvas data" onClick={downloadSavedData}>
               Save local copy
             </button>
@@ -1753,11 +1903,25 @@ export function App() {
                 onToggleRecord={() => setRecordingId((r) => (r === id ? null : id))}
                 provider={provider}
                 openIdx={openIdx}
+                sync={backend.syncFor(id)}
+                makeStt={makeStt}
+                seedFromLocal={!backend.isAdopted(id)}
               />
             </div>
           </section>
         ))}
       </div>
+
+      {showLlmSettings && <LlmSettingsPanel onClose={() => setShowLlmSettings(false)} />}
+      {showAuth && backend.enabled && <AuthPanel backend={backend} onClose={() => setShowAuth(false)} />}
+      {showDocs && backend.user && (
+        <DocumentsPanel
+          backend={backend}
+          activeSpaceId={activeId}
+          activeSpaceName={findNode(tree, activeId)?.name ?? 'canvas'}
+          onClose={() => setShowDocs(false)}
+        />
+      )}
     </div>
   )
 }

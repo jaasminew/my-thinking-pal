@@ -1,104 +1,136 @@
-import type {
-  CocreateRequest,
-  CocreateResult,
-  CocreateEvent,
-  UrlCard
-} from './cocreate-types'
+import type { CocreateRequest, CocreateResult, UrlCard } from './cocreate-types'
+import {
+  COCREATE_SYSTEM,
+  COMMAND_SYSTEM,
+  SEARCH_INSTRUCTION,
+  buildCocreateContext,
+  buildCommandContext,
+  cocreateStream,
+  type FetchLike,
+  type LlmProvider
+} from '../../packages/core/llm'
+import { resolveClientProvider } from './provider-config'
+import { resolveOgImage, searchWeb } from './web-search'
 
 export interface CocreateHandlers {
   /** Called for every streamed text delta (render it live on the canvas). */
   onText: (text: string) => void
   /** Called once when web-search inspiration URLs arrive. */
   onUrls?: (urls: UrlCard[]) => void
-  /**
-   * Called once, BEFORE any text, with the model's invisible self-diagnosis of
-   * what the note needs. Attach it to the suggestions this fire produces.
-   */
+  /** Model's invisible self-diagnosis of what the note needs (before any text). */
   onDiagnosis?: (text: string) => void
-  /**
-   * Called once, before any text, with the index of the user bullet this fire
-   * anchors to (see the 'anchor' event) — place its bullets under that thought.
-   */
+  /** Index of the user bullet this fire anchors to (before any text). */
   onAnchor?: (line: number) => void
-  /** Called when a bullet's inline image resolves (words+image register). */
+  /** A bullet's inline image resolved (words+image register). */
   onImage?: (img: { src: string; sourceUrl?: string; title?: string; line?: number }) => void
 }
 
-// Reusable Tier-2 / Tier-3 client. Streams the model's adjacent content back
-// line-by-line (NDJSON) so the canvas renders it live — co-creation latency is
-// felt, so we never wait for the whole response. The server (/api/cocreate)
-// holds all keys and routes claude-code / codex / open(+Tavily).
+// Test seam: the app calls with (req, handlers, signal); tests inject a mock
+// provider + fetch so nothing hits the network or needs a key.
+export interface CocreateDeps {
+  provider?: LlmProvider
+  fetchImpl?: FetchLike
+}
+
+// Tier-2 co-creation / Tier-3 command, now CLIENT-DIRECT: the model streams
+// straight from the user's MaaS provider (docs module 08). Web search + og:image
+// (the parts a browser can't do) are resolved through the minimal backend relay.
+// The request/result contract is unchanged, so App.tsx is untouched.
 export async function requestCocreate(
   req: CocreateRequest,
   handlers: CocreateHandlers,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  deps?: CocreateDeps
 ): Promise<CocreateResult> {
+  const doFetch = deps?.fetchImpl ?? fetch
+  const isCommand = typeof req.command === 'string' && req.command.trim().length > 0
+  if (!isCommand && (!req.seedText || typeof req.seedText !== 'string')) {
+    return { error: 'seedText or command is required' }
+  }
+
+  // 'open' is the web umbrella → the concrete OpenAI-compatible sub (Groq/
+  // Ollama). Retired CLI ids fall back to the active provider inside resolve.
+  const providerId = req.provider === 'open' ? req.openSub ?? 'groq' : req.provider
+  let provider: LlmProvider
   try {
-    const r = await fetch('/api/cocreate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-      signal
-    })
-
-    // Pre-stream failures (bad request) come back as JSON, not a stream.
-    if (!r.ok || !r.body) {
-      let msg = `cocreate ${r.status}`
-      try {
-        msg = (await r.json())?.error || msg
-      } catch {
-        /* non-JSON body */
-      }
-      return { error: msg }
-    }
-
-    const reader = r.body.getReader()
-    const dec = new TextDecoder()
-    let buf = ''
-    const urls: UrlCard[] = []
-    let model: string | undefined
-    let provider = req.provider
-    let error: string | undefined
-
-    const handle = (line: string) => {
-      if (!line.trim()) return
-      let ev: CocreateEvent
-      try {
-        ev = JSON.parse(line)
-      } catch {
-        return
-      }
-      if (ev.type === 'text') handlers.onText(ev.text)
-      else if (ev.type === 'diagnosis') handlers.onDiagnosis?.(ev.text)
-      else if (ev.type === 'anchor') handlers.onAnchor?.(ev.line)
-      else if (ev.type === 'image') handlers.onImage?.(ev)
-      else if (ev.type === 'urls') {
-        urls.push(...ev.urls)
-        handlers.onUrls?.(ev.urls)
-      } else if (ev.type === 'done') {
-        model = ev.model
-        provider = ev.provider
-      } else if (ev.type === 'error') {
-        error = ev.error
-      }
-    }
-
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += dec.decode(value, { stream: true })
-      let nl: number
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        handle(buf.slice(0, nl))
-        buf = buf.slice(nl + 1)
-      }
-    }
-    if (buf.trim()) handle(buf)
-
-    return { model, provider, urls, error }
+    provider = deps?.provider ?? (await resolveClientProvider(providerId, req.model))
   } catch (e: any) {
-    // Abort (AI mode switched off mid-stream) is a cancellation, not a failure.
-    if (e?.name === 'AbortError' || signal?.aborted) return { aborted: true }
     return { error: e?.message || String(e) }
   }
+
+  const baseSystem = isCommand ? COMMAND_SYSTEM : COCREATE_SYSTEM
+  const system = baseSystem + (req.webSearch ? SEARCH_INSTRUCTION : '')
+  const userText = isCommand
+    ? buildCommandContext(req.command!, req.contextNotes, req.transcriptWindow, req.signalWindow)
+    : buildCocreateContext(
+        req.seedText,
+        req.contextNotes,
+        req.transcriptWindow,
+        { kept: req.kept, rejected: req.rejected, existingIdeas: req.existingIdeas },
+        req.signalWindow,
+        req.seedType
+      )
+
+  const collectedUrls: UrlCard[] = []
+  // Inline images the model cited via markdown image syntax — resolved after the
+  // stream (need og:image); capped at 1, matching the old server behavior.
+  const inlineImageReqs: { title: string; url: string; line: number }[] = []
+
+  const outcome = await cocreateStream(
+    provider,
+    { system, userText },
+    {
+      onText: handlers.onText,
+      onDiagnosis: handlers.onDiagnosis,
+      onAnchor: handlers.onAnchor,
+      onUrl: (u) => {
+        // A link the model deliberately cited in a bullet → card. App enriches
+        // its og:image/snippet via its own /api/url-meta effect.
+        if (!collectedUrls.some((c) => c.url === u.url)) collectedUrls.push(u)
+      },
+      onInlineImage: (im) => {
+        if (!inlineImageReqs.length) inlineImageReqs.push(im)
+      }
+    },
+    doFetch,
+    signal
+  )
+
+  if (signal?.aborted) return { aborted: true }
+  if (outcome.error) return { error: outcome.error, provider: req.provider, model: provider.model }
+
+  // Emit cited-link cards (if any) first.
+  if (collectedUrls.length) handlers.onUrls?.(collectedUrls.slice(0, 3))
+
+  // Resolve a model-cited inline image, degrading to a link card on no image.
+  for (const im of inlineImageReqs) {
+    const src = await resolveOgImage(im.url, doFetch)
+    if (src) handlers.onImage?.({ src, sourceUrl: im.url, title: im.title, line: im.line })
+    else {
+      const card: UrlCard = { title: im.title, url: im.url }
+      collectedUrls.push(card)
+      handlers.onUrls?.([card])
+    }
+  }
+
+  // Web search: only when the model chose a register needing it and didn't PASS.
+  if (req.webSearch && outcome.searchIntent && !outcome.passed) {
+    const results = await searchWeb(outcome.searchIntent.query, 1, doFetch)
+    const u = results[0]
+    if (u) {
+      if (outcome.searchIntent.image) {
+        const src = await resolveOgImage(u.url, doFetch)
+        if (src) handlers.onImage?.({ src, sourceUrl: u.url, title: u.title, line: Math.max(0, outcome.contentLines - 1) })
+        else {
+          collectedUrls.push(u)
+          handlers.onUrls?.([u])
+        }
+      } else {
+        collectedUrls.push(u)
+        handlers.onUrls?.([u])
+      }
+    }
+  }
+
+  return { model: provider.model, provider: req.provider, urls: collectedUrls }
 }

@@ -141,9 +141,11 @@ JWT_REFRESH_SECRET=...
 ACCESS_TTL=15m
 REFRESH_TTL=720h
 
-# STT 上游（模块 07）
-STT_PROVIDER=deepgram
-DEEPGRAM_API_KEY=...
+# STT 上游（模块 07，后端持 key，可插拔）
+STT_PROVIDER=soniox             # soniox | tencent | mock
+SONIOX_API_KEY=...
+SONIOX_MODEL=stt-rt-v5
+# TENCENT_APPID= / TENCENT_SECRET_ID= / TENCENT_SECRET_KEY=（STT_PROVIDER=tencent 时）
 
 # --- 规模化时才需要（后期） ---
 # ACCOUNT_STORE=postgres
@@ -166,3 +168,21 @@ DEEPGRAM_API_KEY=...
 
 - 结构化日志（slog）：请求、WS 连接生命周期、上游 STT 错误。
 - 指标（后期）：活跃 WS 连接数、同步广播吞吐、STT 时长（同时喂 `usage_events`）。
+
+## 6.8 实现现状（后端已成形）
+
+`server-go/` 已按接口分层落地，与 6.1 选型表有几处**务实取舍**：
+
+| 关注点 | 计划 | 实际 | 说明 |
+| --- | --- | --- | --- |
+| 路由 | chi/gin | **标准库 `net/http` ServeMux**（Go 1.22 方法+路径模式） | 零依赖够用；`internal/httpapi/router.go` 内含 cors/logging 中间件 |
+| WebSocket | nhooyr.io/websocket | **`github.com/coder/websocket`**（nhooyr 的社区续维版） | API 一致、context 友好 |
+| 账号存储 | SQLite（modernc）✅ | **已实现** `internal/storage/sqlite`（+ 内存实现供 dev/测试） | `ACCOUNT_STORE=sqlite\|memory`；重启不丢 |
+| CRDT 存储 | 文件系统 ✅ | **已实现** `internal/storage/fsdoc` | `upd/<seq>.bin` + `snapshot.bin`（模块 05） |
+| 迁移 | goose/golang-migrate | **暂用 `CREATE TABLE IF NOT EXISTS` 内嵌 schema** | MVP 够用，SQL 保持 PG 可移植；表变复杂再引入迁移工具 |
+| JWT | golang-jwt | **标准库自实现 HS256**（`internal/auth/jwt.go`） | 无第三方依赖，含 `jti` 保证唯一 |
+| 配置 | caarlos0/env / viper | **标准库 `os.Getenv` + 默认值**（`internal/config`） | 12-factor，零依赖 |
+
+- 存储契约测试 `internal/storage/storagetest`：同一套 `RunAccountStoreContract` 同时校验 memory 与 sqlite，保证行为等价；`sqlite_test.go` 另测重启持久化与 `file:...?params` DSN。
+- 当前依赖仅：`coder/websocket`、`golang.org/x/crypto`（argon2id）、`modernc.org/sqlite`（纯 Go 免 CGO）。
+- 目录与 6.2 略有出入：`documents/handler.go` 直接依赖 `AccountStore`（尚无独立 `repo.go`）；`stt/` 为 `upstream.go`/`soniox.go`/`tencent.go`/`mock.go`/`handler.go`（记账钩子在 `handler.go` 内的 `recordUsage`/`checkQuota`）。

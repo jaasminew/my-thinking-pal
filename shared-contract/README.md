@@ -1,3 +1,13 @@
+> ⚠️ **ARCHIVED / SUPERSEDED (2026-07).** This directory captured an earlier,
+> third architecture (an operation-log `Backend` with `IdeaSpace` / `PipelineTopic`).
+> It is **not used** by the app or the build, and has been superseded by the
+> **local-first Yjs CRDT contract** (`packages/core/doc` + `docs/modules/04-data-model.md`
+> for the doc model, `docs/modules/05-sync-protocol.md` for sync). Kept only for
+> historical reference; do not build against it. See `docs/technical-plan.md` for
+> the current architecture.
+
+---
+
 # Shared Contract — Thinking Pal
 
 The coordination surface between the two tracks. Agree on this, then build in
