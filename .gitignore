@@ -3,3 +3,12 @@ node_modules
 dist
 .DS_Store
 .claude/settings.local.json
+
+# Electron desktop build output
+apps/desktop/release/
+apps/desktop/build/
+
+# Go backend
+server-go/data/
+server-go/bin/
+server-go/server

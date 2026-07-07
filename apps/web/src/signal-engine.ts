@@ -1,5 +1,5 @@
-import { requestExtractSignals, requestOrganize } from '../../services/llm/client'
-import type { SignalType, OrganizeSection } from '../../services/llm/types'
+import { requestExtractSignals, requestOrganize } from '../../../services/llm/client'
+import type { SignalType, OrganizeSection } from '../../../services/llm/types'
 
 // Two-tier pending-signals engine.
 //

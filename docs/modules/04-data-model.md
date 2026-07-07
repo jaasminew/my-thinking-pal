@@ -26,22 +26,31 @@ doc
 │                ├─ lang     : string       // STT 返回的语种（自动）
 │                ├─ speaker? : string       // 预留（多说话人/后期）
 │                └─ marks?   : Y.Array<{ start, end, label? }>  // 关键词高亮范围
-└─ notes      : Y.Map<noteId, Y.Map>
+└─ notes      : Y.Array<Y.Map>            // 有序（保留栈叠/迭代顺序）
+                ├─ id       : string
                 ├─ x        : number
                 ├─ y        : number
                 ├─ keyword  : string
-                ├─ srcSeg?  : string        // 溯源：由哪条 transcript 段落拖拽而来
-                ├─ bullets  : Y.Array<Y.Map>
-                │              { id: string,
-                │                origin: 'human' | 'ai',
-                │                text: Y.Text,
-                │                status: 'pending' | 'kept',
-                │                fireId?: string }
-                ├─ cards    : Y.Array<Y.Map>
-                │              { id, title, url, snippet?, image?, status }
-                ├─ kept     : Y.Array<string>
-                └─ rejected : Y.Array<string>
+                ├─ sourceText? : string     // 溯源：拖拽出的原始短语（immutable）
+                ├─ originTs?   : number      // 该 keyword 被说出的时刻（拖拽笔记）
+                ├─ originSignalType? : string // 来源 signal 类型（decision/objection…）
+                ├─ items    : Y.Array<Y.Map>   // 统一有序序列：bullet | card | image 内联
+                │              // bullet: { kind:'bullet', id, origin:'human'|'ai', text:string,
+                │              //           status:'pending'|'kept', fireId?, fireLine?, diagnosis?,
+                │              //           indent?, image?:{src,sourceUrl?,title?} }
+                │              // card:   { kind:'card', id, title, url, snippet?, image?, origin, status, diagnosis? }
+                │              // image:  { kind:'image', id, src, sourceUrl?, title?, origin, status }
+                ├─ kept     : string[]         // 反应记忆（LWW 整体）
+                ├─ rejected : string[]
+                └─ lastFiredWords : number     // 触发器计数（内容态，随笔记持久化）
 ```
+
+> **实现现状（Phase 1，已落地于 `packages/core/doc`）**：以现有前端 `KeywordNote` 富模型为准（见 [canvas-types.ts](../../apps/web/src/canvas-types.ts)）：
+> - **统一 `items[]`**：bullet / card / image 内联在**一条有序序列**里（card/image 是行内项，方向键可落上、Enter 在其后续行），取代早期分离的 `bullets`/`cards`。
+> - **`notes` 用 `Y.Array<Y.Map>`（有序）** 而非 `Y.Map<noteId>`，以保留前端数组语义（栈叠顺序、确定性投影）；按 `id` 扫描定位。
+> - bullet 携带 `indent`（大纲深度）、`fireId`/`fireLine`（AI 增量归位）、`diagnosis`（不可见自诊断）、内联 `image`。
+> - `text` 当前用 **`string`**（每字段 LWW）；字符级并发编辑（`Y.Text`）留待需要时按 `schemaVersion` 迁移。
+> - `lastFiredWords` 归为**内容态**（随笔记持久化），因为它决定何时再次触发 AI；仅 `keywordEditing`/`aiRunning`/`items[].editing` 是本地瞬态。
 
 ### transcript 设计要点
 
@@ -61,17 +70,19 @@ doc
 | --- | --- | --- |
 | `x` / `y` | 顶层 | CRDT |
 | `keyword` | 顶层 | CRDT |
-| `bullets[].text/origin/status/fireId` | 顶层 | CRDT |
-| `cards[]` | 顶层 | CRDT |
+| `items[]`（bullet/card/image：`text/origin/status/fireId/fireLine/diagnosis/indent/image`） | 顶层 | CRDT |
 | `kept` / `rejected` | 顶层 | CRDT |
+| `sourceText` / `originTs` / `originSignalType` | 顶层 | CRDT（溯源） |
+| `lastFiredWords` | 顶层 | **CRDT**（触发器计数，随笔记持久化） |
 | `keywordEditing` | 顶层 | **本地态**（React state） |
-| `bullets[].editing` | 顶层 | **本地态** |
+| `items[].editing`（bullet） | 顶层 | **本地态** |
 | `aiRunning` | 顶层 | **本地态** |
-| `lastFiredWords` | 顶层 | **本地态**（触发器计数） |
 | `selectedIds` / `marquee` | App 顶层 | **本地态**（多人协作用 awareness） |
-| transcript **定稿段落** | `Transcript.tsx` 静态 `LINES` | CRDT（`transcript`） |
+| transcript **定稿段落** | `Transcript.tsx` | CRDT（`transcript`，Phase 1b 接入） |
 | transcript **interim（实时灰字）** | — | **本地态**（未定稿不入 CRDT） |
 | `录音中(recording)` | `App.tsx` 顶层 | **本地态** |
+
+> 注：Phase 1 已把 `notes` + 自由画布 `images` 接入 CRDT（本地优先 IndexedDB）；`transcript` 段落的 CRDT 接入排在 Phase 1b / 随 Phase 2 同步一起做。
 
 ### 关于 `bullets[].text` 用 Y.Text
 
@@ -137,6 +148,8 @@ export interface CardView {
 ```
 
 ## 4.4 本地持久化
+
+> **已落地（Phase 1）**：Web 端 `y-indexeddb` 已接入（每个 board 一个 `thinking-pal.board.<docId>` 库）。旧 `localStorage` 数据首启一次性迁移进 board；`localStorage` 暂留作首屏即时渲染与备份/导出镜像，IndexedDB 为跨会话权威源。「Clear saved」同时清 `localStorage` 与 board 库。核心绑定见 [packages/core/doc](../../packages/core/doc)，浏览器胶水见 [board-persistence.ts](../../apps/web/src/board-persistence.ts)。
 
 - **Web**：`y-indexeddb`，文档随开随存，离线可用。
 - **Electron**：`y-leveldb` 或文件持久化，支持离线打开与更大容量。

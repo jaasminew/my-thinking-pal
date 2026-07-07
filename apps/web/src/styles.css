@@ -96,6 +96,55 @@ body { background: var(--bg); color: var(--ink); }
 .side-controls .save-local:hover { border-color: #b8d4f4; background: #f4f9ff; }
 .side-controls .clear-saved:hover { color: #c0392b; border-color: #e8b4ac; }
 
+/* ---- LLM settings modal (client-direct provider + key) ---- */
+.llm-settings-overlay {
+  position: fixed; inset: 0; z-index: 1000; background: rgba(20, 20, 24, 0.28);
+  display: flex; align-items: center; justify-content: center;
+}
+.llm-settings {
+  width: 340px; max-width: calc(100vw - 32px); background: #fff; border: 1px solid var(--line);
+  border-radius: 12px; padding: 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.llm-settings-head { display: flex; align-items: center; justify-content: space-between; }
+.llm-settings-head strong { font-size: 14px; color: var(--ink); }
+.llm-settings-x { border: 0; background: none; font-size: 20px; line-height: 1; color: #999; cursor: pointer; }
+.llm-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #555; }
+.llm-field input, .llm-field select {
+  font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+}
+.llm-note { font-size: 11px; color: #999; margin: 0; line-height: 1.4; }
+.llm-settings-actions { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+.llm-save {
+  border: 1px solid #b8d4f4; background: #f4f9ff; color: #1a5fb4; font-size: 13px;
+  padding: 6px 16px; border-radius: 8px; cursor: pointer;
+}
+.llm-save:hover { background: #e8f2ff; }
+.llm-save:disabled { opacity: .6; cursor: default; }
+.auth-error { color: #c0392b; font-size: 12px; margin: 0; }
+.auth-switch { border: 0; background: none; color: #1a5fb4; font-size: 12px; cursor: pointer; padding: 6px 4px; }
+.auth-switch:hover { text-decoration: underline; }
+
+.doc-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; margin: 4px 0; }
+.doc-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+}
+.doc-row-current { border-color: #b8d4f4; background: #f4f9ff; }
+.doc-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.doc-title { font-size: 13px; color: var(--ink); font-weight: 500; }
+.doc-badge { font-size: 10px; color: #1a5fb4; }
+.doc-updated { font-size: 10px; color: #999; }
+.doc-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.doc-btn {
+  border: 1px solid var(--line); background: #fff; color: #555; font-size: 11px;
+  padding: 4px 8px; border-radius: 6px; cursor: pointer;
+}
+.doc-btn:hover { background: #f5f5f5; }
+.doc-btn:disabled { opacity: .5; cursor: default; }
+.doc-btn-danger { color: #c0392b; }
+.doc-btn-danger:hover { background: #fdecea; }
+
 /* ---- workspace: overlapping paper-stack of canvases (Obsidian-like) ----
    One panel = one idea space: [handle spine][transcript][infinite canvas].
    Every panel's RIGHT edge is pinned to the workspace's right edge; later

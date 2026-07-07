@@ -101,3 +101,19 @@ flowchart LR
 
 - 每个 `/sync/:docId` 连接握手时，通过 `AccountStore.CanAccess(user, docId)` 校验归属/协作（文档元信息在 `AccountStore`，CRDT 数据在 `DocStore`）。
 - 广播只在同 `docId` 的已授权连接间进行。
+
+## 5.9 实现现状（哑中继已落地）
+
+服务端 `/sync/{docId}`（WebSocket）已实现，服务端完全不解析 CRDT：
+
+- `server-go/internal/sync/protocol.go`：帧格式 = 1 字节类型 + 不透明载荷。**实现子集**为 `UPDATE(0x03)`/`SNAPSHOT_PUT(0x04)`/`AWARENESS(0x05)`。
+- **有意省略 `SYNC_STEP1/2`**：state-vector 差分需要理解 CRDT。改为——连接时服务端回放「快照 + 全部增量」，客户端 `Y.applyUpdate` 逐条合并；Yjs update 幂等/可交换，重放/乱序都会收敛。
+- `hub.go`：内存房间（`docId → 连接集合`），每连接独立发送队列 + writer goroutine；慢消费者丢帧（靠重连回放追赶），不阻塞广播热路径。
+- `ws.go`：鉴权（`RequireAuth` + 归属校验，未登记的 docId 暂放行，接入 documents CRUD 后收紧）→ 加入房间 → 回放 → 读循环（`UPDATE` 广播 + 追加 `DocStore`；`SNAPSHOT_PUT` 存快照并按快照前的 `maxSeq` 截断日志；`AWARENESS` 仅广播）。
+- `server-go/internal/storage/fsdoc`：文件型 `DocStore`（`upd/<seq>.bin` 增量 + `snapshot.bin/.ver`），`docId` 做文件名净化防目录穿越。
+- 测试：`fsdoc_test.go`（append/load/truncate/snapshot、冷启动 seq 续接）、`relay_test.go`（无 token 拒绝、广播、重连回放、快照截断，走真实 httptest + WebSocket）。
+
+客户端 provider 已实现但**默认未接入运行时**（等登录 + 多文档 UI 落地后再挂载）：
+
+- `services/sync/board-sync.ts`：`BoardSync`（`Y.Doc` ↔ 注入式 `SyncTransport`）+ `websocketTransport(url)`。策略即上文 update-based：连接时发全量 state、本地 update 转发（`origin===this` 时不回环）、`uploadSnapshot()` 压缩。
+- 测试 `board-sync.test.ts` 用内存 relay 验证双端收敛、迟到者回放、无回环、快照截断——无需服务端/浏览器 WS。

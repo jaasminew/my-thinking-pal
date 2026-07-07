@@ -63,6 +63,21 @@ ipcMain.handle('llm:stream', async (e, req) => { /* 主进程 fetch provider, �
 - `electron-builder` 产出安装包；配置代码签名（macOS notarization、Windows 签名）。
 - 自动更新（`electron-updater`）列为后期。
 
+## 11.9 实现现状（壳已落地）
+
+已落地一个可运行的 Electron 壳（复用同一份 `apps/web` renderer，无需二次实现 UI）：
+
+| 项 | 现状 | 位置 |
+| --- | --- | --- |
+| 主进程 | 创建窗口；dev 加载 `VITE_DEV_SERVER_URL`（默认 `http://localhost:5173`），打包后加载 `dist/index.html`；外链走系统浏览器 | `apps/desktop/main.cjs` |
+| 安全密钥 | `safeStorage`（OS keychain）加密存储，落盘 `userData/secure-keys.json`；无 keychain 的平台回退明文并标记 | `apps/desktop/main.cjs`（`keys:get/set/delete/list` IPC） |
+| preload | `contextBridge` 暴露 `window.secureKeys`（get/set/delete/list）与 `window.desktop.isElectron`；`contextIsolation: true`、`nodeIntegration: false` | `apps/desktop/preload.cjs` |
+| renderer 集成 | LLM 客户端在 Electron 下优先从 `window.secureKeys` 取 key（Web 无此全局则 no-op）；保存 key 时镜像进 keychain | `services/llm/provider-config.ts`（`ensureSecureKeys` + `setProviderConfig` 镜像；单测 `provider-config.test.ts`） |
+| 运行 | `npm run dev`（起 Vite）+ 另开一个 `npm run dev:desktop`（起 Electron） | `package.json` scripts |
+| 打包 | `npm run build:desktop`（`vite build` + `electron-builder`）；产物 `apps/desktop/release/` | `apps/desktop/electron-builder.yml` |
+
+**务实取舍**：main/preload 用 `.cjs`（仓库为 ESM，`.cjs` 规避 Electron ESM 入口的坑）。代码签名 / notarization / 自动更新（`electron-updater`）与 `y-leveldb` 本地大存储仍列为后期（11.6/11.7）；当前桌面端 CRDT 仍复用浏览器 IndexedDB。GUI 无法在受限沙箱内冒烟（Chromium 需系统调用），已通过版本核对 + 语法校验 + 全量单测/构建验证。
+
 ## 11.8 与 Web 版的差异对照
 
 | 能力 | Web PWA | Electron |

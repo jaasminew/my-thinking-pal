@@ -16,6 +16,9 @@ Core constraints:
 
 ## Run And Validate
 
+Full build/debug guide (three run modes, env vars, tests, common pitfalls):
+[`docs/BUILD_AND_DEBUG.md`](docs/BUILD_AND_DEBUG.md).
+
 ```bash
 npm install
 cp .env.example .env
@@ -25,6 +28,14 @@ npm run dev
 Open:
 
 - Canvas co-creation: http://127.0.0.1:5173/
+
+Desktop (Electron) shell — reuses the same `apps/web` renderer:
+
+```bash
+npm run dev            # terminal 1: Vite dev server (5173)
+npm run dev:desktop    # terminal 2: Electron window loading the dev server
+npm run build:desktop  # package installers via electron-builder → apps/desktop/release/
+```
 
 Before handing off changes:
 
@@ -38,22 +49,35 @@ Do not commit `.env`.
 
 Common variables:
 
-- `GROQ_API_KEY`: hosted open-model provider for co-creation.
-- `TAVILY_API_KEY`: canvas web-search cards.
-- `HTTPS_PROXY`: hosted API proxy when needed.
-- `AGENT_PROXY`: proxy override for Claude/Codex CLI calls.
+- `GROQ_API_KEY`: hosted open-model provider (co-creation + transcript cleanup/summary). In `npm run dev` a compile-time inject (`services/dev-keys.ts`) fills it in; in prod the user enters keys in the LLM settings panel (stored in the browser). No keys are baked into the shipped bundle.
+- `TAVILY_API_KEY`: canvas web-search cards (server-side `/api/search` relay).
+- `SONIOX_API_KEY` / `SONIOX_MODEL`: STT. Browser-direct via the dev-only inject in local mode; when signed into the Go backend, held server-side and used by the `/stt` relay.
+- `HTTPS_PROXY`: hosted API proxy when needed (server-side search/url-meta relay).
+- `VITE_API_URL` (web build-time): points the app at the Go backend (`server-go/`) to enable login, cross-device board sync (`/sync`), and backend STT (`/stt`). **Empty = local-only mode** (no login, IndexedDB-only, browser-direct Soniox) — nothing regresses.
 
-## Canvas Architecture
+## Architecture (post Phase 0/1/2)
+
+The LLM is now **client-direct** to the MaaS provider (Groq by default); the Vite
+middleware is a **minimal relay** only for web search + og:image. CLI providers
+(`agents.ts`) are retired. Notes/images persist **local-first via Yjs CRDT**
+(`packages/core/doc` + IndexedDB), with `localStorage` kept as a mirror/backup.
+
+An optional **Go backend** (`server-go/`) adds accounts (SQLite), cross-device
+board sync (`/sync` dumb relay), and STT forwarding (`/stt`). It's **opt-in via
+`VITE_API_URL`**: unset → the app runs exactly as before (local-only, no login).
+Signed in → each canvas maps to a server document and syncs live; speech routes
+through the backend STT proxy. See `docs/technical-plan.md`.
 
 Active files:
 
-- `canvas-cocreation/src/App.tsx`
-- `canvas-cocreation/src/KeywordNoteView.tsx`
-- `canvas-cocreation/src/Transcript.tsx`
-- `services/llm/cocreate.ts`
-- `server/api-plugin.ts`
-- `server/agents.ts`
-- `server/search.ts`
+- Frontend canvas: `apps/web/src/App.tsx`, `KeywordNoteView.tsx`, `Transcript.tsx`
+- CRDT persistence: `packages/core/doc/{schema,board}.ts`, `apps/web/src/board-persistence.ts`
+- LLM (client-direct, tested): `packages/core/llm/*`, `services/llm/{client,cocreate,command-chat,provider-config,web-search}.ts`
+- Minimal backend relay (dev): `server/api-plugin.ts`, `server/search.ts`, `server/url-meta.ts`, `server/proxy.ts`
+- Go backend: `server-go/` (auth/JWT, SQLite AccountStore, `/documents`, `/sync` CRDT relay, `/stt` proxy). Tests: `cd server-go && make test`.
+- Backend wiring (frontend, gated by `VITE_API_URL`): `services/api/*` (auth+documents client), `services/sync/board-sync.ts` (Yjs provider), `services/stt/backend.ts` (STT via `/stt`), `apps/web/src/{backend.ts,AuthPanel.tsx,DocumentsPanel.tsx}`.
+
+Tests: `npm test` (Vitest). Run it (plus `npm run build`) before handing off.
 
 Behavior:
 

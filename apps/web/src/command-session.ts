@@ -3,7 +3,7 @@
 // everything the AI creates on the canvas goes through applyAction and lands
 // as PENDING content, reusing the exact item shapes Tier-2 produces.
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem } from './canvas-types'
-import type { CommandChatAction, CommandChatRequest } from '../../services/llm/command-chat-types'
+import type { CommandChatAction, CommandChatRequest } from '../../../services/llm/command-chat-types'
 
 export type { CommandChatAction }
 

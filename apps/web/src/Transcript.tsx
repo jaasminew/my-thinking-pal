@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { SonioxSTT } from '../../services/stt/soniox'
-import { getAudioStream } from '../../services/stt/audio-source'
-import type { STTProvider } from '../../services/stt/types'
+import { SonioxSTT } from '../../../services/stt/soniox'
+import { getAudioStream } from '../../../services/stt/audio-source'
+import type { STTProvider } from '../../../services/stt/types'
 import { SignalEngine } from './signal-engine'
 import { isImeEvent } from './ime'
 import type { Line, Section, EngineStatus } from './signal-engine'
@@ -79,7 +79,8 @@ export function Transcript({
   organizeProvider = 'groq',
   storageSuffix = '',
   highlights = [],
-  onHoverNote
+  onHoverNote,
+  makeStt
 }: {
   recording: boolean
   onToggleRecord: () => void
@@ -97,6 +98,9 @@ export function Transcript({
   /** Hovering a marked phrase reports its note id (null on leave) so the canvas
    *  can fade that note's header to orange. */
   onHoverNote?: (noteId: string | null) => void
+  /** STT provider factory. Defaults to browser-direct Soniox; when signed in the
+   *  app injects a backend-proxied provider (docs module 07). */
+  makeStt?: () => STTProvider
 }) {
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes;
@@ -186,7 +190,7 @@ export function Transcript({
         return
       }
 
-      const stt = new SonioxSTT()
+      const stt = makeStt ? makeStt() : new SonioxSTT()
       sttRef.current = stt
       stt.onError((e) => setErr(`⚠ ${e.message}`))
       stt.onTranscript((ev) => {
