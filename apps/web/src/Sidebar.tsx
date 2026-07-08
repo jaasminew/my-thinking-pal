@@ -35,6 +35,7 @@ export function Sidebar({
   onStartRename,
   onRename,
   onMoveNode,
+  onContextMenu,
   footer
 }: {
   collapsed: boolean
@@ -49,6 +50,7 @@ export function Sidebar({
   onStartRename: (id: string) => void
   onRename: (id: string, name: string) => void
   onMoveNode: (id: string, targetProjectId: string | null) => void
+  onContextMenu: (node: TreeNode, x: number, y: number) => void
   footer?: ReactNode
 }) {
   // Highlights the project row (or the root drop zone) currently under a
@@ -105,6 +107,11 @@ export function Sidebar({
         onDragEnd={clearDrag}
         onClick={() => onSelect(n)}
         onDoubleClick={() => onStartRename(n.id)}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onContextMenu(n, e.clientX, e.clientY)
+        }}
         title="Double-click to rename"
       >
         {n.kind === 'project' ? FolderIcon : PencilIcon}

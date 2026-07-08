@@ -20,7 +20,7 @@ import {
 import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
 import { LlmSettingsPanel } from './LlmSettingsPanel'
 import { openBoard, type Board } from '../../../packages/core/doc'
-import { indexeddbPersistence, hydrateNotes, boardDocId, clearAllBoards } from './board-persistence'
+import { indexeddbPersistence, hydrateNotes, boardDocId, clearAllBoards, copyBoard, deleteBoard } from './board-persistence'
 import { BoardSync } from '../../../services/sync/board-sync'
 import { websocketTransport } from '../../../services/sync/board-sync'
 import { BackendSTT } from '../../../services/stt/backend'
@@ -1609,6 +1609,25 @@ const removeNode = (nodes: TreeNode[], id: string): { nodes: TreeNode[]; found?:
   return { nodes: rest, found }
 }
 
+// Find the project (parent) that directly contains the given child id.
+const findParent = (nodes: TreeNode[], childId: string): TreeNode | undefined => {
+  for (const n of nodes) {
+    if (n.children?.some((c) => c.id === childId)) return n
+    const hit = n.children && findParent(n.children, childId)
+    if (hit) return hit
+  }
+  return undefined
+}
+
+// Insert a node right after the one with `afterId` in the same array.
+const insertAfter = (arr: TreeNode[], afterId: string, newNode: TreeNode): TreeNode[] => {
+  const idx = arr.findIndex((n) => n.id === afterId)
+  if (idx < 0) return [...arr, newNode]
+  const out = [...arr]
+  out.splice(idx + 1, 0, newNode)
+  return out
+}
+
 // Handle = the spine strip on a panel's top-left (drag it to slide/resize).
 // Its width is what an open-but-buried canvas always keeps visible.
 const HANDLE = 44
@@ -1644,6 +1663,10 @@ export function App() {
   const [activeId, setActiveId] = useState<string>(() => loadJSON('active-space', 'default'))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  // Right-click context menu on a sidebar tree node (Duplicate / Rename / Delete).
+  const [spaceMenu, setSpaceMenu] = useState<{ id: string; kind: 'project' | 'space'; name: string; x: number; y: number } | null>(null)
+  // Delete confirmation modal state.
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   // Only ONE canvas records at a time — the id of the recording space, or null.
   const [recordingId, setRecordingId] = useState<string | null>(null)
   // Client-direct: the only web provider is the OpenAI-compatible 'open' path;
@@ -1683,6 +1706,19 @@ export function App() {
   useEffect(() => saveJSON('workspace-tree', tree), [tree])
   useEffect(() => saveJSON('open-panels', open), [open])
   useEffect(() => saveJSON('active-space', activeId), [activeId])
+
+  // Escape closes the space context menu and delete confirmation modal.
+  useEffect(() => {
+    if (!spaceMenu && !deleteConfirm) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSpaceMenu(null)
+        setDeleteConfirm(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [spaceMenu, deleteConfirm])
 
   // The active canvas must be one of the open ones.
   useEffect(() => {
@@ -1802,6 +1838,116 @@ export function App() {
     setRenamingId(null)
   }
 
+  // Right-click on a sidebar node → open the context menu at the cursor.
+  const onSpaceContextMenu = (node: TreeNode, x: number, y: number) => {
+    setSpaceMenu({ id: node.id, kind: node.kind, name: node.name, x, y })
+  }
+
+  // Duplicate a canvas: copy its board (IndexedDB) + localStorage mirror into
+  // a brand-new space, add it to the tree right after the source, and open it.
+  const onDuplicateSpace = useCallback(async (id: string) => {
+    setSpaceMenu(null)
+    const srcSuffix = id === 'default' ? '' : `.${id}`
+    const srcBoardKey = boardDocId(srcSuffix)
+    const newId = uid('s')
+    const newSuffix = `.${newId}`
+    const newBoardKey = boardDocId(newSuffix)
+
+    // 1. Copy board content (IndexedDB).
+    void copyBoard(srcBoardKey, newBoardKey)
+
+    // 2. Copy localStorage mirror keys (notes, images, view, transcript, etc.).
+    try {
+      const PREFIX = 'thinking-pal-canvas.'
+      for (const k of Object.keys(localStorage)) {
+        if (!k.startsWith(PREFIX)) continue
+        const bareKey = k.slice(PREFIX.length)
+        if (srcSuffix === '') {
+          // Default space: keys have no suffix — copy only un-suffixed keys.
+          if (bareKey.includes('.')) continue
+          localStorage.setItem(PREFIX + bareKey + newSuffix, localStorage.getItem(k)!)
+        } else {
+          // Named space: keys end with the source suffix.
+          if (!bareKey.endsWith(srcSuffix)) continue
+          const baseKey = bareKey.slice(0, -srcSuffix.length)
+          localStorage.setItem(PREFIX + baseKey + newSuffix, localStorage.getItem(k)!)
+        }
+      }
+    } catch {
+      // storage disabled — board copy alone is enough
+    }
+
+    // 3. Add the new node to the tree next to the source (same parent or root).
+    setTree((t) => {
+      const src = findNode(t, id)
+      const newNode: TreeNode = { id: newId, kind: 'space', name: `${src?.name ?? 'Canvas'} (copy)` }
+      // If source is inside a project, insert the copy right after it in the same project.
+      if (src) {
+        const parent = findParent(t, id)
+        if (parent) {
+          return mapNodes(t, (n) =>
+            n.id === parent.id
+              ? { ...n, children: insertAfter(n.children || [], id, newNode) }
+              : n
+          )
+        }
+      }
+      // Source is at root level — insert after it.
+      return insertAfter(t, id, newNode)
+    })
+
+    // 4. Open the duplicated canvas.
+    openSpace(newId)
+  }, [open, openSpace, activeId, recordingId])
+
+  // Rename: trigger the inline rename input in the sidebar.
+  const onRenameSpace = (id: string) => {
+    setSpaceMenu(null)
+    setRenamingId(id)
+  }
+
+  // Delete: open the confirmation modal.
+  const onDeleteSpace = (id: string, name: string) => {
+    setSpaceMenu(null)
+    setDeleteConfirm({ id, name })
+  }
+
+  // Confirmed delete: remove from tree, close panel if open, wipe IndexedDB +
+  // localStorage for that space.
+  const confirmDeleteSpace = useCallback(async () => {
+    const target = deleteConfirm
+    if (!target) return
+    const id = target.id
+    setDeleteConfirm(null)
+
+    // Close the panel if it's open.
+    if (open.ids.includes(id)) closeSpace(id)
+
+    // Remove from tree.
+    setTree((t) => removeNode(t, id).nodes)
+
+    // Clean up IndexedDB board (skip the 'default' space — its key is 'default').
+    const suffix = id === 'default' ? '' : `.${id}`
+    const bKey = boardDocId(suffix)
+    void deleteBoard(bKey)
+
+    // Clean up localStorage keys for this space.
+    try {
+      const PREFIX = 'thinking-pal-canvas.'
+      for (const k of Object.keys(localStorage)) {
+        if (!k.startsWith(PREFIX)) continue
+        const bareKey = k.slice(PREFIX.length)
+        if (suffix === '') {
+          if (!bareKey.includes('.')) localStorage.removeItem(k)
+        } else {
+          if (bareKey.endsWith(suffix)) localStorage.removeItem(k)
+        }
+      }
+    } catch {
+      // storage disabled — nothing to clean
+    }
+  }, [deleteConfirm, open.ids, closeSpace])
+
   // Drag a sheet's handle: only THIS sheet's left edge moves (right edge is
   // pinned), clamped so the sheet below keeps its handle visible and this
   // sheet stays visible in front of the sheet above.
@@ -1839,6 +1985,7 @@ export function App() {
         onStartRename={setRenamingId}
         onRename={onRename}
         onMoveNode={onMoveNode}
+        onContextMenu={onSpaceContextMenu}
         footer={
           <div className="side-controls">
             <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
@@ -1921,6 +2068,38 @@ export function App() {
           activeSpaceName={findNode(tree, activeId)?.name ?? 'canvas'}
           onClose={() => setShowDocs(false)}
         />
+      )}
+
+      {/* Right-click context menu on a sidebar tree node */}
+      {spaceMenu && (
+        <>
+          <div className="ctx-menu-backdrop" onClick={() => setSpaceMenu(null)} onContextMenu={(e) => { e.preventDefault(); setSpaceMenu(null) }} />
+          <div
+            className="note-menu"
+            style={{ left: spaceMenu.x, top: spaceMenu.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <button onClick={() => onDuplicateSpace(spaceMenu.id)}>Duplicate</button>
+            <button onClick={() => onRenameSpace(spaceMenu.id)}>Rename</button>
+            <button className="danger" onClick={() => onDeleteSpace(spaceMenu.id, spaceMenu.name)}>Delete</button>
+          </div>
+        </>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteConfirm && (
+        <div className="confirm-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <p className="confirm-text">
+              Delete "{deleteConfirm.name}"? This canvas and all its content will be permanently removed.
+            </p>
+            <div className="confirm-actions">
+              <button className="confirm-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
+              <button className="confirm-delete" onClick={confirmDeleteSpace}>Delete</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
