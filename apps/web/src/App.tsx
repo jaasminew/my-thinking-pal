@@ -4,7 +4,7 @@ import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
 import { loadJSON, saveJSON } from './persist'
 import { requestCocreate } from '../../../services/llm/cocreate'
-import type { CocreateProvider, OpenSub } from '../../../services/llm/cocreate-types'
+import type { CocreateProvider } from '../../../services/llm/cocreate-types'
 import { requestCommandChat } from '../../../services/llm/command-chat'
 import { InlineCommandBubble } from './InlineCommandBubble'
 import { CommandSidePanel } from './CommandSidePanel'
@@ -17,7 +17,7 @@ import {
   type CommandSession,
   type CommandMessage
 } from './command-session'
-import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
+import { Sidebar, BookIcon, CanvasIcon, type TreeNode } from './Sidebar'
 import { openBoard, type Board } from '../../../packages/core/doc'
 import { indexeddbPersistence, hydrateNotes, boardDocId, copyBoard, deleteBoard } from './board-persistence'
 import { BoardSync } from '../../../services/sync/board-sync'
@@ -26,39 +26,66 @@ import { BackendSTT } from '../../../services/stt/backend'
 import type { STTProvider } from '../../../services/stt/types'
 import { wsUrl } from '../../../services/api/config'
 import { useBackend, type SyncParams } from './backend'
-import { LlmSettingsPanel, type ModelSelections } from './LlmSettingsPanel'
+import { LlmSettingsPanel, type AiModelConfig, type ModelSelections } from './LlmSettingsPanel'
 import { AuthPanel } from './AuthPanel'
 import { DocumentsPanel } from './DocumentsPanel'
+import { setProviderConfig } from '../../../services/llm/provider-config'
 
-// The model runs CLIENT-DIRECT now (docs module 08): the browser calls the
-// OpenAI-compatible provider itself. The retired Claude/Codex CLIs can't run in
-// a browser, so the web build offers only these direct models.
-const OPEN_MODELS: { sub: OpenSub; model: string; label: string }[] = [
-  { sub: 'groq', model: 'llama-3.3-70b-versatile', label: 'Groq · Llama 3.3 70B' },
-  { sub: 'groq', model: 'openai/gpt-oss-120b', label: 'Groq · GPT-OSS 120B' },
-  { sub: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
-  { sub: 'ollama', model: '', label: 'Ollama · local (.env)' }
-]
 const OPEN_PROVIDER: CocreateProvider = 'open'
+const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = [
+  { id: 'groq-llama-3-3-70b', runtime: 'api', providerId: 'groq', model: 'llama-3.3-70b-versatile', label: 'Groq · Llama 3.3 70B' },
+  { id: 'groq-gpt-oss-120b', runtime: 'api', providerId: 'groq', model: 'openai/gpt-oss-120b', label: 'Groq · GPT-OSS 120B' },
+  { id: 'groq-qwen3-32b', runtime: 'api', providerId: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
+  { id: 'ollama-local', runtime: 'ollama', providerId: 'ollama', baseUrl: 'http://localhost:11434/v1', model: '', label: 'Ollama · local' }
+]
 const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
-  transcriptionSummary: 1,
-  coCreation: 0,
-  aiCommand: 0
+  transcriptionSummary: 'groq-gpt-oss-120b',
+  coCreation: 'groq-llama-3-3-70b',
+  aiCommand: 'groq-llama-3-3-70b'
 }
 
-function normalizeModelSelections(raw: Partial<ModelSelections> | null | undefined): ModelSelections {
-  const clamp = (value: unknown, fallback: number) => {
+function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModelConfig[] {
+  const byId = new Map(DEFAULT_MODEL_CONFIGS.map((c) => [c.id, c]))
+  if (Array.isArray(raw)) {
+    for (const cfg of raw) {
+      if (!cfg?.id || !cfg?.runtime) continue
+      byId.set(cfg.id, {
+        id: String(cfg.id),
+        label: String(cfg.label || cfg.id),
+        runtime: cfg.runtime,
+        providerId: cfg.providerId,
+        model: cfg.model,
+        apiKey: cfg.apiKey,
+        baseUrl: cfg.baseUrl,
+        command: cfg.command
+      })
+    }
+  }
+  return [...byId.values()]
+}
+
+function normalizeModelSelections(
+  raw: Partial<ModelSelections> | Record<string, unknown> | null | undefined,
+  configs: readonly AiModelConfig[]
+): ModelSelections {
+  const ids = new Set(configs.map((c) => c.id))
+  const legacyAt = (idx: number) => DEFAULT_MODEL_CONFIGS[idx]?.id
+  const pick = (value: unknown, fallback: string) => {
+    if (typeof value === 'string' && ids.has(value)) return value
+    if (typeof value === 'number') return legacyAt(value) ?? fallback
     const n = Math.floor(Number(value))
-    return Number.isFinite(n) && n >= 0 && n < OPEN_MODELS.length ? n : fallback
+    if (Number.isFinite(n)) return legacyAt(n) ?? fallback
+    return fallback
   }
   return {
-    transcriptionSummary: clamp(raw?.transcriptionSummary, DEFAULT_MODEL_SELECTIONS.transcriptionSummary),
-    coCreation: clamp(raw?.coCreation, DEFAULT_MODEL_SELECTIONS.coCreation),
-    aiCommand: clamp(raw?.aiCommand, DEFAULT_MODEL_SELECTIONS.aiCommand)
+    transcriptionSummary: pick(raw?.transcriptionSummary, DEFAULT_MODEL_SELECTIONS.transcriptionSummary),
+    coCreation: pick(raw?.coCreation, DEFAULT_MODEL_SELECTIONS.coCreation),
+    aiCommand: pick(raw?.aiCommand, DEFAULT_MODEL_SELECTIONS.aiCommand)
   }
 }
 
-const openModelAt = (idx: number) => OPEN_MODELS[idx] ?? OPEN_MODELS[DEFAULT_MODEL_SELECTIONS.coCreation]
+const modelConfigAt = (configs: readonly AiModelConfig[], id: string) =>
+  configs.find((cfg) => cfg.id === id) ?? configs[0] ?? DEFAULT_MODEL_CONFIGS[0]
 const GearIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="3" />
@@ -172,6 +199,7 @@ function CanvasSpace({
   recording,
   onToggleRecord,
   modelSelections,
+  modelConfigs,
   sync,
   makeStt,
   seedFromLocal = true
@@ -181,6 +209,7 @@ function CanvasSpace({
   recording: boolean
   onToggleRecord: () => void
   modelSelections: ModelSelections
+  modelConfigs: readonly AiModelConfig[]
   /** When signed in + this space is mapped to a server doc, attach live sync. */
   sync?: SyncParams | null
   /** STT provider factory (backend proxy when signed in; else browser Soniox). */
@@ -603,14 +632,20 @@ function CanvasSpace({
   }, [notes, patchNote])
 
   const providerArgs = useCallback((role: 'coCreation' | 'aiCommand') => {
-    const m = openModelAt(modelSelections[role])
-    return { provider: OPEN_PROVIDER, openSub: m.sub, model: m.model || undefined, webSearch: true }
-  }, [modelSelections])
+    const cfg = modelConfigAt(modelConfigs, modelSelections[role])
+    if (cfg.runtime === 'api' || cfg.runtime === 'ollama') {
+      return { provider: OPEN_PROVIDER, openSub: cfg.providerId || 'groq', model: cfg.model || undefined, webSearch: true }
+    }
+    return { provider: cfg.runtime, model: cfg.model || undefined, runtimeCommand: cfg.command || undefined, webSearch: true }
+  }, [modelConfigs, modelSelections])
 
   const summaryModel = useMemo(() => {
-    const m = openModelAt(modelSelections.transcriptionSummary)
-    return { providerId: m.sub, model: m.model || undefined }
-  }, [modelSelections.transcriptionSummary])
+    const cfg = modelConfigAt(modelConfigs, modelSelections.transcriptionSummary)
+    return {
+      providerId: cfg.runtime === 'api' || cfg.runtime === 'ollama' ? cfg.providerId || 'groq' : cfg.runtime,
+      model: cfg.model || undefined
+    }
+  }, [modelConfigs, modelSelections.transcriptionSummary])
 
   // Screen → world coords (undo the pan/zoom of the notes layer).
   const toWorld = (clientX: number, clientY: number) => {
@@ -1700,8 +1735,11 @@ export function App() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   // Only ONE canvas records at a time — the id of the recording space, or null.
   const [recordingId, setRecordingId] = useState<string | null>(null)
+  const [modelConfigs, setModelConfigs] = useState<AiModelConfig[]>(() =>
+    normalizeModelConfigs(loadJSON<AiModelConfig[]>('llm-model-configs', DEFAULT_MODEL_CONFIGS))
+  )
   const [modelSelections, setModelSelections] = useState<ModelSelections>(() =>
-    normalizeModelSelections(loadJSON<Partial<ModelSelections>>('llm-model-selections', DEFAULT_MODEL_SELECTIONS))
+    normalizeModelSelections(loadJSON<Partial<ModelSelections>>('llm-model-selections', DEFAULT_MODEL_SELECTIONS), modelConfigs)
   )
   const [showLlmSettings, setShowLlmSettings] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
@@ -1736,7 +1774,19 @@ export function App() {
   useEffect(() => saveJSON('workspace-tree', tree), [tree])
   useEffect(() => saveJSON('open-panels', open), [open])
   useEffect(() => saveJSON('active-space', activeId), [activeId])
+  useEffect(() => saveJSON('llm-model-configs', modelConfigs), [modelConfigs])
   useEffect(() => saveJSON('llm-model-selections', modelSelections), [modelSelections])
+  useEffect(() => {
+    for (const cfg of modelConfigs) {
+      if (cfg.runtime !== 'api' && cfg.runtime !== 'ollama') continue
+      const providerId = cfg.providerId || (cfg.runtime === 'ollama' ? 'ollama' : 'groq')
+      const providerConfig: { apiKey?: string; model?: string; baseUrl?: string } = {}
+      if (cfg.apiKey) providerConfig.apiKey = cfg.apiKey
+      if (cfg.model) providerConfig.model = cfg.model
+      if (cfg.baseUrl) providerConfig.baseUrl = cfg.baseUrl
+      if (Object.keys(providerConfig).length) setProviderConfig(providerId, providerConfig)
+    }
+  }, [modelConfigs])
 
   // Escape closes the space context menu and delete confirmation modal.
   useEffect(() => {
@@ -2060,7 +2110,7 @@ export function App() {
               >
                 ×
               </button>
-              {BookIcon}
+              <span className="spine-canvas-icon">{CanvasIcon}</span>
               <span className="spine-title">{findNode(tree, id)?.name ?? 'A New Canvas'}</span>
             </div>
             <div className="panel-body">
@@ -2070,6 +2120,7 @@ export function App() {
                 recording={recordingId === id}
                 onToggleRecord={() => setRecordingId((r) => (r === id ? null : id))}
                 modelSelections={modelSelections}
+                modelConfigs={modelConfigs}
                 sync={backend.syncFor(id)}
                 makeStt={makeStt}
                 seedFromLocal={!backend.isAdopted(id)}
@@ -2081,9 +2132,13 @@ export function App() {
 
       {showLlmSettings && (
         <LlmSettingsPanel
-          models={OPEN_MODELS}
+          configs={modelConfigs}
           selections={modelSelections}
-          onSave={(next) => setModelSelections(normalizeModelSelections(next))}
+          onSave={(nextSelections, nextConfigs) => {
+            const normalizedConfigs = normalizeModelConfigs(nextConfigs)
+            setModelConfigs(normalizedConfigs)
+            setModelSelections(normalizeModelSelections(nextSelections, normalizedConfigs))
+          }}
           onClose={() => setShowLlmSettings(false)}
         />
       )}

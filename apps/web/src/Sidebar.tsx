@@ -17,8 +17,18 @@ const icon = (paths: ReactNode) => (
 )
 const PanelToggleIcon = icon(<><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M9.5 4v16" /></>)
 const FolderPlusIcon = icon(<><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /><path d="M12 11.5v4M10 13.5h4" /></>)
-const PencilIcon = icon(<><path d="M4 20l1-4L16.5 4.5a2.12 2.12 0 0 1 3 3L8 19l-4 1z" /><path d="M14.5 6.5l3 3" /></>)
 const FolderIcon = icon(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />)
+export const CanvasIcon = (
+  <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden>
+    <path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-520h560v-120H200v120Zm560 80H200v360h560v-360Zm-560-80v80-80Zm0 0v-120 120Zm0 80v360-360Z" />
+  </svg>
+)
+const CanvasPlusIcon = (
+  <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden>
+    <path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-520h560v-120H200v120Zm560 80H200v360h560v-360Zm-560-80v80-80Zm0 0v-120 120Zm0 80v360-360Z" />
+    <path d="M440-512h80v52h52v80h-52v52h-80v-52h-52v-80h52v-52Z" />
+  </svg>
+)
 // Notebook icon used on the panel spines (exported for App).
 export const BookIcon = icon(<><path d="M5 5a2 2 0 0 1 2-2h12v16H7a2 2 0 0 0-2 2V5z" /><path d="M5 19a2 2 0 0 1 2-2h12" /></>)
 
@@ -114,7 +124,7 @@ export function Sidebar({
         }}
         title="Double-click to rename"
       >
-        {n.kind === 'project' ? FolderIcon : PencilIcon}
+        {n.kind === 'project' ? FolderIcon : CanvasIcon}
         {renamingId === n.id ? (
           <input
             className="tree-rename"
@@ -153,7 +163,7 @@ export function Sidebar({
         {!collapsed && <span>New Project</span>}
       </button>
       <button className="side-btn" onClick={onNewIdeaSpace} title="New Idea Space">
-        {PencilIcon}
+        {CanvasPlusIcon}
         {!collapsed && <span>New Idea Space</span>}
       </button>
       {!collapsed && (
@@ -181,7 +191,7 @@ export function Sidebar({
       {tooltip && dragLabel && (
         <div className="drag-tooltip" style={{ left: tooltip.x + 16, top: tooltip.y - 10, transform: 'translateY(-100%)' }}>
           <div className="drag-tooltip-title">
-            {PencilIcon}
+            {CanvasIcon}
             <span>{dragLabel}</span>
           </div>
           <div className="drag-tooltip-sub">{tooltip.text}</div>

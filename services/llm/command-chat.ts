@@ -9,6 +9,7 @@ import {
 } from '../../packages/core/llm'
 import { resolveClientProvider } from './provider-config'
 import { resolveOgImage } from './web-search'
+import { runLocalCommandChat, type LocalRuntime } from './local-runtime'
 
 export interface CommandChatHandlers {
   /** Streamed chat text delta — append to the live assistant message. */
@@ -36,11 +37,14 @@ export async function requestCommandChat(
 
   const doFetch = deps?.fetchImpl ?? fetch
   const providerId = req.provider === 'open' ? req.openSub ?? 'groq' : req.provider
-  let provider: LlmProvider
-  try {
-    provider = deps?.provider ?? (await resolveClientProvider(providerId, req.model))
-  } catch (e: any) {
-    return { error: e?.message || String(e) }
+  const isLocalRuntime = providerId === 'codex' || providerId === 'claude-code' || providerId === 'cursor'
+  let provider: LlmProvider | undefined
+  if (!isLocalRuntime) {
+    try {
+      provider = deps?.provider ?? (await resolveClientProvider(providerId, req.model))
+    } catch (e: any) {
+      return { error: e?.message || String(e) }
+    }
   }
 
   const sourceNoteId = typeof req.context?.sourceNoteId === 'string' ? req.context.sourceNoteId : undefined
@@ -97,16 +101,34 @@ export async function requestCommandChat(
 
   const filter = makeCommandActionFilter((t) => handlers.onText(t), handleActionJson)
 
-  try {
-    await streamOpenModel(
-      provider,
-      { system: COMMAND_CHAT_SYSTEM, userText, onText: (t) => filter.push(t), fetchImpl: doFetch, signal }
+  if (isLocalRuntime) {
+    const local = await runLocalCommandChat(
+      {
+        runtime: providerId as LocalRuntime,
+        command: req.runtimeCommand,
+        model: req.model,
+        system: COMMAND_CHAT_SYSTEM,
+        userText
+      },
+      { onText: (t) => filter.push(t), onAction: handleActionJson },
+      doFetch as typeof fetch,
+      signal
     )
     filter.flush()
-  } catch (e: any) {
-    filter.flush()
-    if (e?.name === 'AbortError' || signal?.aborted) return { aborted: true }
-    return { error: e?.message || String(e), provider: req.provider }
+    if (local.aborted) return { aborted: true }
+    if (local.error) return { error: local.error, provider: req.provider }
+  } else {
+    try {
+      await streamOpenModel(
+        provider!,
+        { system: COMMAND_CHAT_SYSTEM, userText, onText: (t) => filter.push(t), fetchImpl: doFetch, signal }
+      )
+      filter.flush()
+    } catch (e: any) {
+      filter.flush()
+      if (e?.name === 'AbortError' || signal?.aborted) return { aborted: true }
+      return { error: e?.message || String(e), provider: req.provider }
+    }
   }
 
   if (signal?.aborted) return { aborted: true }
@@ -120,5 +142,5 @@ export async function requestCommandChat(
     else handlers.onAction?.({ type: 'add-card', noteId: sourceNoteId, title: im.title || im.caption, url: im.url })
   }
 
-  return { model: provider.model, provider: req.provider }
+  return { model: provider?.model ?? req.model, provider: req.provider }
 }

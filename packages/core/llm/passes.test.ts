@@ -60,6 +60,14 @@ describe('organize (integration)', () => {
     await organize(TEST_PROVIDER, { lines: 'x', closing: true }, mock.fetch)
     expect(mock.calls[0].body.messages[0].content).toContain('This is the FINAL pass')
   })
+
+  it('instructs the organizer to prefer larger topic sections', async () => {
+    const mock = mockFetchSequence([jsonResponse('{"sections":[]}')])
+    await organize(TEST_PROVIDER, { lines: '0 [judgment]: a\n1 [example]: b', closing: false }, mock.fetch)
+    const system = mock.calls[0].body.messages[0].content
+    expect(system).toContain('Prefer fewer, larger sections')
+    expect(system).toContain('Leave borderline or still-forming material in the open tail')
+  })
 })
 
 describe('sectionHeader (integration)', () => {

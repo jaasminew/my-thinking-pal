@@ -11,6 +11,7 @@ import {
 } from '../../packages/core/llm'
 import { resolveClientProvider } from './provider-config'
 import { resolveOgImage, searchWeb } from './web-search'
+import { runLocalCocreate, type LocalRuntime } from './local-runtime'
 
 export interface CocreateHandlers {
   /** Called for every streamed text delta (render it live on the canvas). */
@@ -48,16 +49,6 @@ export async function requestCocreate(
     return { error: 'seedText or command is required' }
   }
 
-  // 'open' is the web umbrella → the concrete OpenAI-compatible sub (Groq/
-  // Ollama). Retired CLI ids fall back to the active provider inside resolve.
-  const providerId = req.provider === 'open' ? req.openSub ?? 'groq' : req.provider
-  let provider: LlmProvider
-  try {
-    provider = deps?.provider ?? (await resolveClientProvider(providerId, req.model))
-  } catch (e: any) {
-    return { error: e?.message || String(e) }
-  }
-
   const baseSystem = isCommand ? COMMAND_SYSTEM : COCREATE_SYSTEM
   const system = baseSystem + (req.webSearch ? SEARCH_INSTRUCTION : '')
   const userText = isCommand
@@ -71,33 +62,53 @@ export async function requestCocreate(
         req.seedType
       )
 
+  const providerId = req.provider === 'open' ? req.openSub ?? 'groq' : req.provider
+  const isLocalRuntime = providerId === 'codex' || providerId === 'claude-code' || providerId === 'cursor'
+  let provider: LlmProvider | undefined
+  if (!isLocalRuntime) {
+    try {
+      provider = deps?.provider ?? (await resolveClientProvider(providerId, req.model))
+    } catch (e: any) {
+      return { error: e?.message || String(e) }
+    }
+  }
+
   const collectedUrls: UrlCard[] = []
   // Inline images the model cited via markdown image syntax — resolved after the
   // stream (need og:image); capped at 1, matching the old server behavior.
   const inlineImageReqs: { title: string; url: string; line: number }[] = []
 
-  const outcome = await cocreateStream(
-    provider,
-    { system, userText },
-    {
-      onText: handlers.onText,
-      onDiagnosis: handlers.onDiagnosis,
-      onAnchor: handlers.onAnchor,
-      onUrl: (u) => {
-        // A link the model deliberately cited in a bullet → card. App enriches
-        // its og:image/snippet via its own /api/url-meta effect.
-        if (!collectedUrls.some((c) => c.url === u.url)) collectedUrls.push(u)
-      },
-      onInlineImage: (im) => {
-        if (!inlineImageReqs.length) inlineImageReqs.push(im)
-      }
+  const localHandlers = {
+    onText: handlers.onText,
+    onDiagnosis: handlers.onDiagnosis,
+    onAnchor: handlers.onAnchor,
+    onUrl: (u: UrlCard) => {
+      // A link the model deliberately cited in a bullet → card. App enriches
+      // its og:image/snippet via its own /api/url-meta effect.
+      if (!collectedUrls.some((c) => c.url === u.url)) collectedUrls.push(u)
     },
-    doFetch,
-    signal
-  )
+    onInlineImage: (im: { title: string; url: string; line: number }) => {
+      if (!inlineImageReqs.length) inlineImageReqs.push(im)
+    }
+  }
+
+  const outcome = isLocalRuntime
+    ? await runLocalCocreate(
+        { runtime: providerId as LocalRuntime, command: req.runtimeCommand, model: req.model, system, userText },
+        localHandlers,
+        doFetch as typeof fetch,
+        signal
+      )
+    : await cocreateStream(
+        provider!,
+        { system, userText },
+        localHandlers,
+        doFetch,
+        signal
+      )
 
   if (signal?.aborted) return { aborted: true }
-  if (outcome.error) return { error: outcome.error, provider: req.provider, model: provider.model }
+  if (outcome.error) return { error: outcome.error, provider: req.provider, model: provider?.model ?? req.model }
 
   // Emit cited-link cards (if any) first.
   if (collectedUrls.length) handlers.onUrls?.(collectedUrls.slice(0, 3))
@@ -132,5 +143,5 @@ export async function requestCocreate(
     }
   }
 
-  return { model: provider.model, provider: req.provider, urls: collectedUrls }
+  return { model: provider?.model ?? req.model, provider: req.provider, urls: collectedUrls }
 }

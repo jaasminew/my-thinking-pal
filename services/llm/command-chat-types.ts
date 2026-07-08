@@ -25,6 +25,8 @@ export interface CommandChatRequest {
   provider: CocreateProvider
   openSub?: OpenSub
   model?: string
+  /** Local runtime command/path for Codex, Claude Code, or Cursor. */
+  runtimeCommand?: string
   webSearch?: boolean
   /** Full history, oldest first — the server is stateless and flattens it. */
   messages: { role: 'user' | 'assistant'; text: string }[]

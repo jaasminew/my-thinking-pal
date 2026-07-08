@@ -514,8 +514,22 @@ export function KeywordNoteView({
   const bulletRow = (b: BulletItem, i: number) => {
     const pendingAi = b.origin === 'ai' && b.status === 'pending'
     const indent = b.indent ?? 0
+    const next = note.items[i + 1]
+    const hasIndentedChild = next && isBullet(next) && (next.indent ?? 0) > indent
+    const style = indent ? ({ '--indent-offset': `${indent * 24}px` } as React.CSSProperties) : undefined
     return (
-      <div key={b.id} data-idx={i} className={`bullet ${b.origin} ${b.status}`} style={indent ? { marginLeft: indent * 18 } : undefined}>
+      <div key={b.id} data-idx={i} className={`bullet ${b.origin} ${b.status}`} style={style}>
+        {/* Obsidian-style indentation guides: one vertical segment per ancestor
+            level. A parent with children draws the first segment below its own
+            dot; child rows only continue that thread through their own height. */}
+        {hasIndentedChild && <span className="indent-guide indent-guide-parent" />}
+        {indent > 0 && Array.from({ length: indent }, (_, lvl) => (
+          <span
+            key={`g${lvl}`}
+            className="indent-guide"
+            style={{ '--guide-offset': `${(lvl - indent) * 24}px` } as React.CSSProperties}
+          />
+        ))}
         <span className="dot">{indent ? '◦' : '•'}</span>
         <div className="bullet-body">
           <BulletText

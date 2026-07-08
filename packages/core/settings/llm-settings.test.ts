@@ -26,6 +26,13 @@ describe('normalizeProviderId', () => {
   it('falls back to groq when the active provider is itself an alias', () => {
     expect(normalizeProviderId('codex', { activeProviderId: 'open', providers: {} })).toBe('groq')
   })
+
+  it('honors a saved custom provider with a base URL', () => {
+    expect(normalizeProviderId('deepseek', {
+      activeProviderId: 'groq',
+      providers: { deepseek: { baseUrl: 'https://api.deepseek.com/v1' } }
+    })).toBe('deepseek')
+  })
 })
 
 describe('resolveFromSettings', () => {
@@ -45,6 +52,17 @@ describe('resolveFromSettings', () => {
     const p = resolveFromSettings(settings, { providerId: 'codex' })
     expect(p.id).toBe('groq')
     expect(p.apiKey).toBe('k')
+  })
+
+  it('resolves a custom provider from stored base URL and key', () => {
+    const p = resolveFromSettings({
+      activeProviderId: 'groq',
+      providers: { deepseek: { baseUrl: 'https://api.deepseek.com/v1', apiKey: 'dk', model: 'deepseek-chat' } }
+    }, { providerId: 'deepseek' })
+    expect(p.id).toBe('deepseek')
+    expect(p.baseUrl).toBe('https://api.deepseek.com/v1')
+    expect(p.apiKey).toBe('dk')
+    expect(p.model).toBe('deepseek-chat')
   })
 
   it('works from defaults with an empty key (unusable but resolvable)', () => {

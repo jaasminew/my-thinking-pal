@@ -11,3 +11,9 @@ contextBridge.exposeInMainWorld('secureKeys', {
 
 // Lets the renderer detect it's running inside the desktop shell.
 contextBridge.exposeInMainWorld('desktop', { isElectron: true })
+
+contextBridge.exposeInMainWorld('localAi', {
+  status: (req) => ipcRenderer.invoke('local-ai:status', req),
+  setup: (req) => ipcRenderer.invoke('local-ai:setup', req),
+  run: (req) => ipcRenderer.invoke('local-ai:run', req)
+})
