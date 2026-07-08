@@ -16,6 +16,7 @@ describe('extractSignals (integration)', () => {
     expect(out.skipped).toBeUndefined()
     // The strict JSON contract is appended to the domain system prompt.
     expect(mock.calls[0].body.messages[0].content).toContain('Return ONLY a JSON object')
+    expect(mock.calls[0].body.messages[0].content).toContain('never translate non-English speech into English')
   })
 
   it('reports skipped=true (retry) when the reply is unparseable', async () => {

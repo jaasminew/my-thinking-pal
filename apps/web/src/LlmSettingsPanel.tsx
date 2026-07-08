@@ -1,27 +1,33 @@
 import { useState } from 'react'
-import { PROVIDER_PRESETS } from '../../../packages/core/llm'
-import type { LlmSettings } from '../../../packages/core/settings/llm-settings'
-import { getSettings, saveSettings } from '../../../services/llm/provider-config'
 
-// Minimal settings modal so a PRODUCTION user (static build, no dev server) can
-// enter their own MaaS key — the browser calls the provider directly with it
-// (docs module 08). Keys live only in this browser's localStorage.
-export function LlmSettingsPanel({ onClose }: { onClose: () => void }) {
-  const [draft, setDraft] = useState<LlmSettings>(() => {
-    const s = getSettings()
-    return { ...s, providers: { ...s.providers } }
-  })
+export type ModelSelections = {
+  transcriptionSummary: number
+  coCreation: number
+  aiCommand: number
+}
 
-  const ids = Object.keys(PROVIDER_PRESETS)
-  const active = draft.activeProviderId
-  const preset = PROVIDER_PRESETS[active]
-  const cfg = draft.providers[active] ?? {}
+export type SelectableModel = {
+  label: string
+}
 
-  const patchActive = (patch: Partial<{ apiKey: string; model: string; baseUrl: string }>) =>
-    setDraft((d) => ({ ...d, providers: { ...d.providers, [active]: { ...d.providers[active], ...patch } } }))
+export function LlmSettingsPanel({
+  models,
+  selections,
+  onSave,
+  onClose
+}: {
+  models: readonly SelectableModel[]
+  selections: ModelSelections
+  onSave: (next: ModelSelections) => void
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState<ModelSelections>(selections)
+
+  const patch = (key: keyof ModelSelections, value: number) =>
+    setDraft((d) => ({ ...d, [key]: value }))
 
   const save = () => {
-    saveSettings(draft)
+    onSave(draft)
     onClose()
   }
 
@@ -29,59 +35,45 @@ export function LlmSettingsPanel({ onClose }: { onClose: () => void }) {
     <div className="llm-settings-overlay" onPointerDown={onClose}>
       <div className="llm-settings" onPointerDown={(e) => e.stopPropagation()}>
         <div className="llm-settings-head">
-          <strong>LLM provider</strong>
+          <strong>Settings</strong>
           <button className="llm-settings-x" onClick={onClose} title="Close">
             ×
           </button>
         </div>
 
-        <label className="llm-field">
-          <span>Active provider</span>
-          <select value={active} onChange={(e) => setDraft((d) => ({ ...d, activeProviderId: e.target.value }))}>
-            {ids.map((id) => (
-              <option key={id} value={id}>
-                {PROVIDER_PRESETS[id].label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <section className="llm-section">
+          <h2>Model Selection</h2>
 
-        {!preset?.keyless && (
           <label className="llm-field">
-            <span>API key</span>
-            <input
-              type="password"
-              autoComplete="off"
-              placeholder="stored in this browser only"
-              value={cfg.apiKey ?? ''}
-              onChange={(e) => patchActive({ apiKey: e.target.value })}
-            />
+            <span>Transcription summary</span>
+            <select
+              value={draft.transcriptionSummary}
+              onChange={(e) => patch('transcriptionSummary', Number(e.target.value))}
+            >
+              {models.map((m, i) => (
+                <option key={i} value={i}>{m.label}</option>
+              ))}
+            </select>
           </label>
-        )}
 
-        <label className="llm-field">
-          <span>Model</span>
-          <input
-            type="text"
-            placeholder={preset?.defaultModel || 'model id'}
-            value={cfg.model ?? ''}
-            onChange={(e) => patchActive({ model: e.target.value })}
-          />
-        </label>
+          <label className="llm-field">
+            <span>Co-creation</span>
+            <select value={draft.coCreation} onChange={(e) => patch('coCreation', Number(e.target.value))}>
+              {models.map((m, i) => (
+                <option key={i} value={i}>{m.label}</option>
+              ))}
+            </select>
+          </label>
 
-        <label className="llm-field">
-          <span>Base URL</span>
-          <input
-            type="text"
-            placeholder={preset?.baseUrl || 'https://…/v1'}
-            value={cfg.baseUrl ?? ''}
-            onChange={(e) => patchActive({ baseUrl: e.target.value })}
-          />
-        </label>
-
-        <p className="llm-note">
-          The browser calls this provider directly. Keys never leave this device and are not sent to any server.
-        </p>
+          <label className="llm-field">
+            <span>AI command</span>
+            <select value={draft.aiCommand} onChange={(e) => patch('aiCommand', Number(e.target.value))}>
+              {models.map((m, i) => (
+                <option key={i} value={i}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+        </section>
 
         <div className="llm-settings-actions">
           <button className="llm-save" onClick={save}>

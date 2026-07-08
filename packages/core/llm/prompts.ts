@@ -117,6 +117,7 @@ export function buildExtractSignalsSystem(systemPrompt: string): string {
     `"text":"<one concise, written-style sentence>","speaker":"<S1|S2|… if speaker tags appear in the raw, else omit>"}]}. ` +
     `The only valid types are judgment, objection, example, decision — there is NO question or hesitation type. ` +
     `An EMPTY signals list is the NORMAL answer for most windows; only rare, genuinely thought-changing statements earn a slot. ` +
+    `For each signal, write the text in the dominant language of the raw speech window; never translate non-English speech into English. ` +
     `No prose, no markdown, no code fences — output only the JSON object.`
   )
 }

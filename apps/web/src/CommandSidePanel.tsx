@@ -54,7 +54,7 @@ export function CommandSidePanel({
         {session.messages.map((m) => (
           <div key={m.id} className={`cmd-msg ${m.role}`}>
             <div className="cmd-msg-text">
-              {m.text || (m.pending ? <span className="cmd-thinking">Thinking…</span> : null)}
+              {m.text || (m.pending ? <span className="cmd-thinking ai-thinking">Thinking…</span> : null)}
             </div>
             {!!m.actions?.length && (
               <div className="cmd-actions">

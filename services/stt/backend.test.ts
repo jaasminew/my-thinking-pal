@@ -59,10 +59,10 @@ describe('BackendSTT', () => {
     await stt.start({ lang: 'auto' })
     transport.open()
     transport.deliver('{"type":"transcript","text":"你好","final":false,"language":"zh"}')
-    transport.deliver('{"type":"transcript","text":"你好世界","final":true,"speaker":"S1"}')
+    transport.deliver('{"type":"transcript","text":"你好世界","final":true,"language":"zh","speaker":"S1"}')
     expect(events).toEqual([
-      { text: '你好', isFinal: false, timestamp: expect.any(Number), speaker: undefined },
-      { text: '你好世界', isFinal: true, timestamp: expect.any(Number), speaker: 'S1' }
+      { text: '你好', isFinal: false, timestamp: expect.any(Number), language: 'zh', speaker: undefined },
+      { text: '你好世界', isFinal: true, timestamp: expect.any(Number), language: 'zh', speaker: 'S1' }
     ])
   })
 

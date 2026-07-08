@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Transcript } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
-import { loadJSON, saveJSON, clearSaved, downloadSavedData } from './persist'
+import { loadJSON, saveJSON } from './persist'
 import { requestCocreate } from '../../../services/llm/cocreate'
 import type { CocreateProvider, OpenSub } from '../../../services/llm/cocreate-types'
 import { requestCommandChat } from '../../../services/llm/command-chat'
@@ -18,15 +18,15 @@ import {
   type CommandMessage
 } from './command-session'
 import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
-import { LlmSettingsPanel } from './LlmSettingsPanel'
 import { openBoard, type Board } from '../../../packages/core/doc'
-import { indexeddbPersistence, hydrateNotes, boardDocId, clearAllBoards, copyBoard, deleteBoard } from './board-persistence'
+import { indexeddbPersistence, hydrateNotes, boardDocId, copyBoard, deleteBoard } from './board-persistence'
 import { BoardSync } from '../../../services/sync/board-sync'
 import { websocketTransport } from '../../../services/sync/board-sync'
 import { BackendSTT } from '../../../services/stt/backend'
 import type { STTProvider } from '../../../services/stt/types'
 import { wsUrl } from '../../../services/api/config'
 import { useBackend, type SyncParams } from './backend'
+import { LlmSettingsPanel, type ModelSelections } from './LlmSettingsPanel'
 import { AuthPanel } from './AuthPanel'
 import { DocumentsPanel } from './DocumentsPanel'
 
@@ -39,6 +39,38 @@ const OPEN_MODELS: { sub: OpenSub; model: string; label: string }[] = [
   { sub: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
   { sub: 'ollama', model: '', label: 'Ollama · local (.env)' }
 ]
+const OPEN_PROVIDER: CocreateProvider = 'open'
+const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
+  transcriptionSummary: 1,
+  coCreation: 0,
+  aiCommand: 0
+}
+
+function normalizeModelSelections(raw: Partial<ModelSelections> | null | undefined): ModelSelections {
+  const clamp = (value: unknown, fallback: number) => {
+    const n = Math.floor(Number(value))
+    return Number.isFinite(n) && n >= 0 && n < OPEN_MODELS.length ? n : fallback
+  }
+  return {
+    transcriptionSummary: clamp(raw?.transcriptionSummary, DEFAULT_MODEL_SELECTIONS.transcriptionSummary),
+    coCreation: clamp(raw?.coCreation, DEFAULT_MODEL_SELECTIONS.coCreation),
+    aiCommand: clamp(raw?.aiCommand, DEFAULT_MODEL_SELECTIONS.aiCommand)
+  }
+}
+
+const openModelAt = (idx: number) => OPEN_MODELS[idx] ?? OPEN_MODELS[DEFAULT_MODEL_SELECTIONS.coCreation]
+const GearIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.04.04a2 2 0 0 1-2.83 2.83l-.04-.04a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21a2 2 0 0 1-4 0v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.87.34l-.04.04a2 2 0 0 1-2.83-2.83l.04-.04A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 0 1 0-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.87l-.04-.04a2 2 0 0 1 2.83-2.83l.04.04A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.04V3a2 2 0 0 1 4 0v.08a1.7 1.7 0 0 0 1.04 1.52 1.7 1.7 0 0 0 1.87-.34l.04-.04a2 2 0 0 1 2.83 2.83l-.04.04a1.7 1.7 0 0 0-.34 1.87A1.7 1.7 0 0 0 20.96 10H21a2 2 0 0 1 0 4h-.08A1.7 1.7 0 0 0 19.4 15z" />
+  </svg>
+)
+const ProfileIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="8" r="3.4" />
+    <path d="M5.4 20a6.6 6.6 0 0 1 13.2 0" />
+  </svg>
+)
 
 // Ambient fires wait for this much keyboard silence before landing content.
 const IDLE_MS = 5000
@@ -139,8 +171,7 @@ function CanvasSpace({
   isActive,
   recording,
   onToggleRecord,
-  provider,
-  openIdx,
+  modelSelections,
   sync,
   makeStt,
   seedFromLocal = true
@@ -149,8 +180,7 @@ function CanvasSpace({
   isActive: boolean
   recording: boolean
   onToggleRecord: () => void
-  provider: CocreateProvider
-  openIdx: number
+  modelSelections: ModelSelections
   /** When signed in + this space is mapped to a server doc, attach live sync. */
   sync?: SyncParams | null
   /** STT provider factory (backend proxy when signed in; else browser Soniox). */
@@ -572,13 +602,15 @@ function CanvasSpace({
       }
   }, [notes, patchNote])
 
-  const providerArgs = useCallback(() => {
-    if (provider === 'open') {
-      const m = OPEN_MODELS[openIdx]
-      return { provider, openSub: m.sub, model: m.model || undefined, webSearch: true }
-    }
-    return { provider, webSearch: true }
-  }, [provider, openIdx])
+  const providerArgs = useCallback((role: 'coCreation' | 'aiCommand') => {
+    const m = openModelAt(modelSelections[role])
+    return { provider: OPEN_PROVIDER, openSub: m.sub, model: m.model || undefined, webSearch: true }
+  }, [modelSelections])
+
+  const summaryModel = useMemo(() => {
+    const m = openModelAt(modelSelections.transcriptionSummary)
+    return { providerId: m.sub, model: m.model || undefined }
+  }, [modelSelections.transcriptionSummary])
 
   // Screen → world coords (undo the pan/zoom of the notes layer).
   const toWorld = (clientX: number, clientY: number) => {
@@ -719,7 +751,7 @@ function CanvasSpace({
           existingIdeas,
           transcriptWindow,
           signalWindow,
-          ...providerArgs()
+          ...providerArgs('coCreation')
         },
         {
           onDiagnosis: (d) => {
@@ -946,7 +978,7 @@ function CanvasSpace({
 
     const result = await requestCommandChat(
       {
-        ...providerArgs(),
+        ...providerArgs('aiCommand'),
         messages: history.map((m) => ({ role: m.role, text: m.text })),
         context: buildTurnContext(note, cur.source, transcriptWindow)
       },
@@ -1411,9 +1443,8 @@ function CanvasSpace({
         onToggleRecord={onToggleRecord}
         onRawFinal={onRawFinal}
         onSignals={onSignals}
-        // The organize pass follows the global provider; 'open' maps to Groq
-        // (organize always uses gpt-oss-120b, not the weaker open-model picker).
-        organizeProvider={provider === 'open' ? 'groq' : provider}
+        organizeProvider={summaryModel.providerId}
+        summaryModel={summaryModel}
         storageSuffix={storageSuffix}
         highlights={highlights}
         onHoverNote={setHoveredNoteId}
@@ -1669,10 +1700,9 @@ export function App() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   // Only ONE canvas records at a time — the id of the recording space, or null.
   const [recordingId, setRecordingId] = useState<string | null>(null)
-  // Client-direct: the only web provider is the OpenAI-compatible 'open' path;
-  // the model picker below chooses which model. (CLI backends retired.)
-  const [provider] = useState<CocreateProvider>('open')
-  const [openIdx, setOpenIdx] = useState(0)
+  const [modelSelections, setModelSelections] = useState<ModelSelections>(() =>
+    normalizeModelSelections(loadJSON<Partial<ModelSelections>>('llm-model-selections', DEFAULT_MODEL_SELECTIONS))
+  )
   const [showLlmSettings, setShowLlmSettings] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const [showDocs, setShowDocs] = useState(false)
@@ -1706,6 +1736,7 @@ export function App() {
   useEffect(() => saveJSON('workspace-tree', tree), [tree])
   useEffect(() => saveJSON('open-panels', open), [open])
   useEffect(() => saveJSON('active-space', activeId), [activeId])
+  useEffect(() => saveJSON('llm-model-selections', modelSelections), [modelSelections])
 
   // Escape closes the space context menu and delete confirmation modal.
   useEffect(() => {
@@ -1733,15 +1764,6 @@ export function App() {
     ro.observe(el)
     setWw(el.clientWidth)
     return () => ro.disconnect()
-  }, [])
-
-  // Deliberate reset — refresh alone no longer clears anything.
-  const clearAll = useCallback(() => {
-    if (!window.confirm('Clear all saved notes and transcript data?')) return
-    clearSaved()
-    // Boards live in IndexedDB — wipe them too, else cleared notes resurrect on
-    // reload (IndexedDB is authoritative on load).
-    void clearAllBoards().finally(() => window.location.reload())
   }, [])
 
   // Resolve fractions to px and enforce the stack invariant: each sheet at
@@ -1970,6 +1992,11 @@ export function App() {
     document.addEventListener('pointerup', up)
   }
 
+  const profileLabel = backend.user ? backend.user.email.split('@')[0] || backend.user.email : 'Sign in'
+  const profileTitle = backend.user
+    ? `Signed in as ${backend.user.email} - sync + backend STT active`
+    : 'Sign in to sync boards across devices'
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -1988,36 +2015,30 @@ export function App() {
         onContextMenu={onSpaceContextMenu}
         footer={
           <div className="side-controls">
-            <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
-              {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
-            </select>
+            <button className="side-control-row" title="Settings" aria-label="Settings" onClick={() => setShowLlmSettings(true)}>
+              <span className="side-control-icon">{GearIcon}</span>
+              {!collapsed && <span className="side-control-label">Setting</span>}
+            </button>
             {backend.enabled && (
               <button
-                className="save-local"
-                title={backend.user ? `Signed in as ${backend.user.email} — sync + backend STT active` : 'Sign in to sync boards across devices'}
+                className="side-control-row"
+                title={profileTitle}
                 onClick={() => setShowAuth(true)}
               >
-                {backend.user ? `Account · ${backend.user.email}` : 'Sign in'}
+                <span className="profile-avatar">{ProfileIcon}</span>
+                {!collapsed && <span className="side-control-label">{profileLabel}</span>}
               </button>
             )}
             {backend.user && (
               <button
-                className="save-local"
-                title="Open a synced document on this canvas (across devices)"
+                className="side-control-row"
+                title="Open a synced document on this canvas"
                 onClick={() => setShowDocs(true)}
               >
-                Documents
+                <span className="side-control-icon">{BookIcon}</span>
+                {!collapsed && <span className="side-control-label">Documents</span>}
               </button>
             )}
-            <button className="save-local" title="Configure the LLM provider + API key (stored in this browser)" onClick={() => setShowLlmSettings(true)}>
-              LLM settings
-            </button>
-            <button className="save-local" title="Download a local JSON backup of saved transcript, reflections, and canvas data" onClick={downloadSavedData}>
-              Save local copy
-            </button>
-            <button className="clear-saved" title="Delete all saved notes and transcript data" onClick={clearAll}>
-              Clear saved
-            </button>
           </div>
         }
       />
@@ -2048,8 +2069,7 @@ export function App() {
                 isActive={activeId === id}
                 recording={recordingId === id}
                 onToggleRecord={() => setRecordingId((r) => (r === id ? null : id))}
-                provider={provider}
-                openIdx={openIdx}
+                modelSelections={modelSelections}
                 sync={backend.syncFor(id)}
                 makeStt={makeStt}
                 seedFromLocal={!backend.isAdopted(id)}
@@ -2059,7 +2079,14 @@ export function App() {
         ))}
       </div>
 
-      {showLlmSettings && <LlmSettingsPanel onClose={() => setShowLlmSettings(false)} />}
+      {showLlmSettings && (
+        <LlmSettingsPanel
+          models={OPEN_MODELS}
+          selections={modelSelections}
+          onSave={(next) => setModelSelections(normalizeModelSelections(next))}
+          onClose={() => setShowLlmSettings(false)}
+        />
+      )}
       {showAuth && backend.enabled && <AuthPanel backend={backend} onClose={() => setShowAuth(false)} />}
       {showDocs && backend.user && (
         <DocumentsPanel

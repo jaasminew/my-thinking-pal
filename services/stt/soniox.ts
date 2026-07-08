@@ -87,19 +87,26 @@ export class SonioxSTT implements STTProvider {
       const finals = tokens.filter((t: any) => t.is_final)
       let run = ''
       let runSpeaker: string | undefined
+      let runLanguage: string | undefined
       const flushRun = () => {
-        if (run.trim()) this.cb?.({ text: run, isFinal: true, timestamp: ts, speaker: runSpeaker })
+        if (run.trim()) {
+          this.cb?.({ text: run, isFinal: true, timestamp: ts, speaker: runSpeaker, language: runLanguage })
+        }
         run = ''
+        runLanguage = undefined
       }
       for (const t of finals) {
         const spk = t.speaker != null && t.speaker !== '' ? `S${t.speaker}` : undefined
         if (run && spk !== runSpeaker) flushRun()
         runSpeaker = spk
+        if (!runLanguage && t.language) runLanguage = t.language
         run += t.text
       }
       flushRun()
-      const interimText = tokens.filter((t: any) => !t.is_final).map((t: any) => t.text).join('')
-      if (interimText.trim()) this.cb?.({ text: interimText, isFinal: false, timestamp: ts })
+      const interim = tokens.filter((t: any) => !t.is_final)
+      const interimText = interim.map((t: any) => t.text).join('')
+      const interimLanguage = interim.find((t: any) => t.language)?.language
+      if (interimText.trim()) this.cb?.({ text: interimText, isFinal: false, timestamp: ts, language: interimLanguage })
     }
 
     ws.onerror = () => this.err?.(new Error('Soniox WS error — check key / proxy.'))

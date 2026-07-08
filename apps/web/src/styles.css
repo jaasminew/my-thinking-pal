@@ -76,42 +76,48 @@ body { background: var(--bg); color: var(--ink); }
   background: transparent; padding: 0;
 }
 
-/* sidebar footer: provider picker + clear saved (moved from the old titlebar) */
+/* sidebar footer: settings */
 .side-footer { margin-top: auto; padding-top: 12px; }
-.side-controls { display: flex; flex-direction: column; gap: 8px; }
-.side-controls .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
-.side-controls .seg button {
-  flex: 1; border: 0; background: #fff; color: #555; font-size: 11px; padding: 5px 4px; cursor: pointer;
-  border-right: 1px solid var(--line); white-space: nowrap;
+.side-controls { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.side-control-row {
+  width: 100%; min-height: 34px; display: flex; align-items: center; gap: 9px;
+  border: 0; background: transparent; color: #3a3a3c; border-radius: 8px;
+  padding: 6px 8px; font: inherit; font-size: 13.5px; text-align: left; cursor: pointer;
 }
-.side-controls .seg button:last-child { border-right: 0; }
-.side-controls .seg button.on { background: var(--ink); color: #fff; }
-.side-controls select { font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
-.side-controls .save-local,
-.side-controls .clear-saved {
-  border: 1px solid var(--line); background: #fff; color: #999; font-size: 12px;
-  padding: 5px 10px; border-radius: 8px; cursor: pointer;
+.side-control-row:hover { background: #00000008; }
+.side-control-icon, .profile-avatar {
+  width: 20px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center;
 }
-.side-controls .save-local { color: #3a3a3c; }
-.side-controls .save-local:hover { border-color: #b8d4f4; background: #f4f9ff; }
-.side-controls .clear-saved:hover { color: #c0392b; border-color: #e8b4ac; }
+.side-control-icon svg, .profile-avatar svg { width: 18px; height: 18px; }
+.profile-avatar {
+  width: 28px; height: 28px; margin-left: -4px; border-radius: 50%; background: #d9d9d9; color: #777;
+}
+.profile-avatar svg { width: 17px; height: 17px; }
+.side-control-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar.collapsed .side-controls { align-items: center; }
+.sidebar.collapsed .side-control-row {
+  width: 34px; justify-content: center; padding: 6px 0;
+}
+.sidebar.collapsed .profile-avatar { margin-left: 0; }
 
-/* ---- LLM settings modal (client-direct provider + key) ---- */
+/* ---- settings modal ---- */
 .llm-settings-overlay {
   position: fixed; inset: 0; z-index: 1000; background: rgba(20, 20, 24, 0.28);
   display: flex; align-items: center; justify-content: center;
 }
 .llm-settings {
   width: 340px; max-width: calc(100vw - 32px); background: #fff; border: 1px solid var(--line);
-  border-radius: 12px; padding: 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
-  display: flex; flex-direction: column; gap: 12px;
+  border-radius: 12px; padding: 18px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  display: flex; flex-direction: column; gap: 16px;
 }
 .llm-settings-head { display: flex; align-items: center; justify-content: space-between; }
 .llm-settings-head strong { font-size: 14px; color: var(--ink); }
 .llm-settings-x { border: 0; background: none; font-size: 20px; line-height: 1; color: #999; cursor: pointer; }
+.llm-section { display: flex; flex-direction: column; gap: 12px; }
+.llm-section h2 { margin: 0; font-size: 13px; color: var(--ink); font-weight: 650; }
 .llm-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #555; }
 .llm-field input, .llm-field select {
-  font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  width: 100%; font-size: 13px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
 }
 .llm-note { font-size: 11px; color: #999; margin: 0; line-height: 1.4; }
 .llm-settings-actions { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
@@ -121,7 +127,14 @@ body { background: var(--bg); color: var(--ink); }
 }
 .llm-save:hover { background: #e8f2ff; }
 .llm-save:disabled { opacity: .6; cursor: default; }
+.clear-saved {
+  border: 1px solid var(--line); background: #fff; color: #999; font-size: 12px;
+  padding: 5px 10px; border-radius: 8px; cursor: pointer;
+}
+.clear-saved:hover { color: #c0392b; border-color: #e8b4ac; }
 .auth-error { color: #c0392b; font-size: 12px; margin: 0; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; }
+.auth-actions { padding-top: 2px; }
 .auth-switch { border: 0; background: none; color: #1a5fb4; font-size: 12px; cursor: pointer; padding: 6px 4px; }
 .auth-switch:hover { text-decoration: underline; }
 
@@ -264,9 +277,46 @@ body { background: var(--bg); color: var(--ink); }
   background: var(--accent-soft); color: inherit;
   border-radius: 3px; padding: 0 1px; cursor: text;
 }
-.transcript .status-caption { color: var(--muted); font-style: italic; font-size: 13px; margin-top: 6px; }
+.transcript .status-caption { font-style: italic; font-size: 13px; margin-top: 6px; }
 .transcript .placeholder { color: var(--muted); font-size: 14px; line-height: 1.6; }
 .transcript .placeholder.err { color: #c0461d; }
+
+/* ---- AI "thinking" shimmer: a soft light sweep across processing status
+   text (Listening… / Extracting… / Organizing… / Thinking…), like the
+   ChatGPT / Codex active-processing indicator. The text is clipped from an
+   animated, softly tiling gradient so a brighter band travels across it
+   while the model works. `.ai-thinking` is intentionally generic so both
+   the transcript status caption and the command-panel "Thinking…" chip
+   share it. It only mounts while processing is active, so the animation
+   runs solely then. */
+@keyframes ai-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.ai-thinking {
+  color: var(--muted);
+  background: linear-gradient(
+    100deg,
+    var(--muted) 20%,
+    var(--muted) 42%,
+    #d2d1d9 50%,
+    var(--muted) 58%,
+    var(--muted) 80%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ai-shimmer 6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-thinking {
+    background: none;
+    -webkit-text-fill-color: initial;
+    color: var(--muted);
+    animation: none;
+  }
+}
 
 /* ---- canvas ---- */
 .canvas {
@@ -572,7 +622,7 @@ body { background: var(--bg); color: var(--ink); }
 }
 .cmd-msg.assistant { align-self: stretch; }
 .cmd-msg.assistant .cmd-msg-text { font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
-.cmd-thinking { color: var(--muted); font-style: italic; }
+.cmd-thinking { font-style: italic; }
 .cmd-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .cmd-action {
   text-align: left; cursor: pointer;

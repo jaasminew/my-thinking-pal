@@ -177,7 +177,7 @@ export function Sidebar({
           {tree.map((n) => renderNode(n, 0))}
         </div>
       )}
-      {!collapsed && footer && <div className="side-footer">{footer}</div>}
+      {footer && <div className="side-footer">{footer}</div>}
       {tooltip && dragLabel && (
         <div className="drag-tooltip" style={{ left: tooltip.x + 16, top: tooltip.y - 10, transform: 'translateY(-100%)' }}>
           <div className="drag-tooltip-title">
