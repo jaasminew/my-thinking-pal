@@ -107,6 +107,15 @@ export const CLI_SEARCH_INSTRUCTION =
   `when seeing beats reading. ` +
   `Keep the output format above exactly: no preamble, no "Sources" list, no bare URLs.`
 
+// Per-scope project instructions (Project Memory): appended AFTER the base
+// system prompt and BEFORE dynamic additions like SEARCH_INSTRUCTION. Empty or
+// missing instructions contribute nothing.
+export function formatProjectInstructions(instructions?: string): string {
+  const t = instructions?.trim()
+  if (!t) return ''
+  return `\n\nPROJECT INSTRUCTIONS — standing guidance from the user for this workspace (follow it):\n${t}`
+}
+
 // System prompt for signal extraction: wraps the caller's domain prompt with the
 // strict JSON contract the parser expects.
 export function buildExtractSignalsSystem(systemPrompt: string): string {

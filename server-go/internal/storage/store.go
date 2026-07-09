@@ -38,7 +38,35 @@ type Document struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// AccountStore: users, refresh tokens, document metadata. MVP = SQLite / memory.
+// ProjectMemoryFile is a knowledge-base file scoped by (owner, scopeKind, scopeId).
+// OwnerID and BlobPath are server-only (json:"-"); the wire shape matches the
+// shared-contract ProjectMemoryFile exactly.
+type ProjectMemoryFile struct {
+	ID          string    `json:"id"`
+	OwnerID     string    `json:"-"`
+	ScopeKind   string    `json:"scopeKind"`
+	ScopeID     string    `json:"scopeId"`
+	Name        string    `json:"name"`
+	MimeType    string    `json:"mimeType"`
+	Size        int64     `json:"size"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	BlobPath    string    `json:"-"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// ProjectInstructions are per-scope AI guidance fields.
+type ProjectInstructions struct {
+	TranscriptionSummary string `json:"transcriptionSummary"`
+	CoCreation           string `json:"coCreation"`
+	AICommand            string `json:"aiCommand"`
+}
+
+// AccountStore: users, refresh tokens, document metadata, project memory.
+// MVP = SQLite / memory.
 type AccountStore interface {
 	CreateUser(ctx context.Context, email, passwordHash string) (User, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -54,6 +82,19 @@ type AccountStore interface {
 	UpdateDocumentTitle(ctx context.Context, id, title string) error
 	DeleteDocument(ctx context.Context, id string) error
 	CanAccess(ctx context.Context, userID, docID string) (bool, error)
+
+	// Project Memory — dumb persistence mirroring the browser local store. All
+	// reads/writes are owner-scoped; a mismatched owner looks like "not found".
+	CreatePMFile(ctx context.Context, f ProjectMemoryFile) (ProjectMemoryFile, error) // fills ID/timestamps if empty
+	ListPMFiles(ctx context.Context, ownerID, scopeKind, scopeID string) ([]ProjectMemoryFile, error)
+	GetPMFile(ctx context.Context, ownerID, fileID string) (ProjectMemoryFile, error)
+	UpdatePMFileStatus(ctx context.Context, ownerID, fileID, status, errMsg string) error
+	DeletePMFile(ctx context.Context, ownerID, fileID string) error // cascades text row; caller removes the blob file
+	PutPMText(ctx context.Context, ownerID, fileID, text string, truncated bool) error
+	GetPMText(ctx context.Context, ownerID, fileID string) (text string, truncated bool, err error)
+	GetPMInstructions(ctx context.Context, ownerID, scopeKind, scopeID string) (ProjectInstructions, error) // zero-value (not ErrNotFound) when never saved
+	PutPMInstructions(ctx context.Context, ownerID, scopeKind, scopeID string, ins ProjectInstructions) error
+	DeletePMScope(ctx context.Context, ownerID, scopeKind, scopeID string) (blobPaths []string, err error)
 
 	Close() error
 }

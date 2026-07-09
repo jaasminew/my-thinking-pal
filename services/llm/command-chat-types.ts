@@ -3,6 +3,7 @@
 // panel summoned from selected canvas text; the model can propose canvas
 // actions, but every action lands as PENDING AI content the user must keep.
 import type { CocreateProvider, OpenSub } from './cocreate-types'
+import type { ProjectMemoryContext } from '../../shared-contract/project-memory'
 
 /**
  * A canvas action proposed by the model. On the wire from the MODEL the
@@ -22,6 +23,10 @@ export type CommandChatAction =
   | { type: 'create-note'; keyword: string; bullets: string[] }
 
 export interface CommandChatRequest {
+  /** Project Memory: per-scope aiCommand instructions (appended after the base system). */
+  projectInstructions?: string
+  /** Project Memory: pre-assembled untrusted reference block (placed atop the prompt). */
+  projectMemory?: ProjectMemoryContext
   provider: CocreateProvider
   openSub?: OpenSub
   model?: string

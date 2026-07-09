@@ -375,6 +375,18 @@ body { background: var(--bg); color: var(--ink); }
   display: flex; align-items: center; gap: 8px;
 }
 .ai-switch-label { font-size: 12px; color: #6b6b70; user-select: none; }
+/* Project Memory entry point, sits left of the AI switch in the same pill row. */
+.memory-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; margin-right: 6px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: #ffffffcc; color: #6b6b70; font-size: 12px;
+  cursor: pointer; transition: color .15s ease, border-color .15s ease;
+}
+.memory-btn:hover { color: var(--ink, #1d1d1f); border-color: #b9b9b6; }
+.memory-btn-icon { display: inline-flex; width: 15px; height: 15px; }
+.memory-btn-icon svg { width: 100%; height: 100%; }
+.memory-btn-label { user-select: none; }
 .switch {
   position: relative; width: 36px; height: 21px; padding: 0;
   border: 1px solid var(--line); border-radius: 11px;

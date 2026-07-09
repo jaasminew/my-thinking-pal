@@ -6,6 +6,8 @@ import {
   buildCocreateContext,
   buildCommandContext,
   cocreateStream,
+  formatProjectInstructions,
+  prependMemoryBlock,
   type FetchLike,
   type LlmProvider
 } from '../../packages/core/llm'
@@ -50,17 +52,23 @@ export async function requestCocreate(
   }
 
   const baseSystem = isCommand ? COMMAND_SYSTEM : COCREATE_SYSTEM
-  const system = baseSystem + (req.webSearch ? SEARCH_INSTRUCTION : '')
-  const userText = isCommand
-    ? buildCommandContext(req.command!, req.contextNotes, req.transcriptWindow, req.signalWindow)
-    : buildCocreateContext(
-        req.seedText,
-        req.contextNotes,
-        req.transcriptWindow,
-        { kept: req.kept, rejected: req.rejected, existingIdeas: req.existingIdeas },
-        req.signalWindow,
-        req.seedType
-      )
+  // Order is contractual (Project Memory M3): base system, then per-scope
+  // project instructions, then dynamic additions like the search instruction.
+  const system =
+    baseSystem + formatProjectInstructions(req.projectInstructions) + (req.webSearch ? SEARCH_INSTRUCTION : '')
+  const userText = prependMemoryBlock(
+    isCommand
+      ? buildCommandContext(req.command!, req.contextNotes, req.transcriptWindow, req.signalWindow)
+      : buildCocreateContext(
+          req.seedText,
+          req.contextNotes,
+          req.transcriptWindow,
+          { kept: req.kept, rejected: req.rejected, existingIdeas: req.existingIdeas },
+          req.signalWindow,
+          req.seedType
+        ),
+    req.projectMemory?.block
+  )
 
   const providerId = req.provider === 'open' ? req.openSub ?? 'groq' : req.provider
   const isLocalRuntime = providerId === 'codex' || providerId === 'claude-code' || providerId === 'cursor'

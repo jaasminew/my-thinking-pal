@@ -8,42 +8,44 @@ import (
 )
 
 type Config struct {
-	Port             string
-	AccountStore     string // memory | sqlite
-	AccountDSN       string
-	DocStore         string // fs
-	DocPath          string
-	AccessSecret     string
-	RefreshSecret    string
-	AccessTTL        time.Duration
-	RefreshTTL       time.Duration
-	STTProvider      string // soniox | tencent | mock
-	SonioxAPIKey     string
-	SonioxModel      string
-	TencentAppID     string
-	TencentSecretID  string
-	TencentSecretKey string
-	CORSOrigin       string // allowed web origin ("*" reflects any)
+	Port              string
+	AccountStore      string // memory | sqlite
+	AccountDSN        string
+	DocStore          string // fs
+	DocPath           string
+	ProjectMemoryPath string
+	AccessSecret      string
+	RefreshSecret     string
+	AccessTTL         time.Duration
+	RefreshTTL        time.Duration
+	STTProvider       string // soniox | tencent | mock
+	SonioxAPIKey      string
+	SonioxModel       string
+	TencentAppID      string
+	TencentSecretID   string
+	TencentSecretKey  string
+	CORSOrigin        string // allowed web origin ("*" reflects any)
 }
 
 func Load() Config {
 	return Config{
-		Port:             env("PORT", "8080"),
-		AccountStore:     env("ACCOUNT_STORE", "memory"),
-		AccountDSN:       env("ACCOUNT_DSN", "file:data/accounts.db?_journal=WAL"),
-		DocStore:         env("DOC_STORE", "fs"),
-		DocPath:          env("DOC_PATH", "data/docs"),
-		AccessSecret:     env("JWT_ACCESS_SECRET", "dev-access-secret-change-me"),
-		RefreshSecret:    env("JWT_REFRESH_SECRET", "dev-refresh-secret-change-me"),
-		AccessTTL:        dur("ACCESS_TTL", 15*time.Minute),
-		RefreshTTL:       dur("REFRESH_TTL", 720*time.Hour),
-		STTProvider:      env("STT_PROVIDER", "soniox"),
-		SonioxAPIKey:     env("SONIOX_API_KEY", ""),
-		SonioxModel:      env("SONIOX_MODEL", "stt-rt-v5"),
-		TencentAppID:     env("TENCENT_APPID", ""),
-		TencentSecretID:  env("TENCENT_SECRET_ID", ""),
-		TencentSecretKey: env("TENCENT_SECRET_KEY", ""),
-		CORSOrigin:       env("CORS_ORIGIN", "*"),
+		Port:              env("PORT", "8080"),
+		AccountStore:      env("ACCOUNT_STORE", "memory"),
+		AccountDSN:        env("ACCOUNT_DSN", "file:data/accounts.db?_journal=WAL"),
+		DocStore:          env("DOC_STORE", "fs"),
+		DocPath:           env("DOC_PATH", "data/docs"),
+		ProjectMemoryPath: env("PROJECT_MEMORY_PATH", "data"),
+		AccessSecret:      env("JWT_ACCESS_SECRET", "dev-access-secret-change-me"),
+		RefreshSecret:     env("JWT_REFRESH_SECRET", "dev-refresh-secret-change-me"),
+		AccessTTL:         dur("ACCESS_TTL", 15*time.Minute),
+		RefreshTTL:        dur("REFRESH_TTL", 720*time.Hour),
+		STTProvider:       env("STT_PROVIDER", "soniox"),
+		SonioxAPIKey:      env("SONIOX_API_KEY", ""),
+		SonioxModel:       env("SONIOX_MODEL", "stt-rt-v5"),
+		TencentAppID:      env("TENCENT_APPID", ""),
+		TencentSecretID:   env("TENCENT_SECRET_ID", ""),
+		TencentSecretKey:  env("TENCENT_SECRET_KEY", ""),
+		CORSOrigin:        env("CORS_ORIGIN", "*"),
 	}
 }
 

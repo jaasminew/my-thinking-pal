@@ -12,16 +12,18 @@ import (
 
 	"mythinkingpal/server/internal/auth"
 	"mythinkingpal/server/internal/documents"
+	"mythinkingpal/server/internal/projectmemory"
 	"mythinkingpal/server/internal/stt"
 	syncsvc "mythinkingpal/server/internal/sync"
 )
 
 type Deps struct {
-	Auth       *auth.Handler
-	Documents  *documents.Handler
-	Sync       *syncsvc.Handler
-	STT        *stt.Handler
-	CORSOrigin string
+	Auth          *auth.Handler
+	Documents     *documents.Handler
+	ProjectMemory *projectmemory.Handler
+	Sync          *syncsvc.Handler
+	STT           *stt.Handler
+	CORSOrigin    string
 }
 
 func New(d Deps) http.Handler {
@@ -52,6 +54,18 @@ func New(d Deps) http.Handler {
 	// STT proxy (WebSocket) — backend holds the vendor key (module 07).
 	if d.STT != nil {
 		mux.Handle("GET /stt", d.Auth.RequireAuth(http.HandlerFunc(d.STT.ServeHTTP)))
+	}
+
+	// Project Memory — knowledge-base files + per-scope AI instructions.
+	if d.ProjectMemory != nil {
+		pm := d.ProjectMemory
+		mux.Handle("GET /project-memory/{scopeKind}/{scopeId}/files", d.Auth.RequireAuth(http.HandlerFunc(pm.ListFiles)))
+		mux.Handle("POST /project-memory/{scopeKind}/{scopeId}/files", d.Auth.RequireAuth(http.HandlerFunc(pm.UploadFile)))
+		mux.Handle("DELETE /project-memory/files/{id}", d.Auth.RequireAuth(http.HandlerFunc(pm.DeleteFile)))
+		mux.Handle("GET /project-memory/files/{id}/text", d.Auth.RequireAuth(http.HandlerFunc(pm.GetText)))
+		mux.Handle("GET /project-memory/{scopeKind}/{scopeId}/instructions", d.Auth.RequireAuth(http.HandlerFunc(pm.GetInstructions)))
+		mux.Handle("PUT /project-memory/{scopeKind}/{scopeId}/instructions", d.Auth.RequireAuth(http.HandlerFunc(pm.PutInstructions)))
+		mux.Handle("DELETE /project-memory/{scopeKind}/{scopeId}", d.Auth.RequireAuth(http.HandlerFunc(pm.DeleteScope)))
 	}
 
 	return logging(cors(d.CORSOrigin, mux))

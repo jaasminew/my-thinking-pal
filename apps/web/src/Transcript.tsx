@@ -3,6 +3,7 @@ import { SonioxSTT } from '../../../services/stt/soniox'
 import { getAudioStream } from '../../../services/stt/audio-source'
 import type { STTProvider } from '../../../services/stt/types'
 import { SignalEngine } from './signal-engine'
+import { formatProjectInstructions } from '../../../packages/core/llm'
 import { isImeEvent } from './ime'
 import type { Line, Section, EngineStatus } from './signal-engine'
 import { loadJSON, saveJSON } from './persist'
@@ -83,7 +84,8 @@ export function Transcript({
   storageSuffix = '',
   highlights = [],
   onHoverNote,
-  makeStt
+  makeStt,
+  projectInstructions
 }: {
   recording: boolean
   onToggleRecord: () => void
@@ -106,6 +108,10 @@ export function Transcript({
   /** STT provider factory. Defaults to browser-direct Soniox; when signed in the
    *  app injects a backend-proxied provider (docs module 07). */
   makeStt?: () => STTProvider
+  /** Project Memory: the scope's transcriptionSummary instructions, appended to
+   *  the extraction system prompt (knowledge excerpts are deliberately NOT
+   *  injected here — bias/latency risk). */
+  projectInstructions?: string
 }) {
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes;
@@ -136,6 +142,10 @@ export function Transcript({
   useEffect(() => {
     summaryModelRef.current = summaryModel
   }, [summaryModel])
+  const projectInstructionsRef = useRef(projectInstructions)
+  useEffect(() => {
+    projectInstructionsRef.current = projectInstructions
+  }, [projectInstructions])
 
   // One engine for the component's life. Extraction (2min) distills raw speech
   // into typed pending signals appended to the tail; the organize pass (5min +
@@ -146,7 +156,7 @@ export function Transcript({
       organizeProvider: summaryModelRef.current?.providerId || organizeProvider,
       extractModel: summaryModelRef.current?.model || 'openai/gpt-oss-120b',
       organizeModel: summaryModelRef.current?.model || 'openai/gpt-oss-120b',
-      systemPrompt: EXTRACT_PROMPT,
+      systemPrompt: EXTRACT_PROMPT + formatProjectInstructions(projectInstructionsRef.current),
       extractIntervalMs: 120000,
       organizeIntervalMs: 300000,
       minWords: 8,
@@ -177,6 +187,13 @@ export function Transcript({
     engineRef.current.config.extractModel = summaryModel?.model || 'openai/gpt-oss-120b'
     engineRef.current.config.organizeModel = summaryModel?.model || 'openai/gpt-oss-120b'
   }, [organizeProvider, summaryModel])
+
+  // Project Memory: keep the extraction prompt in sync when the scope's
+  // transcription instructions change (applies from the next extract round).
+  useEffect(() => {
+    if (!engineRef.current) return
+    engineRef.current.config.systemPrompt = EXTRACT_PROMPT + formatProjectInstructions(projectInstructions)
+  }, [projectInstructions])
 
   // Start/stop live capture from Unit 2's existing record button (App.recording).
   useEffect(() => {

@@ -1,6 +1,14 @@
 // Pure context-engineering helpers: turn structured note/transcript/signal data
 // into the single user-message string each pass expects. No transport, no I/O.
 
+// Project-memory reference block: placed FIRST in the user message — before
+// transcript, signals, and note context — and already framed as untrusted
+// reference data by the retrieval layer (never instructions to obey).
+export function prependMemoryBlock(userText: string, block?: string): string {
+  const b = block?.trim()
+  return b ? `${b}\n\n${userText}` : userText
+}
+
 export interface CocreateSignals {
   kept?: string[]
   rejected?: string[]

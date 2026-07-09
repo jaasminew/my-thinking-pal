@@ -7,10 +7,24 @@
 //   provider 'codex'       → spawns the `codex` CLI (your ChatGPT subscription).
 //   provider 'open'        → an OpenAI-compatible open model (Groq/Cerebras/Ollama)
 //                            + Tavily for the inspiration URLs.
+import type { ProjectMemoryContext } from '../../shared-contract/project-memory'
+
 export type CocreateProvider = 'claude-code' | 'codex' | 'cursor' | 'open'
 export type OpenSub = string
 
 export interface CocreateRequest {
+  /**
+   * Project Memory: per-scope standing instructions (coCreation for ambient
+   * fires, aiCommand for Tier-3 commands — the caller picks). Appended after
+   * the base system prompt.
+   */
+  projectInstructions?: string
+  /**
+   * Project Memory: pre-assembled reference block from user-uploaded files
+   * (catalog → Stage-A pick → whole-file release, caps applied). Placed at the
+   * top of the user message, framed as untrusted reference data.
+   */
+  projectMemory?: ProjectMemoryContext
   /** The human-origin seed: a typed rough idea or a dragged transcript phrase. */
   seedText: string
   /** Nearby canvas notes (human + AI) sent as context. Keep it small. */
