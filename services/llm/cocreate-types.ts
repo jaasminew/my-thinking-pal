@@ -7,8 +7,8 @@
 //   provider 'codex'       → spawns the `codex` CLI (your ChatGPT subscription).
 //   provider 'open'        → an OpenAI-compatible open model (Groq/Cerebras/Ollama)
 //                            + Tavily for the inspiration URLs.
-export type CocreateProvider = 'claude-code' | 'codex' | 'open'
-export type OpenSub = 'groq' | 'cerebras' | 'ollama'
+export type CocreateProvider = 'claude-code' | 'codex' | 'cursor' | 'open'
+export type OpenSub = string
 
 export interface CocreateRequest {
   /** The human-origin seed: a typed rough idea or a dragged transcript phrase. */
@@ -49,6 +49,8 @@ export interface CocreateRequest {
   openSub?: OpenSub
   /** Optional explicit model id override (open-model picker). */
   model?: string
+  /** Local runtime command/path for Codex, Claude Code, or Cursor. */
+  runtimeCommand?: string
   /** Tier-2 toggle: let the model search the web for inspiration URLs. */
   webSearch?: boolean
   /**

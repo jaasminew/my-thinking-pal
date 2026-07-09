@@ -106,18 +106,40 @@ body { background: var(--bg); color: var(--ink); }
   display: flex; align-items: center; justify-content: center;
 }
 .llm-settings {
-  width: 340px; max-width: calc(100vw - 32px); background: #fff; border: 1px solid var(--line);
+  width: 460px; max-width: calc(100vw - 32px); max-height: calc(100vh - 48px); overflow: auto;
+  background: #fff; border: 1px solid var(--line);
   border-radius: 12px; padding: 18px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
   display: flex; flex-direction: column; gap: 16px;
 }
 .llm-settings-head { display: flex; align-items: center; justify-content: space-between; }
+.llm-settings-head-new { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; }
+.llm-settings-head-new strong { text-align: center; }
 .llm-settings-head strong { font-size: 14px; color: var(--ink); }
 .llm-settings-x { border: 0; background: none; font-size: 20px; line-height: 1; color: #999; cursor: pointer; }
+.llm-back {
+  border: 0; background: none; color: var(--ink); font-size: 13px; font-weight: 550;
+  padding: 4px 0; cursor: pointer;
+}
+.llm-back:hover { text-decoration: underline; }
 .llm-section { display: flex; flex-direction: column; gap: 12px; }
 .llm-section h2 { margin: 0; font-size: 13px; color: var(--ink); font-weight: 650; }
 .llm-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #555; }
 .llm-field input, .llm-field select {
   width: 100%; font-size: 13px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+}
+.llm-model-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+.llm-model-row .llm-field { min-width: 0; }
+.llm-add-model {
+  border: 1px solid var(--line); background: #fff; color: #111; font-size: 12px; font-weight: 400;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+}
+.llm-add-model:hover { background: #f6f6f4; border-color: #b8b8b5; }
+.llm-new-model {
+  border-top: 1px solid var(--line); padding-top: 14px;
+}
+@media (max-width: 420px) {
+  .llm-model-row { grid-template-columns: 1fr; }
+  .llm-add-model { width: 100%; }
 }
 .llm-note { font-size: 11px; color: #999; margin: 0; line-height: 1.4; }
 .llm-settings-actions { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
@@ -132,7 +154,19 @@ body { background: var(--bg); color: var(--ink); }
   padding: 5px 10px; border-radius: 8px; cursor: pointer;
 }
 .clear-saved:hover { color: #c0392b; border-color: #e8b4ac; }
+.clear-saved:disabled { opacity: .6; cursor: default; }
 .auth-error { color: #c0392b; font-size: 12px; margin: 0; }
+.llm-local-setup { display: flex; gap: 8px; align-items: center; }
+.llm-local-setup .clear-saved:hover { color: #1a5fb4; border-color: #b8d4f4; }
+.llm-setup-info {
+  color: #2f7d47; background: #f4fbf6; border: 1px solid #d4ead9;
+  border-radius: 8px; font-size: 12px; line-height: 1.4; margin: 0; padding: 8px 10px;
+  white-space: pre-wrap;
+}
+.llm-setup-error {
+  background: #fff8f7; border: 1px solid #f0c9c3; border-radius: 8px;
+  line-height: 1.4; padding: 8px 10px; white-space: pre-wrap;
+}
 .auth-form { display: flex; flex-direction: column; gap: 12px; }
 .auth-actions { padding-top: 2px; }
 .auth-switch { border: 0; background: none; color: #1a5fb4; font-size: 12px; cursor: pointer; padding: 6px 4px; }
@@ -215,6 +249,7 @@ body { background: var(--bg); color: var(--ink); }
   padding: 16px 0; user-select: none;
 }
 .panel-spine svg { width: 18px; height: 18px; color: #3a3a3c; }
+.spine-canvas-icon { display: inline-flex; transform: rotate(90deg); }
 .spine-drag { cursor: col-resize; touch-action: none; }
 .spine-title {
   writing-mode: vertical-rl;
@@ -410,11 +445,53 @@ body { background: var(--bg); color: var(--ink); }
 .kw-header.hovered .kw-input { color: var(--accent); }
 
 /* one ordered flow of items: bullet rows + inline url cards */
-.items { margin: 0; padding: 0; }
-.bullet { position: relative; display: flex; align-items: baseline; gap: 8px; margin: 4px 0; font-size: 15px; line-height: 1.5; }
-.bullet .dot { color: var(--ink); flex: none; }
+.items {
+  --bullet-indent-step: 24px;
+  --bullet-marker-width: 12px;
+  --bullet-marker-center: 6px;
+  margin: 0;
+  padding: 0;
+}
+.bullet {
+  --indent-offset: 0px;
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 4px var(--indent-offset);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.bullet .dot {
+  width: var(--bullet-marker-width);
+  color: var(--ink);
+  flex: none;
+  text-align: center;
+}
 .bullet.ai .dot { color: var(--pending); }
 .bullet.ai.kept .dot { color: var(--ink); }
+/* Obsidian-style indentation guides: a thin vertical thread descending from a
+   parent bullet's dot, running down through all of its indented children. Each
+   bullet row paints its own short segment for every ancestor indent level;
+   stacked consecutively the segments read as one continuous guide line. */
+.bullet > .indent-guide {
+  --guide-offset: 0px;
+  position: absolute;
+  left: calc(var(--guide-offset) + var(--bullet-marker-center));
+  top: -4px;
+  bottom: -4px;
+  width: 0.5px;
+  transform: translateX(-50%);
+  background: var(--guide, #cfcec9);
+  pointer-events: none;
+  z-index: 0;
+}
+.bullet > .indent-guide-parent {
+  --guide-offset: 0px;
+  top: calc(1.2em + 8px);
+}
+/* keep the dot and text above the guide thread (parent dots stay uncovered) */
+.bullet > .dot, .bullet > .bullet-body { position: relative; z-index: 1; }
 /* Always contentEditable: wraps at the note width, caret lands where you click. */
 .bullet-text {
   display: block; min-height: 1.5em; color: var(--ink); cursor: text;

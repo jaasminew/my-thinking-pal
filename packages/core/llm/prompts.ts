@@ -138,6 +138,8 @@ export function buildOrganizeSystem(closing: boolean): string {
     `The user message lists the highlights, one per numbered line (0-indexed), each tagged with its [type]; ` +
     `some carry [LOCKED] (user-edited: you may place them in a section but NEVER reword or merge them). ` +
     `You may merge redundant signals and reword wordy ones, but never invent content beyond the input lines. ` +
+    `Prefer fewer, larger sections: each section should represent a broad topic cluster, not a tiny local turn. ` +
+    `When possible, make each section contain multiple related highlights; do not freeze a one-line section unless it is clearly standalone. ` +
     `Return ONLY a JSON object of exactly this shape: ` +
     `{"sections":[{"header":"<3-6 word title>","items":[{"src":[<line numbers>],"text":"<merged/reworded text — omit this field to keep the original wording>"}]}]}. ` +
     `Sections and their items MUST follow the original line order; each line number may appear at most ONCE overall; ` +
@@ -146,6 +148,7 @@ export function buildOrganizeSystem(closing: boolean): string {
     (closing
       ? `This is the FINAL pass: assign EVERY line to a section. `
       : `Leave the final, still-in-progress topic's lines UNassigned — do not section the lines still being developed. ` +
+        `Leave borderline or still-forming material in the open tail instead of creating a small section for it. ` +
         `If no coherent grouping has emerged yet, return {"sections":[]}. `) +
     `No prose, no markdown, no code fences — output only the JSON object.`
   )

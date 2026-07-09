@@ -33,8 +33,8 @@ export const DEFAULT_LLM_SETTINGS: LlmSettings = {
 // browser — map them onto a concrete OpenAI-compatible preset. A caller-supplied
 // preset id is honored as-is when it's real.
 export function normalizeProviderId(id: string | undefined, settings: LlmSettings): string {
-  if (id && PROVIDER_PRESETS[id]) return id
-  // id is undefined, an alias ('open'), or a CLI ('codex'/'claude-code').
+  if (id && (PROVIDER_PRESETS[id] || settings.providers[id]?.baseUrl)) return id
+  // id is undefined, an alias ('open'), or a local runtime id.
   if (PROVIDER_PRESETS[settings.activeProviderId]) return settings.activeProviderId
   return 'groq'
 }

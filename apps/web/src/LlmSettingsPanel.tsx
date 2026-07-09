@@ -1,85 +1,521 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { checkLocalRuntime, setupLocalRuntime } from '../../../services/llm/local-runtime'
 
-export type ModelSelections = {
-  transcriptionSummary: number
-  coCreation: number
-  aiCommand: number
+export type ModelRole = 'transcriptionSummary' | 'coCreation' | 'aiCommand'
+
+export type ModelSelections = Record<ModelRole, string>
+
+export type ModelRuntime = 'api' | 'ollama' | 'codex' | 'claude-code' | 'cursor'
+
+export type AiModelConfig = {
+  id: string
+  label: string
+  runtime: ModelRuntime
+  providerId?: string
+  model?: string
+  apiKey?: string
+  baseUrl?: string
+  command?: string
 }
 
-export type SelectableModel = {
-  label: string
+type DraftConfig = Omit<AiModelConfig, 'id'>
+type ModelOption = { value: string; label: string }
+
+const ROLE_LABELS: Record<ModelRole, string> = {
+  transcriptionSummary: 'Transcription summary',
+  coCreation: 'Co-creation',
+  aiCommand: 'AI command'
+}
+
+const API_PROVIDERS = [
+  { id: 'groq', label: 'Groq', baseUrl: '' },
+  { id: 'openai', label: 'OpenAI', baseUrl: '' },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com' },
+  { id: 'cerebras', label: 'Cerebras', baseUrl: '' },
+  { id: 'openrouter', label: 'OpenRouter', baseUrl: '' }
+] as const
+
+const MODEL_OPTIONS: Record<string, ModelOption[]> = {
+  groq: [
+    { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B' },
+    { value: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
+    { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
+    { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant' }
+  ],
+  openai: [
+    { value: 'gpt-5.5', label: 'GPT-5.5' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
+    { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' }
+  ],
+  deepseek: [
+    { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+    { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }
+  ],
+  cerebras: [
+    { value: 'llama3.1-8b', label: 'Llama 3.1 8B' },
+    { value: 'qwen-3-32b', label: 'Qwen3 32B' }
+  ],
+  openrouter: [
+    { value: 'openai/gpt-5.5', label: 'OpenAI GPT-5.5' },
+    { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { value: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+    { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B' }
+  ],
+  ollama: [
+    { value: '', label: 'Default' },
+    { value: 'gpt-oss:20b', label: 'GPT-OSS 20B' },
+    { value: 'gpt-oss:120b', label: 'GPT-OSS 120B' },
+    { value: 'qwen3:32b', label: 'Qwen3 32B' },
+    { value: 'qwen3:8b', label: 'Qwen3 8B' },
+    { value: 'llama3.3:70b', label: 'Llama 3.3 70B' }
+  ],
+  codex: [
+    { value: '', label: 'Default' },
+    { value: 'gpt-5.5', label: 'GPT-5.5' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
+    { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' }
+  ],
+  'claude-code': [
+    { value: '', label: 'Default' },
+    { value: 'sonnet', label: 'Sonnet' },
+    { value: 'opus', label: 'Opus' },
+    { value: 'haiku', label: 'Haiku' },
+    { value: 'fable', label: 'Fable' },
+    { value: 'sonnet[1m]', label: 'Sonnet 1M' },
+    { value: 'opus[1m]', label: 'Opus 1M' },
+    { value: 'opusplan', label: 'Opus plan' }
+  ],
+  cursor: [
+    { value: '', label: 'Default' },
+    { value: 'auto', label: 'Auto' },
+    { value: 'gpt-5.5', label: 'GPT-5.5' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' }
+  ]
+}
+
+const newConfigId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `model-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+const defaultDraft = (): DraftConfig => ({
+  label: '',
+  runtime: 'api',
+  providerId: 'groq',
+  model: MODEL_OPTIONS.groq[0].value,
+  apiKey: '',
+  baseUrl: '',
+  command: ''
+})
+
+function runtimeLabel(runtime: ModelRuntime): string {
+  switch (runtime) {
+    case 'api':
+      return 'API model'
+    case 'ollama':
+      return 'Ollama local'
+    case 'codex':
+      return 'Codex local'
+    case 'claude-code':
+      return 'Claude Code local'
+    case 'cursor':
+      return 'Cursor local'
+  }
+}
+
+function providerLabel(providerId?: string): string {
+  return API_PROVIDERS.find((p) => p.id === providerId)?.label ?? providerId ?? 'Custom API'
+}
+
+function modelOptionsFor(cfg: Pick<AiModelConfig, 'runtime' | 'providerId'>): ModelOption[] {
+  if (cfg.runtime === 'api') return MODEL_OPTIONS[cfg.providerId || 'groq'] ?? MODEL_OPTIONS.groq
+  return MODEL_OPTIONS[cfg.runtime] ?? [{ value: '', label: 'Default' }]
+}
+
+function modelLabel(cfg: Pick<AiModelConfig, 'runtime' | 'providerId' | 'model'>): string {
+  const value = cfg.model || ''
+  return modelOptionsFor(cfg).find((m) => m.value === value)?.label ?? (value || 'Default')
+}
+
+function defaultModelFor(runtime: ModelRuntime, providerId?: string): string {
+  const key = runtime === 'api' ? providerId || 'groq' : runtime
+  return MODEL_OPTIONS[key]?.[0]?.value ?? ''
+}
+
+function displayLabel(cfg: AiModelConfig): string {
+  if (cfg.label.trim()) return cfg.label.trim()
+  if (cfg.runtime === 'api') return `${providerLabel(cfg.providerId)} · ${modelLabel(cfg)}`
+  if (cfg.runtime === 'ollama') return `Ollama · ${modelLabel(cfg)}`
+  return `${runtimeLabel(cfg.runtime).replace(' local', '')} · ${modelLabel(cfg)}`
 }
 
 export function LlmSettingsPanel({
-  models,
+  configs,
   selections,
   onSave,
   onClose
 }: {
-  models: readonly SelectableModel[]
+  configs: readonly AiModelConfig[]
   selections: ModelSelections
-  onSave: (next: ModelSelections) => void
+  onSave: (nextSelections: ModelSelections, nextConfigs: AiModelConfig[]) => void
   onClose: () => void
 }) {
-  const [draft, setDraft] = useState<ModelSelections>(selections)
+  const [draftSelections, setDraftSelections] = useState<ModelSelections>(selections)
+  const [draftConfigs, setDraftConfigs] = useState<AiModelConfig[]>([...configs])
+  const [editingRole, setEditingRole] = useState<ModelRole | null>(null)
+  const [draftConfig, setDraftConfig] = useState<DraftConfig>(() => defaultDraft())
+  const [setupError, setSetupError] = useState('')
+  const [setupInfo, setSetupInfo] = useState('')
+  const [checkingRuntime, setCheckingRuntime] = useState(false)
+  const [settingUpRuntime, setSettingUpRuntime] = useState(false)
+  const [localRuntimeReady, setLocalRuntimeReady] = useState(false)
+  const [localSetupStarted, setLocalSetupStarted] = useState(false)
 
-  const patch = (key: keyof ModelSelections, value: number) =>
-    setDraft((d) => ({ ...d, [key]: value }))
+  const configIds = useMemo(() => new Set(draftConfigs.map((c) => c.id)), [draftConfigs])
+
+  const patchSelection = (key: ModelRole, value: string) =>
+    setDraftSelections((d) => ({ ...d, [key]: value }))
+
+  const patchConfig = <K extends keyof DraftConfig>(key: K, value: DraftConfig[K]) =>
+    setDraftConfig((d) => ({ ...d, [key]: value }))
+
+  const beginNew = (role: ModelRole) => {
+    setEditingRole(role)
+    setDraftConfig(defaultDraft())
+    setSetupError('')
+    setSetupInfo('')
+    setLocalRuntimeReady(false)
+    setLocalSetupStarted(false)
+  }
+
+  const checkRuntimeSetup = async (cfg: AiModelConfig) => {
+    if (cfg.runtime !== 'codex' && cfg.runtime !== 'claude-code' && cfg.runtime !== 'cursor') return true
+    setCheckingRuntime(true)
+    setSetupError('')
+    try {
+      const status = await checkLocalRuntime({
+        runtime: cfg.runtime,
+        command: cfg.command,
+        model: cfg.model
+      })
+      if (!status.ok) {
+        setSetupError(status.error || 'Local runtime is not ready.')
+        setLocalRuntimeReady(false)
+        return false
+      }
+      setSetupInfo(`${runtimeLabel(cfg.runtime)} is ready.`)
+      setLocalRuntimeReady(true)
+      return true
+    } catch (e: any) {
+      setSetupError(
+        e?.message ||
+          'Local runtime bridge is unavailable. Use the desktop app or run npm run dev so Thinking Pal can reach local Codex/Claude/Cursor.'
+      )
+      setLocalRuntimeReady(false)
+      return false
+    } finally {
+      setCheckingRuntime(false)
+    }
+  }
+
+  const startRuntimeSetup = async () => {
+    if (draftConfig.runtime !== 'codex' && draftConfig.runtime !== 'claude-code' && draftConfig.runtime !== 'cursor') return
+    setSettingUpRuntime(true)
+    setSetupError('')
+    setSetupInfo('')
+    try {
+      const result = await setupLocalRuntime({
+        runtime: draftConfig.runtime,
+        command: draftConfig.command?.trim()
+      })
+      if (!result.ok) {
+        setSetupError(result.error || 'Setup could not be started.')
+        setLocalSetupStarted(false)
+        return
+      }
+      setSetupInfo(result.message || 'Setup started. Finish authorization, then click "Check again".')
+      setLocalSetupStarted(true)
+    } catch (e: any) {
+      setSetupError(e?.message || 'Setup could not be started.')
+      setLocalSetupStarted(false)
+    } finally {
+      setSettingUpRuntime(false)
+    }
+  }
+
+  const draftToConfig = (id: string): AiModelConfig => {
+    const providerId =
+      draftConfig.runtime === 'api' && draftConfig.providerId === 'custom'
+        ? `custom-${id}`
+        : draftConfig.runtime === 'ollama'
+          ? 'ollama'
+          : draftConfig.providerId
+    const baseUrl =
+      draftConfig.runtime === 'ollama'
+        ? draftConfig.baseUrl?.trim() || 'http://localhost:11434/v1'
+        : draftConfig.baseUrl?.trim()
+    return {
+      id,
+      label: displayLabel({ ...draftConfig, id, providerId, baseUrl, label: '' }),
+      runtime: draftConfig.runtime,
+      providerId,
+      model: draftConfig.model?.trim(),
+      apiKey: draftConfig.apiKey?.trim(),
+      baseUrl,
+      command: draftConfig.command?.trim()
+    }
+  }
+
+  const saveNewConfig = async () => {
+    if (!editingRole) return
+    setSetupError('')
+    const id = newConfigId()
+    const next = draftToConfig(id)
+    if (next.runtime === 'codex' || next.runtime === 'claude-code' || next.runtime === 'cursor') {
+      const ready = await checkRuntimeSetup(next)
+      if (!ready) return
+    }
+    setDraftConfigs((cs) => [...cs, next])
+    setDraftSelections((s) => ({ ...s, [editingRole]: id }))
+    setEditingRole(null)
+    setDraftConfig(defaultDraft())
+    setSetupError('')
+    setSetupInfo('')
+    setLocalRuntimeReady(false)
+    setLocalSetupStarted(false)
+  }
 
   const save = () => {
-    onSave(draft)
+    const fallback = draftConfigs[0]?.id ?? ''
+    const nextSelections: ModelSelections = {
+      transcriptionSummary: configIds.has(draftSelections.transcriptionSummary) ? draftSelections.transcriptionSummary : fallback,
+      coCreation: configIds.has(draftSelections.coCreation) ? draftSelections.coCreation : fallback,
+      aiCommand: configIds.has(draftSelections.aiCommand) ? draftSelections.aiCommand : fallback
+    }
+    onSave(nextSelections, draftConfigs)
     onClose()
+  }
+
+  const runtime = draftConfig.runtime
+  const providerId = draftConfig.providerId || 'groq'
+  const modelOptions = modelOptionsFor(draftConfig)
+  const localRuntime = runtime === 'codex' || runtime === 'claude-code' || runtime === 'cursor'
+  const primaryBusy = checkingRuntime || settingUpRuntime
+  const primaryLabel = localRuntime
+    ? localRuntimeReady
+      ? 'Add'
+      : localSetupStarted
+        ? checkingRuntime
+          ? 'Checking...'
+          : 'Check again'
+        : settingUpRuntime
+          ? 'Starting...'
+          : `Set up ${runtimeLabel(runtime).replace(' local', '')}`
+    : 'Add'
+  const primaryAction = () => {
+    if (!localRuntime || localRuntimeReady) {
+      void saveNewConfig()
+    } else if (localSetupStarted) {
+      void checkRuntimeSetup(draftToConfig('draft'))
+    } else {
+      void startRuntimeSetup()
+    }
   }
 
   return (
     <div className="llm-settings-overlay" onPointerDown={onClose}>
       <div className="llm-settings" onPointerDown={(e) => e.stopPropagation()}>
-        <div className="llm-settings-head">
-          <strong>Settings</strong>
-          <button className="llm-settings-x" onClick={onClose} title="Close">
-            ×
-          </button>
-        </div>
+        {!editingRole ? (
+          <>
+            <div className="llm-settings-head">
+              <strong>Settings</strong>
+              <button className="llm-settings-x" onClick={onClose} title="Close">
+                ×
+              </button>
+            </div>
 
-        <section className="llm-section">
-          <h2>Model Selection</h2>
+            <section className="llm-section">
+              <h2>Model Selection</h2>
 
-          <label className="llm-field">
-            <span>Transcription summary</span>
-            <select
-              value={draft.transcriptionSummary}
-              onChange={(e) => patch('transcriptionSummary', Number(e.target.value))}
-            >
-              {models.map((m, i) => (
-                <option key={i} value={i}>{m.label}</option>
+              {(['transcriptionSummary', 'coCreation', 'aiCommand'] as ModelRole[]).map((role) => (
+                <div className="llm-model-row" key={role}>
+                  <label className="llm-field">
+                    <span>{ROLE_LABELS[role]}</span>
+                    <select value={draftSelections[role]} onChange={(e) => patchSelection(role, e.target.value)}>
+                      {draftConfigs.map((m) => (
+                        <option key={m.id} value={m.id}>{displayLabel(m)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button className="llm-add-model" onClick={() => beginNew(role)}>
+                    + New Model
+                  </button>
+                </div>
               ))}
-            </select>
-          </label>
+            </section>
 
-          <label className="llm-field">
-            <span>Co-creation</span>
-            <select value={draft.coCreation} onChange={(e) => patch('coCreation', Number(e.target.value))}>
-              {models.map((m, i) => (
-                <option key={i} value={i}>{m.label}</option>
-              ))}
-            </select>
-          </label>
+            <div className="llm-settings-actions">
+              <button className="llm-save" onClick={save}>
+                Save
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="llm-settings-head llm-settings-head-new">
+              <button className="llm-back" onClick={() => setEditingRole(null)}>
+                Back
+              </button>
+              <strong>New Model</strong>
+              <button className="llm-settings-x" onClick={onClose} title="Close">
+                ×
+              </button>
+            </div>
 
-          <label className="llm-field">
-            <span>AI command</span>
-            <select value={draft.aiCommand} onChange={(e) => patch('aiCommand', Number(e.target.value))}>
-              {models.map((m, i) => (
-                <option key={i} value={i}>{m.label}</option>
-              ))}
-            </select>
-          </label>
-        </section>
+            <section className="llm-section">
 
-        <div className="llm-settings-actions">
-          <button className="llm-save" onClick={save}>
-            Save
-          </button>
-        </div>
+            <label className="llm-field">
+              <span>Type</span>
+              <select
+                value={runtime}
+                onChange={(e) => {
+                  const next = e.target.value as ModelRuntime
+                  setDraftConfig((d) => ({
+                    ...d,
+                    runtime: next,
+                    providerId: next === 'ollama' ? 'ollama' : next === 'api' ? 'groq' : undefined,
+                    baseUrl: next === 'ollama' ? 'http://localhost:11434/v1' : '',
+                    model: defaultModelFor(next, next === 'api' ? 'groq' : undefined),
+                    command: next === 'codex' ? 'codex' : next === 'claude-code' ? 'claude' : next === 'cursor' ? 'cursor' : ''
+                  }))
+                  setSetupError('')
+                  setSetupInfo('')
+                  setLocalRuntimeReady(false)
+                  setLocalSetupStarted(false)
+                }}
+              >
+                <option value="api">API model</option>
+                <option value="ollama">Ollama local</option>
+                <option value="codex">Codex local</option>
+                <option value="claude-code">Claude Code local</option>
+                <option value="cursor">Cursor local</option>
+              </select>
+            </label>
+
+            {runtime === 'api' && (
+              <>
+                <label className="llm-field">
+                  <span>Provider</span>
+                  <select
+                    value={providerId}
+                    onChange={(e) => {
+                      const provider = API_PROVIDERS.find((p) => p.id === e.target.value)
+                      setDraftConfig((d) => ({
+                        ...d,
+                        providerId: e.target.value,
+                        baseUrl: provider?.baseUrl ?? d.baseUrl,
+                        model: defaultModelFor('api', e.target.value)
+                      }))
+                    }}
+                  >
+                    {API_PROVIDERS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-field">
+                  <span>Model</span>
+                  <select value={draftConfig.model || ''} onChange={(e) => patchConfig('model', e.target.value)}>
+                    {modelOptions.map((m) => (
+                      <option key={m.value || 'default'} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-field">
+                  <span>API key</span>
+                  <input
+                    value={draftConfig.apiKey}
+                    onChange={(e) => patchConfig('apiKey', e.target.value)}
+                    type="password"
+                    placeholder="sk-..."
+                  />
+                </label>
+
+                {draftConfig.providerId === 'deepseek' && (
+                  <label className="llm-field">
+                    <span>Base URL</span>
+                    <input
+                      value={draftConfig.baseUrl}
+                      onChange={(e) => patchConfig('baseUrl', e.target.value)}
+                      placeholder="https://api.example.com/v1"
+                    />
+                  </label>
+                )}
+              </>
+            )}
+
+            {runtime === 'ollama' && (
+              <>
+                <label className="llm-field">
+                  <span>Model</span>
+                  <select value={draftConfig.model || ''} onChange={(e) => patchConfig('model', e.target.value)}>
+                    {modelOptions.map((m) => (
+                      <option key={m.value || 'default'} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="llm-field">
+                  <span>Base URL</span>
+                  <input
+                    value={draftConfig.baseUrl}
+                    onChange={(e) => patchConfig('baseUrl', e.target.value)}
+                    placeholder="http://localhost:11434/v1"
+                  />
+                </label>
+              </>
+            )}
+
+            {(runtime === 'codex' || runtime === 'claude-code' || runtime === 'cursor') && (
+              <>
+                <label className="llm-field">
+                  <span>Model</span>
+                  <select value={draftConfig.model || ''} onChange={(e) => patchConfig('model', e.target.value)}>
+                    {modelOptions.map((m) => (
+                      <option key={m.value || 'default'} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="llm-field">
+                  <span>Command</span>
+                  <input
+                    value={draftConfig.command}
+                    onChange={(e) => patchConfig('command', e.target.value)}
+                    placeholder={runtime === 'claude-code' ? 'claude' : runtime}
+                  />
+                </label>
+              </>
+            )}
+
+            {setupInfo && <p className="llm-setup-info">{setupInfo}</p>}
+            {setupError && <p className="auth-error llm-setup-error">{setupError}</p>}
+
+            <div className="llm-settings-actions">
+              <button className="clear-saved" onClick={() => setEditingRole(null)}>
+                Cancel
+              </button>
+              <button className="llm-save" onClick={primaryAction} disabled={primaryBusy}>
+                {primaryLabel}
+              </button>
+            </div>
+          </section>
+          </>
+        )}
       </div>
     </div>
   )
