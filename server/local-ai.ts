@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -14,7 +14,7 @@ export interface LocalAiRequest {
   userText: string
 }
 
-const activeSetups = new Set<ChildProcessWithoutNullStreams>()
+const activeSetups = new Set<ChildProcess>()
 
 export async function checkLocalRuntime(runtime: LocalRuntime, command?: string, model?: string) {
   const cmd = commandFor(runtime, command)
