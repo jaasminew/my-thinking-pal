@@ -2,7 +2,9 @@ import type { CommandChatRequest, CommandChatResult, CommandChatAction } from '.
 import {
   COMMAND_CHAT_SYSTEM,
   buildCommandChatPrompt,
+  formatProjectInstructions,
   makeCommandActionFilter,
+  prependMemoryBlock,
   streamOpenModel,
   type FetchLike,
   type LlmProvider
@@ -48,7 +50,10 @@ export async function requestCommandChat(
   }
 
   const sourceNoteId = typeof req.context?.sourceNoteId === 'string' ? req.context.sourceNoteId : undefined
-  const userText = buildCommandChatPrompt(req.messages, req.context)
+  // Project Memory (M3): instructions after the base system; memory block atop
+  // the prompt, before selected text / note / transcript.
+  const system = COMMAND_CHAT_SYSTEM + formatProjectInstructions(req.projectInstructions)
+  const userText = prependMemoryBlock(buildCommandChatPrompt(req.messages, req.context), req.projectMemory?.block)
 
   let actionCount = 0
   // append-image actions defer until after the stream (need og:image resolved).
@@ -107,7 +112,7 @@ export async function requestCommandChat(
         runtime: providerId as LocalRuntime,
         command: req.runtimeCommand,
         model: req.model,
-        system: COMMAND_CHAT_SYSTEM,
+        system,
         userText
       },
       { onText: (t) => filter.push(t), onAction: handleActionJson },
@@ -121,7 +126,7 @@ export async function requestCommandChat(
     try {
       await streamOpenModel(
         provider!,
-        { system: COMMAND_CHAT_SYSTEM, userText, onText: (t) => filter.push(t), fetchImpl: doFetch, signal }
+        { system, userText, onText: (t) => filter.push(t), fetchImpl: doFetch, signal }
       )
       filter.flush()
     } catch (e: any) {

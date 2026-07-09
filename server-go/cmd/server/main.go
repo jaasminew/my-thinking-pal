@@ -14,6 +14,7 @@ import (
 	"mythinkingpal/server/internal/config"
 	"mythinkingpal/server/internal/documents"
 	"mythinkingpal/server/internal/httpapi"
+	"mythinkingpal/server/internal/projectmemory"
 	"mythinkingpal/server/internal/storage"
 	"mythinkingpal/server/internal/storage/fsdoc"
 	"mythinkingpal/server/internal/storage/memory"
@@ -47,10 +48,11 @@ func main() {
 
 	authH := auth.NewHandler(account, []byte(cfg.AccessSecret), []byte(cfg.RefreshSecret), cfg.AccessTTL, cfg.RefreshTTL)
 	docsH := documents.NewHandler(account)
+	pmH := projectmemory.NewHandler(account, cfg.ProjectMemoryPath)
 	syncH := syncsvc.NewHandler(docStore, account)
 	sttH := stt.NewHandler(buildUpstream(cfg))
 
-	handler := httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, Sync: syncH, STT: sttH, CORSOrigin: cfg.CORSOrigin})
+	handler := httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, ProjectMemory: pmH, Sync: syncH, STT: sttH, CORSOrigin: cfg.CORSOrigin})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

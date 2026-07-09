@@ -1,0 +1,274 @@
+/* Project Memory modal — light, hand-drawn chrome matching the rest of the app.
+   Reuses the global :root tokens ( --paper, --ink, --muted, --line, --accent,
+   --ok, --no ) defined in styles.css. */
+
+.pm-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #00000055;
+  backdrop-filter: blur(2px);
+}
+
+.pm-modal {
+  width: min(620px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 20px 22px 22px;
+  font-size: 13.5px;
+}
+
+.pm-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.pm-modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pm-error {
+  background: #fdecec;
+  color: var(--no);
+  border: 1px solid #f3c4c4;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+}
+
+.pm-section {
+  margin-bottom: 18px;
+}
+.pm-section h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* drop zone */
+.pm-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px;
+  border: 1.5px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pm-dropzone:hover,
+.pm-dropzone.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.pm-dropzone svg {
+  width: 22px;
+  height: 22px;
+  color: var(--muted);
+}
+.pm-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* file list */
+.pm-file-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pm-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fafaf9;
+}
+.pm-file-icon svg {
+  width: 18px;
+  height: 18px;
+  color: #6f6f74;
+  flex: none;
+}
+.pm-file-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.pm-file-title {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pm-file-desc {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pm-status {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f0f0ee;
+  color: var(--muted);
+}
+.pm-status-indexed {
+  background: #e4f6ee;
+  color: var(--ok);
+}
+.pm-status-failed {
+  background: #fdecec;
+  color: var(--no);
+}
+.pm-status-extracting,
+.pm-status-queued {
+  background: #fff3e8;
+  color: var(--accent);
+}
+.pm-file-size {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pm-file-actions {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+
+/* icon buttons */
+.pm-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: #6f6f74;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.pm-icon-btn:hover {
+  background: #0000000c;
+}
+.pm-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pm-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* instructions tabs */
+.pm-tabs {
+  display: flex;
+  gap: 4px;
+  background: #f2f2f0;
+  padding: 3px;
+  border-radius: 9px;
+  margin-bottom: 10px;
+}
+.pm-tab {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pm-tab:hover {
+  color: var(--ink);
+}
+.pm-tab.active {
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px #00000018;
+}
+
+.pm-textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 11px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: #fafaf9;
+  outline: none;
+}
+.pm-textarea:focus {
+  border-color: var(--accent);
+  background: var(--paper);
+}
+
+.pm-instr-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+.pm-saved-indicator {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.pm-save-btn {
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pm-save-btn:hover {
+  filter: brightness(1.05);
+}
+.pm-save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,20 +14,37 @@ import (
 )
 
 type Store struct {
-	mu        sync.RWMutex
-	users     map[string]storage.User         // id -> user
-	byEmail   map[string]string               // lower(email) -> id
-	refresh   map[string]storage.RefreshToken // tokenHash -> token
-	documents map[string]storage.Document     // id -> document
+	mu             sync.RWMutex
+	users          map[string]storage.User                // id -> user
+	byEmail        map[string]string                      // lower(email) -> id
+	refresh        map[string]storage.RefreshToken        // tokenHash -> token
+	documents      map[string]storage.Document            // id -> document
+	pmFiles        map[string]storage.ProjectMemoryFile   // id -> file
+	pmTexts        map[string]pmTextEntry                 // fileID -> {text, truncated}
+	pmInstructions map[string]storage.ProjectInstructions // "owner|kind|id" -> ins
+}
+
+// pmTextEntry holds extracted text + its truncation flag.
+type pmTextEntry struct {
+	text      string
+	truncated bool
 }
 
 func New() *Store {
 	return &Store{
-		users:     map[string]storage.User{},
-		byEmail:   map[string]string{},
-		refresh:   map[string]storage.RefreshToken{},
-		documents: map[string]storage.Document{},
+		users:          map[string]storage.User{},
+		byEmail:        map[string]string{},
+		refresh:        map[string]storage.RefreshToken{},
+		documents:      map[string]storage.Document{},
+		pmFiles:        map[string]storage.ProjectMemoryFile{},
+		pmTexts:        map[string]pmTextEntry{},
+		pmInstructions: map[string]storage.ProjectInstructions{},
 	}
+}
+
+// pmInsKey is the composite key for per-scope instructions.
+func pmInsKey(ownerID, scopeKind, scopeID string) string {
+	return ownerID + "|" + scopeKind + "|" + scopeID
 }
 
 func (s *Store) Close() error { return nil }
@@ -156,4 +174,125 @@ func (s *Store) CanAccess(_ context.Context, userID, docID string) (bool, error)
 		return false, storage.ErrNotFound
 	}
 	return d.OwnerID == userID, nil
+}
+
+// --- Project Memory ---
+
+func (s *Store) CreatePMFile(_ context.Context, f storage.ProjectMemoryFile) (storage.ProjectMemoryFile, error) {
+	if f.ID == "" {
+		f.ID = id.New()
+	}
+	now := time.Now().UTC()
+	if f.CreatedAt.IsZero() {
+		f.CreatedAt = now
+	}
+	if f.UpdatedAt.IsZero() {
+		f.UpdatedAt = now
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pmFiles[f.ID] = f
+	return f, nil
+}
+
+func (s *Store) ListPMFiles(_ context.Context, ownerID, scopeKind, scopeID string) ([]storage.ProjectMemoryFile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []storage.ProjectMemoryFile{}
+	for _, f := range s.pmFiles {
+		if f.OwnerID == ownerID && f.ScopeKind == scopeKind && f.ScopeID == scopeID {
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *Store) GetPMFile(_ context.Context, ownerID, fileID string) (storage.ProjectMemoryFile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	f, ok := s.pmFiles[fileID]
+	if !ok || f.OwnerID != ownerID {
+		return storage.ProjectMemoryFile{}, storage.ErrNotFound
+	}
+	return f, nil
+}
+
+func (s *Store) UpdatePMFileStatus(_ context.Context, ownerID, fileID, status, errMsg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, ok := s.pmFiles[fileID]
+	if !ok || f.OwnerID != ownerID {
+		return storage.ErrNotFound
+	}
+	f.Status = status
+	f.Error = errMsg
+	f.UpdatedAt = time.Now().UTC()
+	s.pmFiles[fileID] = f
+	return nil
+}
+
+func (s *Store) DeletePMFile(_ context.Context, ownerID, fileID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, ok := s.pmFiles[fileID]
+	if !ok || f.OwnerID != ownerID {
+		return storage.ErrNotFound
+	}
+	delete(s.pmFiles, fileID)
+	delete(s.pmTexts, fileID)
+	return nil
+}
+
+func (s *Store) PutPMText(ctx context.Context, ownerID, fileID, text string, truncated bool) error {
+	if _, err := s.GetPMFile(ctx, ownerID, fileID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pmTexts[fileID] = pmTextEntry{text: text, truncated: truncated}
+	return nil
+}
+
+func (s *Store) GetPMText(ctx context.Context, ownerID, fileID string) (string, bool, error) {
+	if _, err := s.GetPMFile(ctx, ownerID, fileID); err != nil {
+		return "", false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.pmTexts[fileID]
+	if !ok {
+		return "", false, storage.ErrNotFound
+	}
+	return e.text, e.truncated, nil
+}
+
+func (s *Store) GetPMInstructions(_ context.Context, ownerID, scopeKind, scopeID string) (storage.ProjectInstructions, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pmInstructions[pmInsKey(ownerID, scopeKind, scopeID)], nil // zero-value when missing
+}
+
+func (s *Store) PutPMInstructions(_ context.Context, ownerID, scopeKind, scopeID string, ins storage.ProjectInstructions) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pmInstructions[pmInsKey(ownerID, scopeKind, scopeID)] = ins
+	return nil
+}
+
+func (s *Store) DeletePMScope(_ context.Context, ownerID, scopeKind, scopeID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var blobPaths []string
+	for id, f := range s.pmFiles {
+		if f.OwnerID == ownerID && f.ScopeKind == scopeKind && f.ScopeID == scopeID {
+			if f.BlobPath != "" {
+				blobPaths = append(blobPaths, f.BlobPath)
+			}
+			delete(s.pmFiles, id)
+			delete(s.pmTexts, id)
+		}
+	}
+	delete(s.pmInstructions, pmInsKey(ownerID, scopeKind, scopeID))
+	return blobPaths, nil
 }

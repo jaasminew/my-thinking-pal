@@ -40,6 +40,39 @@ CREATE TABLE IF NOT EXISTS documents (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id);
+
+CREATE TABLE IF NOT EXISTS project_memory_files (
+  id          TEXT PRIMARY KEY,
+  owner_id    TEXT NOT NULL,
+  scope_kind  TEXT NOT NULL,
+  scope_id    TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  mime_type   TEXT NOT NULL,
+  size        INTEGER NOT NULL DEFAULT 0,
+  title       TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'queued',
+  error       TEXT NOT NULL DEFAULT '',
+  blob_path   TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pm_files_scope ON project_memory_files(owner_id, scope_kind, scope_id);
+CREATE TABLE IF NOT EXISTS project_memory_texts (
+  file_id   TEXT PRIMARY KEY,
+  text      TEXT NOT NULL,        -- capped at 250,000 chars by the extraction layer
+  truncated INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS project_memory_instructions (
+  owner_id              TEXT NOT NULL,
+  scope_kind            TEXT NOT NULL,
+  scope_id              TEXT NOT NULL,
+  transcription_summary TEXT NOT NULL DEFAULT '',
+  co_creation           TEXT NOT NULL DEFAULT '',
+  ai_command            TEXT NOT NULL DEFAULT '',
+  updated_at            TEXT NOT NULL,
+  PRIMARY KEY (owner_id, scope_kind, scope_id)
+);
 `
 
 type Store struct {
@@ -215,6 +248,202 @@ func (s *Store) CanAccess(ctx context.Context, userID, docID string) (bool, erro
 	return d.OwnerID == userID, nil
 }
 
+// --- Project Memory ---
+
+const pmFileColumns = `id, owner_id, scope_kind, scope_id, name, mime_type, size, title, description, status, error, blob_path, created_at, updated_at`
+
+func (s *Store) CreatePMFile(ctx context.Context, f storage.ProjectMemoryFile) (storage.ProjectMemoryFile, error) {
+	if f.ID == "" {
+		f.ID = id.New()
+	}
+	now := time.Now().UTC()
+	if f.CreatedAt.IsZero() {
+		f.CreatedAt = now
+	}
+	if f.UpdatedAt.IsZero() {
+		f.UpdatedAt = now
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO project_memory_files (`+pmFileColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.ID, f.OwnerID, f.ScopeKind, f.ScopeID, f.Name, f.MimeType, f.Size, f.Title, f.Description, f.Status, f.Error, f.BlobPath,
+		f.CreatedAt.Format(time.RFC3339Nano), f.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return storage.ProjectMemoryFile{}, err
+	}
+	return f, nil
+}
+
+func (s *Store) ListPMFiles(ctx context.Context, ownerID, scopeKind, scopeID string) ([]storage.ProjectMemoryFile, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+pmFileColumns+` FROM project_memory_files
+		 WHERE owner_id = ? AND scope_kind = ? AND scope_id = ? ORDER BY created_at DESC`,
+		ownerID, scopeKind, scopeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []storage.ProjectMemoryFile{}
+	for rows.Next() {
+		f, err := scanPMFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetPMFile(ctx context.Context, ownerID, fileID string) (storage.ProjectMemoryFile, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+pmFileColumns+` FROM project_memory_files WHERE id = ? AND owner_id = ?`, fileID, ownerID)
+	return scanPMFile(row)
+}
+
+func (s *Store) UpdatePMFileStatus(ctx context.Context, ownerID, fileID, status, errMsg string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE project_memory_files SET status = ?, error = ?, updated_at = ? WHERE id = ? AND owner_id = ?`,
+		status, errMsg, time.Now().UTC().Format(time.RFC3339Nano), fileID, ownerID)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res)
+}
+
+func (s *Store) DeletePMFile(ctx context.Context, ownerID, fileID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM project_memory_files WHERE id = ? AND owner_id = ?`, fileID, ownerID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return storage.ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_memory_texts WHERE file_id = ?`, fileID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) PutPMText(ctx context.Context, ownerID, fileID, text string, truncated bool) error {
+	// ErrNotFound unless the file belongs to ownerID.
+	if _, err := s.GetPMFile(ctx, ownerID, fileID); err != nil {
+		return err
+	}
+	flag := 0
+	if truncated {
+		flag = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO project_memory_texts (file_id, text, truncated) VALUES (?, ?, ?)
+		 ON CONFLICT(file_id) DO UPDATE SET text = excluded.text, truncated = excluded.truncated`,
+		fileID, text, flag)
+	return err
+}
+
+func (s *Store) GetPMText(ctx context.Context, ownerID, fileID string) (string, bool, error) {
+	if _, err := s.GetPMFile(ctx, ownerID, fileID); err != nil {
+		return "", false, err
+	}
+	var (
+		text string
+		flag int
+	)
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT text, truncated FROM project_memory_texts WHERE file_id = ?`, fileID).Scan(&text, &flag); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, storage.ErrNotFound
+		}
+		return "", false, err
+	}
+	return text, flag != 0, nil
+}
+
+func (s *Store) GetPMInstructions(ctx context.Context, ownerID, scopeKind, scopeID string) (storage.ProjectInstructions, error) {
+	var ins storage.ProjectInstructions
+	err := s.db.QueryRowContext(ctx,
+		`SELECT transcription_summary, co_creation, ai_command FROM project_memory_instructions
+		 WHERE owner_id = ? AND scope_kind = ? AND scope_id = ?`, ownerID, scopeKind, scopeID).
+		Scan(&ins.TranscriptionSummary, &ins.CoCreation, &ins.AICommand)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return storage.ProjectInstructions{}, nil // zero-value, not an error
+		}
+		return storage.ProjectInstructions{}, err
+	}
+	return ins, nil
+}
+
+func (s *Store) PutPMInstructions(ctx context.Context, ownerID, scopeKind, scopeID string, ins storage.ProjectInstructions) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO project_memory_instructions (owner_id, scope_kind, scope_id, transcription_summary, co_creation, ai_command, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(owner_id, scope_kind, scope_id) DO UPDATE SET
+		   transcription_summary = excluded.transcription_summary,
+		   co_creation = excluded.co_creation,
+		   ai_command = excluded.ai_command,
+		   updated_at = excluded.updated_at`,
+		ownerID, scopeKind, scopeID, ins.TranscriptionSummary, ins.CoCreation, ins.AICommand,
+		time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) DeletePMScope(ctx context.Context, ownerID, scopeKind, scopeID string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, blob_path FROM project_memory_files WHERE owner_id = ? AND scope_kind = ? AND scope_id = ?`,
+		ownerID, scopeKind, scopeID)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		blobPaths []string
+		fileIDs   []string
+	)
+	for rows.Next() {
+		var id, bp string
+		if err := rows.Scan(&id, &bp); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		fileIDs = append(fileIDs, id)
+		if bp != "" {
+			blobPaths = append(blobPaths, bp)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, fid := range fileIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM project_memory_texts WHERE file_id = ?`, fid); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM project_memory_files WHERE owner_id = ? AND scope_kind = ? AND scope_id = ?`,
+		ownerID, scopeKind, scopeID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM project_memory_instructions WHERE owner_id = ? AND scope_kind = ? AND scope_id = ?`,
+		ownerID, scopeKind, scopeID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return blobPaths, nil
+}
+
 // --- helpers ---
 
 type scanner interface {
@@ -250,6 +479,23 @@ func scanDocument(row scanner) (storage.Document, error) {
 	d.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdRaw)
 	d.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updRaw)
 	return d, nil
+}
+
+func scanPMFile(row scanner) (storage.ProjectMemoryFile, error) {
+	var (
+		f                  storage.ProjectMemoryFile
+		createdRaw, updRaw string
+	)
+	if err := row.Scan(&f.ID, &f.OwnerID, &f.ScopeKind, &f.ScopeID, &f.Name, &f.MimeType,
+		&f.Size, &f.Title, &f.Description, &f.Status, &f.Error, &f.BlobPath, &createdRaw, &updRaw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return storage.ProjectMemoryFile{}, storage.ErrNotFound
+		}
+		return storage.ProjectMemoryFile{}, err
+	}
+	f.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdRaw)
+	f.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updRaw)
+	return f, nil
 }
 
 func requireAffected(res sql.Result) error {

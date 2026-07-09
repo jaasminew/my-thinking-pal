@@ -12,9 +12,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
-      'packages/**/*.{test,spec}.ts',
-      'services/**/*.{test,spec}.ts',
-      'apps/web/**/*.{test,spec}.ts'
+      'packages/**/*.{test,spec}.{ts,tsx}',
+      'services/**/*.{test,spec}.{ts,tsx}',
+      'apps/web/**/*.{test,spec}.{ts,tsx}'
     ],
     coverage: {
       provider: 'v8',
