@@ -1,5 +1,16 @@
 import type { DocumentMeta, TokenPair, User } from './types'
-import { TokenStore } from './tokens'
+import { sharedTokenStore, TokenStore } from './tokens'
+
+// Deduped across ApiClient instances so React Strict Mode (double mount) or
+// concurrent authed requests don't rotate the same refresh token twice.
+let refreshFlight: Promise<boolean> | null = null
+let restoreFlight: Promise<User | null> | null = null
+
+/** Test-only: reset in-flight auth promises between Vitest cases. */
+export function resetAuthFlightsForTests(): void {
+  refreshFlight = null
+  restoreFlight = null
+}
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
@@ -29,12 +40,23 @@ export class ApiClient {
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '')
-    this.tokens = opts.tokens ?? new TokenStore()
+    this.tokens = opts.tokens ?? sharedTokenStore()
     this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init))
   }
 
   get isAuthenticated(): boolean {
-    return !!this.tokens.access
+    return this.tokens.hasSession
+  }
+
+  /** Validate stored tokens with /auth/me; refresh once when access expired. */
+  async restoreSession(): Promise<User | null> {
+    if (!this.tokens.hasSession) return null
+    if (!restoreFlight) {
+      restoreFlight = this.doRestoreSession().finally(() => {
+        restoreFlight = null
+      })
+    }
+    return restoreFlight
   }
 
   // ---- auth ----
@@ -102,6 +124,7 @@ export class ApiClient {
     })
     const pair = await this.json<TokenPair>(res)
     this.tokens.save(pair)
+    this.tokens.saveUser(pair.user)
     return pair
   }
 
@@ -111,6 +134,12 @@ export class ApiClient {
 
   // authedFetch attaches the bearer token; on 401 it refreshes once and retries.
   private async authedFetch(path: string, init: RequestInit, retry = true): Promise<Response> {
+    if (!this.tokens.access && this.tokens.refresh && retry) {
+      if (!(await this.refreshTokens())) {
+        throw new ApiError(401, 'session expired')
+      }
+      return this.authedFetch(path, init, false)
+    }
     const res = await this.rawFetch(path, withAuth(init, this.tokens.access))
     if (res.status !== 401 || !retry) {
       if (!res.ok) throw await this.error(res)
@@ -125,18 +154,41 @@ export class ApiClient {
   private async refreshTokens(): Promise<boolean> {
     const refreshToken = this.tokens.refresh
     if (!refreshToken) return false
+    if (!refreshFlight) {
+      refreshFlight = this.doRefreshTokens(refreshToken).finally(() => {
+        refreshFlight = null
+      })
+    }
+    return refreshFlight
+  }
+
+  private async doRefreshTokens(refreshToken: string): Promise<boolean> {
     const res = await this.rawFetch('/auth/refresh', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refreshToken })
     })
     if (!res.ok) {
-      this.tokens.clear()
+      // Only wipe the session on auth rejection — a transient 5xx should not
+      // force a re-login on the next page load.
+      if (res.status === 401 || res.status === 403) this.tokens.clear()
       return false
     }
     const pair = (await res.json()) as TokenPair
     this.tokens.save(pair)
+    if (pair.user) this.tokens.saveUser(pair.user)
     return true
+  }
+
+  private async doRestoreSession(): Promise<User | null> {
+    try {
+      const user = await this.me()
+      this.tokens.saveUser(user)
+      return user
+    } catch {
+      if (!this.tokens.hasSession) this.tokens.clear()
+      return null
+    }
   }
 
   private async json<T>(res: Response): Promise<T> {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient } from '../../../services/api/client'
 import { apiBaseUrl, apiEnabled, wsUrl } from '../../../services/api/config'
+import { sharedTokenStore } from '../../../services/api/tokens'
 import type { DocumentMeta, User } from '../../../services/api/types'
 import { loadJSON, saveJSON } from './persist'
 
@@ -51,7 +52,11 @@ const DOCMAP_KEY = 'tp.docmap' // spaceId -> server document id
 export function useBackend(): Backend {
   const enabled = apiEnabled()
   const client = useMemo(() => (enabled ? new ApiClient({ baseUrl: apiBaseUrl() }) : null), [enabled])
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<User | null>(() => {
+    if (!enabled) return null
+    const store = sharedTokenStore()
+    return store.hasSession ? store.loadUser() : null
+  })
   const [ready, setReady] = useState(!enabled)
   const [error, setError] = useState('')
   const [docMap, setDocMap] = useState<Record<string, string>>(() => loadJSON(DOCMAP_KEY, {}))
@@ -61,19 +66,13 @@ export function useBackend(): Backend {
 
   useEffect(() => saveJSON(DOCMAP_KEY, docMap), [docMap])
 
-  // Restore session on load: if we hold a token, confirm it with /auth/me.
+  // Restore session on load: validate stored tokens (refresh when access expired).
   useEffect(() => {
     if (!client) return
     let cancelled = false
     void (async () => {
-      if (client.isAuthenticated) {
-        try {
-          const me = await client.me()
-          if (!cancelled) setUser(me)
-        } catch {
-          /* token invalid/expired — stay logged out */
-        }
-      }
+      const me = await client.restoreSession()
+      if (!cancelled) setUser(me)
       if (!cancelled) setReady(true)
     })()
     return () => {

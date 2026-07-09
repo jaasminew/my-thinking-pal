@@ -25,7 +25,7 @@ import { websocketTransport } from '../../../services/sync/board-sync'
 import { BackendSTT } from '../../../services/stt/backend'
 import type { STTProvider } from '../../../services/stt/types'
 import { apiBaseUrl, wsUrl } from '../../../services/api/config'
-import { TokenStore } from '../../../services/api/tokens'
+import { sharedTokenStore } from '../../../services/api/tokens'
 import { useBackend, type SyncParams } from './backend'
 import { LlmSettingsPanel, type AiModelConfig, type ModelSelections } from './LlmSettingsPanel'
 import { AuthPanel } from './AuthPanel'
@@ -1845,7 +1845,7 @@ export function App() {
   const memoryClient = useMemo(
     () =>
       backend.enabled && backend.user
-        ? createMemoryClient({ baseUrl: apiBaseUrl(), getToken: () => new TokenStore().access })
+        ? createMemoryClient({ baseUrl: apiBaseUrl(), getToken: () => sharedTokenStore().access })
         : null,
     [backend.enabled, backend.user]
   )
