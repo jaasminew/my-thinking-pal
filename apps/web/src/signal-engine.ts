@@ -42,10 +42,8 @@ export interface Section {
 export interface SignalEngineConfig {
   provider: string
   /**
-   * Backend for the organize pass: 'groq' (uses organizeModel) or a subscription
-   * CLI ('claude-code' | 'codex'). Follows the global co-creation provider so a
-   * strong model can do the highest-judgment pass. Extraction always uses Groq.
-   * Read live in runOrganize so flipping the provider mid-session takes effect.
+   * Backend for the organize pass. Read live in runOrganize so flipping the
+   * model mid-session takes effect.
    */
   organizeProvider: string
   /** thinking model for the signal-extraction pass (Groq) */
@@ -243,7 +241,7 @@ export class SignalEngine {
       rawText: raw,
       existingSignals: this.recentTailText().slice(-1200),
       provider: this.config.provider,
-      model: this.config.provider === 'groq' ? this.config.extractModel : undefined,
+      model: this.config.extractModel,
       systemPrompt: this.config.systemPrompt
     })
 
@@ -298,7 +296,7 @@ export class SignalEngine {
       lines: numbered,
       closing,
       provider: op,
-      model: op === 'groq' ? this.config.organizeModel : undefined
+      model: this.config.organizeModel
     })
 
     if (gen !== this.gen) return

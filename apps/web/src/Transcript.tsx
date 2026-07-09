@@ -32,7 +32,9 @@ const EXTRACT_PROMPT =
   `evidence). The label is metadata attached AFTER selection — never keep a weak statement just to fill a kind. ` +
   `Attribute the speaker tag ([S1]/[S2]…) the words came from. ` +
   `Do not add claims or conclusions beyond the raw input. Do not emit near-duplicates of already-extracted highlights. ` +
-  `Match the dominant language of the speech (Chinese speech -> Chinese highlights); preserve code-switching only when the mix carries meaning.`
+  `Never translate the user's speech into English by default. Write each highlight in the dominant language used in the audio ` +
+  `(Chinese speech -> Chinese highlights, Spanish speech -> Spanish highlights, English speech -> English highlights); ` +
+  `preserve code-switching only when the mix carries meaning.`
 
 const STATUS_CAPTION: Record<EngineStatus, string> = {
   idle: '',
@@ -77,6 +79,7 @@ export function Transcript({
   onRawFinal,
   onSignals,
   organizeProvider = 'groq',
+  summaryModel,
   storageSuffix = '',
   highlights = [],
   onHoverNote,
@@ -91,6 +94,8 @@ export function Transcript({
   /** Backend for the organize pass, following the global provider choice:
    *  'groq' | 'claude-code' | 'codex'. Extraction always stays on Groq. */
   organizeProvider?: string
+  /** Model/provider choice used by extraction and organization. */
+  summaryModel?: { providerId: string; model?: string }
   /** Per-idea-space persistence: '' keeps the original keys, '.<id>' scopes new spaces. */
   storageSuffix?: string
   /** Phrases already dragged onto the canvas — each gets a faint orange mark. */
@@ -127,16 +132,20 @@ export function Transcript({
   useEffect(() => {
     onSignalsRef.current = onSignals
   }, [onSignals])
+  const summaryModelRef = useRef(summaryModel)
+  useEffect(() => {
+    summaryModelRef.current = summaryModel
+  }, [summaryModel])
 
   // One engine for the component's life. Extraction (2min) distills raw speech
   // into typed pending signals appended to the tail; the organize pass (5min +
   // on stop) freezes them into titled sections. Both are thinking-model tasks.
   useEffect(() => {
     const engine = new SignalEngine({
-      provider: 'groq',
-      organizeProvider,
-      extractModel: 'openai/gpt-oss-120b',
-      organizeModel: 'openai/gpt-oss-120b',
+      provider: summaryModelRef.current?.providerId || 'groq',
+      organizeProvider: summaryModelRef.current?.providerId || organizeProvider,
+      extractModel: summaryModelRef.current?.model || 'openai/gpt-oss-120b',
+      organizeModel: summaryModelRef.current?.model || 'openai/gpt-oss-120b',
       systemPrompt: EXTRACT_PROMPT,
       extractIntervalMs: 120000,
       organizeIntervalMs: 300000,
@@ -162,8 +171,12 @@ export function Transcript({
   // engine lives across renders, so flipping the button mid-session applies to
   // the next organize round).
   useEffect(() => {
-    if (engineRef.current) engineRef.current.config.organizeProvider = organizeProvider
-  }, [organizeProvider])
+    if (!engineRef.current) return
+    engineRef.current.config.provider = summaryModel?.providerId || 'groq'
+    engineRef.current.config.organizeProvider = summaryModel?.providerId || organizeProvider
+    engineRef.current.config.extractModel = summaryModel?.model || 'openai/gpt-oss-120b'
+    engineRef.current.config.organizeModel = summaryModel?.model || 'openai/gpt-oss-120b'
+  }, [organizeProvider, summaryModel])
 
   // Start/stop live capture from Unit 2's existing record button (App.recording).
   useEffect(() => {
@@ -200,7 +213,7 @@ export function Transcript({
         } else engineRef.current?.pushInterim(ev.text)
       })
       try {
-        await stt.start({ lang: 'en-US', stream })
+        await stt.start({ lang: 'auto', stream })
       } catch (e: any) {
         setErr(`⚠ ${e.message}`)
       }
@@ -377,7 +390,7 @@ export function Transcript({
           </div>
         )}
 
-        {caption && <div className="status-caption">{caption}</div>}
+        {caption && <div className="status-caption ai-thinking">{caption}</div>}
         {err && <div className="placeholder err">{err}</div>}
       </aside>
 

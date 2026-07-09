@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Transcript } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
-import { loadJSON, saveJSON, clearSaved, downloadSavedData } from './persist'
+import { loadJSON, saveJSON } from './persist'
 import { requestCocreate } from '../../../services/llm/cocreate'
 import type { CocreateProvider, OpenSub } from '../../../services/llm/cocreate-types'
 import { requestCommandChat } from '../../../services/llm/command-chat'
@@ -18,15 +18,15 @@ import {
   type CommandMessage
 } from './command-session'
 import { Sidebar, BookIcon, type TreeNode } from './Sidebar'
-import { LlmSettingsPanel } from './LlmSettingsPanel'
 import { openBoard, type Board } from '../../../packages/core/doc'
-import { indexeddbPersistence, hydrateNotes, boardDocId, clearAllBoards } from './board-persistence'
+import { indexeddbPersistence, hydrateNotes, boardDocId, copyBoard, deleteBoard } from './board-persistence'
 import { BoardSync } from '../../../services/sync/board-sync'
 import { websocketTransport } from '../../../services/sync/board-sync'
 import { BackendSTT } from '../../../services/stt/backend'
 import type { STTProvider } from '../../../services/stt/types'
 import { wsUrl } from '../../../services/api/config'
 import { useBackend, type SyncParams } from './backend'
+import { LlmSettingsPanel, type ModelSelections } from './LlmSettingsPanel'
 import { AuthPanel } from './AuthPanel'
 import { DocumentsPanel } from './DocumentsPanel'
 
@@ -39,6 +39,38 @@ const OPEN_MODELS: { sub: OpenSub; model: string; label: string }[] = [
   { sub: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
   { sub: 'ollama', model: '', label: 'Ollama · local (.env)' }
 ]
+const OPEN_PROVIDER: CocreateProvider = 'open'
+const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
+  transcriptionSummary: 1,
+  coCreation: 0,
+  aiCommand: 0
+}
+
+function normalizeModelSelections(raw: Partial<ModelSelections> | null | undefined): ModelSelections {
+  const clamp = (value: unknown, fallback: number) => {
+    const n = Math.floor(Number(value))
+    return Number.isFinite(n) && n >= 0 && n < OPEN_MODELS.length ? n : fallback
+  }
+  return {
+    transcriptionSummary: clamp(raw?.transcriptionSummary, DEFAULT_MODEL_SELECTIONS.transcriptionSummary),
+    coCreation: clamp(raw?.coCreation, DEFAULT_MODEL_SELECTIONS.coCreation),
+    aiCommand: clamp(raw?.aiCommand, DEFAULT_MODEL_SELECTIONS.aiCommand)
+  }
+}
+
+const openModelAt = (idx: number) => OPEN_MODELS[idx] ?? OPEN_MODELS[DEFAULT_MODEL_SELECTIONS.coCreation]
+const GearIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.04.04a2 2 0 0 1-2.83 2.83l-.04-.04a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21a2 2 0 0 1-4 0v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.87.34l-.04.04a2 2 0 0 1-2.83-2.83l.04-.04A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 0 1 0-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.87l-.04-.04a2 2 0 0 1 2.83-2.83l.04.04A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.04V3a2 2 0 0 1 4 0v.08a1.7 1.7 0 0 0 1.04 1.52 1.7 1.7 0 0 0 1.87-.34l.04-.04a2 2 0 0 1 2.83 2.83l-.04.04a1.7 1.7 0 0 0-.34 1.87A1.7 1.7 0 0 0 20.96 10H21a2 2 0 0 1 0 4h-.08A1.7 1.7 0 0 0 19.4 15z" />
+  </svg>
+)
+const ProfileIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="8" r="3.4" />
+    <path d="M5.4 20a6.6 6.6 0 0 1 13.2 0" />
+  </svg>
+)
 
 // Ambient fires wait for this much keyboard silence before landing content.
 const IDLE_MS = 5000
@@ -139,8 +171,7 @@ function CanvasSpace({
   isActive,
   recording,
   onToggleRecord,
-  provider,
-  openIdx,
+  modelSelections,
   sync,
   makeStt,
   seedFromLocal = true
@@ -149,8 +180,7 @@ function CanvasSpace({
   isActive: boolean
   recording: boolean
   onToggleRecord: () => void
-  provider: CocreateProvider
-  openIdx: number
+  modelSelections: ModelSelections
   /** When signed in + this space is mapped to a server doc, attach live sync. */
   sync?: SyncParams | null
   /** STT provider factory (backend proxy when signed in; else browser Soniox). */
@@ -572,13 +602,15 @@ function CanvasSpace({
       }
   }, [notes, patchNote])
 
-  const providerArgs = useCallback(() => {
-    if (provider === 'open') {
-      const m = OPEN_MODELS[openIdx]
-      return { provider, openSub: m.sub, model: m.model || undefined, webSearch: true }
-    }
-    return { provider, webSearch: true }
-  }, [provider, openIdx])
+  const providerArgs = useCallback((role: 'coCreation' | 'aiCommand') => {
+    const m = openModelAt(modelSelections[role])
+    return { provider: OPEN_PROVIDER, openSub: m.sub, model: m.model || undefined, webSearch: true }
+  }, [modelSelections])
+
+  const summaryModel = useMemo(() => {
+    const m = openModelAt(modelSelections.transcriptionSummary)
+    return { providerId: m.sub, model: m.model || undefined }
+  }, [modelSelections.transcriptionSummary])
 
   // Screen → world coords (undo the pan/zoom of the notes layer).
   const toWorld = (clientX: number, clientY: number) => {
@@ -719,7 +751,7 @@ function CanvasSpace({
           existingIdeas,
           transcriptWindow,
           signalWindow,
-          ...providerArgs()
+          ...providerArgs('coCreation')
         },
         {
           onDiagnosis: (d) => {
@@ -946,7 +978,7 @@ function CanvasSpace({
 
     const result = await requestCommandChat(
       {
-        ...providerArgs(),
+        ...providerArgs('aiCommand'),
         messages: history.map((m) => ({ role: m.role, text: m.text })),
         context: buildTurnContext(note, cur.source, transcriptWindow)
       },
@@ -1411,9 +1443,8 @@ function CanvasSpace({
         onToggleRecord={onToggleRecord}
         onRawFinal={onRawFinal}
         onSignals={onSignals}
-        // The organize pass follows the global provider; 'open' maps to Groq
-        // (organize always uses gpt-oss-120b, not the weaker open-model picker).
-        organizeProvider={provider === 'open' ? 'groq' : provider}
+        organizeProvider={summaryModel.providerId}
+        summaryModel={summaryModel}
         storageSuffix={storageSuffix}
         highlights={highlights}
         onHoverNote={setHoveredNoteId}
@@ -1609,6 +1640,25 @@ const removeNode = (nodes: TreeNode[], id: string): { nodes: TreeNode[]; found?:
   return { nodes: rest, found }
 }
 
+// Find the project (parent) that directly contains the given child id.
+const findParent = (nodes: TreeNode[], childId: string): TreeNode | undefined => {
+  for (const n of nodes) {
+    if (n.children?.some((c) => c.id === childId)) return n
+    const hit = n.children && findParent(n.children, childId)
+    if (hit) return hit
+  }
+  return undefined
+}
+
+// Insert a node right after the one with `afterId` in the same array.
+const insertAfter = (arr: TreeNode[], afterId: string, newNode: TreeNode): TreeNode[] => {
+  const idx = arr.findIndex((n) => n.id === afterId)
+  if (idx < 0) return [...arr, newNode]
+  const out = [...arr]
+  out.splice(idx + 1, 0, newNode)
+  return out
+}
+
 // Handle = the spine strip on a panel's top-left (drag it to slide/resize).
 // Its width is what an open-but-buried canvas always keeps visible.
 const HANDLE = 44
@@ -1644,12 +1694,15 @@ export function App() {
   const [activeId, setActiveId] = useState<string>(() => loadJSON('active-space', 'default'))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  // Right-click context menu on a sidebar tree node (Duplicate / Rename / Delete).
+  const [spaceMenu, setSpaceMenu] = useState<{ id: string; kind: 'project' | 'space'; name: string; x: number; y: number } | null>(null)
+  // Delete confirmation modal state.
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   // Only ONE canvas records at a time — the id of the recording space, or null.
   const [recordingId, setRecordingId] = useState<string | null>(null)
-  // Client-direct: the only web provider is the OpenAI-compatible 'open' path;
-  // the model picker below chooses which model. (CLI backends retired.)
-  const [provider] = useState<CocreateProvider>('open')
-  const [openIdx, setOpenIdx] = useState(0)
+  const [modelSelections, setModelSelections] = useState<ModelSelections>(() =>
+    normalizeModelSelections(loadJSON<Partial<ModelSelections>>('llm-model-selections', DEFAULT_MODEL_SELECTIONS))
+  )
   const [showLlmSettings, setShowLlmSettings] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const [showDocs, setShowDocs] = useState(false)
@@ -1683,6 +1736,20 @@ export function App() {
   useEffect(() => saveJSON('workspace-tree', tree), [tree])
   useEffect(() => saveJSON('open-panels', open), [open])
   useEffect(() => saveJSON('active-space', activeId), [activeId])
+  useEffect(() => saveJSON('llm-model-selections', modelSelections), [modelSelections])
+
+  // Escape closes the space context menu and delete confirmation modal.
+  useEffect(() => {
+    if (!spaceMenu && !deleteConfirm) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSpaceMenu(null)
+        setDeleteConfirm(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [spaceMenu, deleteConfirm])
 
   // The active canvas must be one of the open ones.
   useEffect(() => {
@@ -1697,15 +1764,6 @@ export function App() {
     ro.observe(el)
     setWw(el.clientWidth)
     return () => ro.disconnect()
-  }, [])
-
-  // Deliberate reset — refresh alone no longer clears anything.
-  const clearAll = useCallback(() => {
-    if (!window.confirm('Clear all saved notes and transcript data?')) return
-    clearSaved()
-    // Boards live in IndexedDB — wipe them too, else cleared notes resurrect on
-    // reload (IndexedDB is authoritative on load).
-    void clearAllBoards().finally(() => window.location.reload())
   }, [])
 
   // Resolve fractions to px and enforce the stack invariant: each sheet at
@@ -1802,6 +1860,116 @@ export function App() {
     setRenamingId(null)
   }
 
+  // Right-click on a sidebar node → open the context menu at the cursor.
+  const onSpaceContextMenu = (node: TreeNode, x: number, y: number) => {
+    setSpaceMenu({ id: node.id, kind: node.kind, name: node.name, x, y })
+  }
+
+  // Duplicate a canvas: copy its board (IndexedDB) + localStorage mirror into
+  // a brand-new space, add it to the tree right after the source, and open it.
+  const onDuplicateSpace = useCallback(async (id: string) => {
+    setSpaceMenu(null)
+    const srcSuffix = id === 'default' ? '' : `.${id}`
+    const srcBoardKey = boardDocId(srcSuffix)
+    const newId = uid('s')
+    const newSuffix = `.${newId}`
+    const newBoardKey = boardDocId(newSuffix)
+
+    // 1. Copy board content (IndexedDB).
+    void copyBoard(srcBoardKey, newBoardKey)
+
+    // 2. Copy localStorage mirror keys (notes, images, view, transcript, etc.).
+    try {
+      const PREFIX = 'thinking-pal-canvas.'
+      for (const k of Object.keys(localStorage)) {
+        if (!k.startsWith(PREFIX)) continue
+        const bareKey = k.slice(PREFIX.length)
+        if (srcSuffix === '') {
+          // Default space: keys have no suffix — copy only un-suffixed keys.
+          if (bareKey.includes('.')) continue
+          localStorage.setItem(PREFIX + bareKey + newSuffix, localStorage.getItem(k)!)
+        } else {
+          // Named space: keys end with the source suffix.
+          if (!bareKey.endsWith(srcSuffix)) continue
+          const baseKey = bareKey.slice(0, -srcSuffix.length)
+          localStorage.setItem(PREFIX + baseKey + newSuffix, localStorage.getItem(k)!)
+        }
+      }
+    } catch {
+      // storage disabled — board copy alone is enough
+    }
+
+    // 3. Add the new node to the tree next to the source (same parent or root).
+    setTree((t) => {
+      const src = findNode(t, id)
+      const newNode: TreeNode = { id: newId, kind: 'space', name: `${src?.name ?? 'Canvas'} (copy)` }
+      // If source is inside a project, insert the copy right after it in the same project.
+      if (src) {
+        const parent = findParent(t, id)
+        if (parent) {
+          return mapNodes(t, (n) =>
+            n.id === parent.id
+              ? { ...n, children: insertAfter(n.children || [], id, newNode) }
+              : n
+          )
+        }
+      }
+      // Source is at root level — insert after it.
+      return insertAfter(t, id, newNode)
+    })
+
+    // 4. Open the duplicated canvas.
+    openSpace(newId)
+  }, [open, openSpace, activeId, recordingId])
+
+  // Rename: trigger the inline rename input in the sidebar.
+  const onRenameSpace = (id: string) => {
+    setSpaceMenu(null)
+    setRenamingId(id)
+  }
+
+  // Delete: open the confirmation modal.
+  const onDeleteSpace = (id: string, name: string) => {
+    setSpaceMenu(null)
+    setDeleteConfirm({ id, name })
+  }
+
+  // Confirmed delete: remove from tree, close panel if open, wipe IndexedDB +
+  // localStorage for that space.
+  const confirmDeleteSpace = useCallback(async () => {
+    const target = deleteConfirm
+    if (!target) return
+    const id = target.id
+    setDeleteConfirm(null)
+
+    // Close the panel if it's open.
+    if (open.ids.includes(id)) closeSpace(id)
+
+    // Remove from tree.
+    setTree((t) => removeNode(t, id).nodes)
+
+    // Clean up IndexedDB board (skip the 'default' space — its key is 'default').
+    const suffix = id === 'default' ? '' : `.${id}`
+    const bKey = boardDocId(suffix)
+    void deleteBoard(bKey)
+
+    // Clean up localStorage keys for this space.
+    try {
+      const PREFIX = 'thinking-pal-canvas.'
+      for (const k of Object.keys(localStorage)) {
+        if (!k.startsWith(PREFIX)) continue
+        const bareKey = k.slice(PREFIX.length)
+        if (suffix === '') {
+          if (!bareKey.includes('.')) localStorage.removeItem(k)
+        } else {
+          if (bareKey.endsWith(suffix)) localStorage.removeItem(k)
+        }
+      }
+    } catch {
+      // storage disabled — nothing to clean
+    }
+  }, [deleteConfirm, open.ids, closeSpace])
+
   // Drag a sheet's handle: only THIS sheet's left edge moves (right edge is
   // pinned), clamped so the sheet below keeps its handle visible and this
   // sheet stays visible in front of the sheet above.
@@ -1824,6 +1992,11 @@ export function App() {
     document.addEventListener('pointerup', up)
   }
 
+  const profileLabel = backend.user ? backend.user.email.split('@')[0] || backend.user.email : 'Sign in'
+  const profileTitle = backend.user
+    ? `Signed in as ${backend.user.email} - sync + backend STT active`
+    : 'Sign in to sync boards across devices'
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -1839,38 +2012,33 @@ export function App() {
         onStartRename={setRenamingId}
         onRename={onRename}
         onMoveNode={onMoveNode}
+        onContextMenu={onSpaceContextMenu}
         footer={
           <div className="side-controls">
-            <select value={openIdx} onChange={(e) => setOpenIdx(Number(e.target.value))}>
-              {OPEN_MODELS.map((m, i) => <option key={i} value={i}>{m.label}</option>)}
-            </select>
+            <button className="side-control-row" title="Settings" aria-label="Settings" onClick={() => setShowLlmSettings(true)}>
+              <span className="side-control-icon">{GearIcon}</span>
+              {!collapsed && <span className="side-control-label">Setting</span>}
+            </button>
             {backend.enabled && (
               <button
-                className="save-local"
-                title={backend.user ? `Signed in as ${backend.user.email} — sync + backend STT active` : 'Sign in to sync boards across devices'}
+                className="side-control-row"
+                title={profileTitle}
                 onClick={() => setShowAuth(true)}
               >
-                {backend.user ? `Account · ${backend.user.email}` : 'Sign in'}
+                <span className="profile-avatar">{ProfileIcon}</span>
+                {!collapsed && <span className="side-control-label">{profileLabel}</span>}
               </button>
             )}
             {backend.user && (
               <button
-                className="save-local"
-                title="Open a synced document on this canvas (across devices)"
+                className="side-control-row"
+                title="Open a synced document on this canvas"
                 onClick={() => setShowDocs(true)}
               >
-                Documents
+                <span className="side-control-icon">{BookIcon}</span>
+                {!collapsed && <span className="side-control-label">Documents</span>}
               </button>
             )}
-            <button className="save-local" title="Configure the LLM provider + API key (stored in this browser)" onClick={() => setShowLlmSettings(true)}>
-              LLM settings
-            </button>
-            <button className="save-local" title="Download a local JSON backup of saved transcript, reflections, and canvas data" onClick={downloadSavedData}>
-              Save local copy
-            </button>
-            <button className="clear-saved" title="Delete all saved notes and transcript data" onClick={clearAll}>
-              Clear saved
-            </button>
           </div>
         }
       />
@@ -1901,8 +2069,7 @@ export function App() {
                 isActive={activeId === id}
                 recording={recordingId === id}
                 onToggleRecord={() => setRecordingId((r) => (r === id ? null : id))}
-                provider={provider}
-                openIdx={openIdx}
+                modelSelections={modelSelections}
                 sync={backend.syncFor(id)}
                 makeStt={makeStt}
                 seedFromLocal={!backend.isAdopted(id)}
@@ -1912,7 +2079,14 @@ export function App() {
         ))}
       </div>
 
-      {showLlmSettings && <LlmSettingsPanel onClose={() => setShowLlmSettings(false)} />}
+      {showLlmSettings && (
+        <LlmSettingsPanel
+          models={OPEN_MODELS}
+          selections={modelSelections}
+          onSave={(next) => setModelSelections(normalizeModelSelections(next))}
+          onClose={() => setShowLlmSettings(false)}
+        />
+      )}
       {showAuth && backend.enabled && <AuthPanel backend={backend} onClose={() => setShowAuth(false)} />}
       {showDocs && backend.user && (
         <DocumentsPanel
@@ -1921,6 +2095,38 @@ export function App() {
           activeSpaceName={findNode(tree, activeId)?.name ?? 'canvas'}
           onClose={() => setShowDocs(false)}
         />
+      )}
+
+      {/* Right-click context menu on a sidebar tree node */}
+      {spaceMenu && (
+        <>
+          <div className="ctx-menu-backdrop" onClick={() => setSpaceMenu(null)} onContextMenu={(e) => { e.preventDefault(); setSpaceMenu(null) }} />
+          <div
+            className="note-menu"
+            style={{ left: spaceMenu.x, top: spaceMenu.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <button onClick={() => onDuplicateSpace(spaceMenu.id)}>Duplicate</button>
+            <button onClick={() => onRenameSpace(spaceMenu.id)}>Rename</button>
+            <button className="danger" onClick={() => onDeleteSpace(spaceMenu.id, spaceMenu.name)}>Delete</button>
+          </div>
+        </>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteConfirm && (
+        <div className="confirm-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <p className="confirm-text">
+              Delete "{deleteConfirm.name}"? This canvas and all its content will be permanently removed.
+            </p>
+            <div className="confirm-actions">
+              <button className="confirm-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
+              <button className="confirm-delete" onClick={confirmDeleteSpace}>Delete</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

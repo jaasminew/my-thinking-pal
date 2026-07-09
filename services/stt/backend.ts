@@ -70,6 +70,7 @@ export class BackendSTT implements STTProvider {
           text: msg.text ?? '',
           isFinal: !!msg.final,
           timestamp: performance.now(),
+          language: msg.language || undefined,
           speaker: msg.speaker || undefined
         })
       } else if (msg?.type === 'error') {

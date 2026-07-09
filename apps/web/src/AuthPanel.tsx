@@ -51,7 +51,7 @@ export function AuthPanel({ backend, onClose }: { backend: Backend; onClose: () 
             </div>
           </>
         ) : (
-          <form onSubmit={submit}>
+          <form className="auth-form" onSubmit={submit}>
             <label className="llm-field">
               <span>Email</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
@@ -69,7 +69,7 @@ export function AuthPanel({ backend, onClose }: { backend: Backend; onClose: () 
               />
             </label>
             {backend.error && <p className="auth-error">{backend.error}</p>}
-            <div className="llm-settings-actions">
+            <div className="llm-settings-actions auth-actions">
               <button type="submit" className="llm-save" disabled={busy}>
                 {busy ? '…' : mode === 'login' ? 'Sign in' : 'Create account'}
               </button>

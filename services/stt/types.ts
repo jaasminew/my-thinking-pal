@@ -6,12 +6,14 @@ export interface TranscriptEvent {
   isFinal: boolean
   /** performance.now() when this text reached the browser. */
   timestamp: number
+  /** Detected BCP-47-ish language code when the provider reports one. */
+  language?: string
   /** Diarized speaker tag ('S1', 'S2', …) when the provider identifies one. */
   speaker?: string
 }
 
 export interface STTStartOpts {
-  /** BCP-47 language hint, e.g. 'en-US' or 'zh-CN'. */
+  /** BCP-47 language hint, e.g. 'en-US' or 'zh-CN'; 'auto' asks the provider to detect it. */
   lang: string
   /** Pre-acquired audio stream (mic / system / both). If omitted, mic is used. */
   stream?: MediaStream

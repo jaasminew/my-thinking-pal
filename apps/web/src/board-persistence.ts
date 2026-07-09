@@ -1,6 +1,6 @@
 import { IndexeddbPersistence } from 'y-indexeddb'
 import type * as Y from 'yjs'
-import type { BoardPersistence, PlainNote } from '../../../packages/core/doc'
+import { openBoard, type BoardPersistence, type PlainNote } from '../../../packages/core/doc'
 import type { KeywordNote } from './canvas-types'
 
 // Browser glue between packages/core/doc (environment-free) and the frontend.
@@ -62,5 +62,32 @@ export async function clearAllBoards(): Promise<void> {
     )
   } catch {
     // storage disabled / unsupported — nothing to clear
+  }
+}
+
+// Copy all board content (notes + images) from one local space to another.
+// Opens both boards transiently, reads source content, writes to destination,
+// then destroys the temporary providers — IndexedDB retains the data.
+export async function copyBoard(sourceDocId: string, destDocId: string): Promise<void> {
+  const src = openBoard(sourceDocId, { persistence: indexeddbPersistence })
+  await src.whenSynced
+  const content = src.content()
+  await src.destroy()
+
+  const dst = openBoard(destDocId, { persistence: indexeddbPersistence })
+  await dst.whenSynced
+  dst.replaceContent(content)
+  await dst.destroy()
+}
+
+// Delete a single space's IndexedDB board data.
+export async function deleteBoard(docId: string): Promise<void> {
+  try {
+    await new Promise<void>((resolve) => {
+      const req = indexedDB.deleteDatabase(`${DB_PREFIX}${docId}`)
+      req.onsuccess = req.onerror = req.onblocked = () => resolve()
+    })
+  } catch {
+    // storage disabled / unsupported — nothing to delete
   }
 }
