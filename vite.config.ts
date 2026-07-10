@@ -29,6 +29,10 @@ export default defineConfig(({ mode }) => {
           soniox: { key: env.SONIOX_API_KEY || '', model: env.SONIOX_MODEL || 'stt-rt-v5' }
         }
   return {
+    // Relative asset paths so the packaged Electron app (which loads dist/index.html
+    // over the file:// protocol via win.loadFile) can resolve /assets/*. With the
+    // default '/' base, file:// resolves those to the filesystem root → white screen.
+    base: './',
     plugins: [react(), apiPlugin()],
     define: { __DEV_LLM_KEYS__: JSON.stringify(devLlmKeys) },
     server: { port: 5173, open: true }
