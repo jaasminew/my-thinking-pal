@@ -86,6 +86,9 @@ func TestAuthFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/me status %d: %s", resp.StatusCode, data)
 	}
+	if resp, data := do(t, srv, "GET", "/auth/me", tp.AccessToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/auth/me status %d: %s", resp.StatusCode, data)
+	}
 
 	// /me without token → 401
 	if resp, _ := do(t, srv, "GET", "/me", "", nil); resp.StatusCode != http.StatusUnauthorized {
