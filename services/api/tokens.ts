@@ -1,4 +1,4 @@
-import type { TokenPair } from './types'
+import type { TokenPair, User } from './types'
 
 // Minimal storage seam so the token store is testable without a browser.
 export interface KeyValueStorage {
@@ -9,6 +9,15 @@ export interface KeyValueStorage {
 
 const ACCESS_KEY = 'tp.auth.access'
 const REFRESH_KEY = 'tp.auth.refresh'
+const USER_KEY = 'tp.auth.user'
+
+let sharedStore: TokenStore | null = null
+
+/** Browser singleton so every ApiClient reads/writes the same persisted session. */
+export function sharedTokenStore(): TokenStore {
+  if (!sharedStore) sharedStore = new TokenStore()
+  return sharedStore
+}
 
 export class TokenStore {
   private storage: KeyValueStorage
@@ -25,14 +34,33 @@ export class TokenStore {
     return this.storage.getItem(REFRESH_KEY)
   }
 
+  /** True when either token is present (refresh alone can restore a session). */
+  get hasSession(): boolean {
+    return !!(this.access || this.refresh)
+  }
+
   save(pair: Pick<TokenPair, 'accessToken' | 'refreshToken'>): void {
     this.storage.setItem(ACCESS_KEY, pair.accessToken)
     this.storage.setItem(REFRESH_KEY, pair.refreshToken)
   }
 
+  saveUser(user: User): void {
+    this.storage.setItem(USER_KEY, JSON.stringify(user))
+  }
+
+  loadUser(): User | null {
+    try {
+      const raw = this.storage.getItem(USER_KEY)
+      return raw ? (JSON.parse(raw) as User) : null
+    } catch {
+      return null
+    }
+  }
+
   clear(): void {
     this.storage.removeItem(ACCESS_KEY)
     this.storage.removeItem(REFRESH_KEY)
+    this.storage.removeItem(USER_KEY)
   }
 }
 

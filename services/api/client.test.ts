@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { ApiClient, ApiError, type FetchLike } from './client'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { ApiClient, ApiError, resetAuthFlightsForTests, type FetchLike } from './client'
 import { TokenStore, memoryStorage } from './tokens'
 import { wsUrl } from './config'
 
@@ -21,6 +21,10 @@ const pair = {
   refreshToken: 'refresh-1',
   user: { id: 'u1', email: 'a@b.com', createdAt: '2026-01-01T00:00:00Z' }
 }
+
+beforeEach(() => {
+  resetAuthFlightsForTests()
+})
 
 describe('ApiClient auth', () => {
   it('login stores tokens', async () => {
@@ -79,6 +83,60 @@ describe('ApiClient token refresh', () => {
     tokens.save(pair)
     await expect(client.listDocuments()).rejects.toBeInstanceOf(ApiError)
     expect(tokens.access).toBeNull()
+  })
+
+  it('keeps tokens when refresh hits a transient server error', async () => {
+    const { client, tokens } = makeClient(async (url) => {
+      if (url.endsWith('/auth/refresh')) return jsonResponse(503, { error: 'busy' })
+      return jsonResponse(401, { error: 'expired' })
+    })
+    tokens.save(pair)
+    await expect(client.listDocuments()).rejects.toBeInstanceOf(ApiError)
+    expect(tokens.access).toBe('access-1')
+    expect(tokens.refresh).toBe('refresh-1')
+  })
+
+  it('dedupes concurrent refresh calls (Strict Mode / parallel 401s)', async () => {
+    let refreshCalls = 0
+    const { client, tokens } = makeClient(async (url, init) => {
+      if (url.endsWith('/auth/refresh')) {
+        refreshCalls++
+        return jsonResponse(200, { ...pair, accessToken: 'access-2', refreshToken: 'refresh-2' })
+      }
+      if (url.endsWith('/auth/me')) {
+        const auth = (init?.headers as Record<string, string>)?.Authorization
+        if (auth === 'Bearer access-1') return jsonResponse(401, { error: 'expired' })
+        if (auth === 'Bearer access-2') return jsonResponse(200, pair.user)
+        return jsonResponse(500, { error: 'unexpected auth ' + auth })
+      }
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    })
+    tokens.save(pair)
+    const [a, b] = await Promise.all([client.restoreSession(), client.restoreSession()])
+    expect(a?.email).toBe('a@b.com')
+    expect(b?.email).toBe('a@b.com')
+    expect(refreshCalls).toBe(1)
+    expect(tokens.access).toBe('access-2')
+  })
+
+  it('restoreSession refreshes when only the refresh token is stored', async () => {
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.endsWith('/auth/refresh')) {
+        return jsonResponse(200, { ...pair, accessToken: 'access-2', refreshToken: 'refresh-2' })
+      }
+      if (url.endsWith('/auth/me')) {
+        expect((init?.headers as Record<string, string>)?.Authorization).toBe('Bearer access-2')
+        return jsonResponse(200, pair.user)
+      }
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    }
+    const storage = memoryStorage()
+    storage.setItem('tp.auth.refresh', pair.refreshToken)
+    const tokens = new TokenStore(storage)
+    const client = new ApiClient({ baseUrl: 'http://api.test', tokens, fetchImpl })
+    const user = await client.restoreSession()
+    expect(user?.email).toBe('a@b.com')
+    expect(tokens.access).toBe('access-2')
   })
 })
 
