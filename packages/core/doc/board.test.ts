@@ -100,6 +100,38 @@ describe('Board canvas images', () => {
   })
 })
 
+describe('Board transcript', () => {
+  it('returns null until set, then round-trips frozen + tail', () => {
+    const b = openBoard('d1')
+    expect(b.getTranscript()).toBeNull()
+    const frozen = [{ id: 's1', header: 'Intro', lines: [{ id: 'l1', ts: 1, text: 'hello' }] }]
+    const tail = [{ id: 'l2', ts: 2, text: 'world' }]
+    b.setTranscript(frozen, tail)
+    expect(b.getTranscript()).toEqual({ frozen, tail })
+  })
+
+  it('detaches stored data from the caller (later mutation does not leak in)', () => {
+    const b = openBoard('d1')
+    const tail = [{ id: 'l1', ts: 1, text: 'a' }]
+    b.setTranscript([], tail)
+    tail[0].text = 'mutated'
+    expect(b.getTranscript()?.tail).toEqual([{ id: 'l1', ts: 1, text: 'a' }])
+  })
+
+  it('syncs the transcript across two docs', () => {
+    const docA = new Y.Doc()
+    const docB = new Y.Doc()
+    const a = openBoard('shared', { doc: docA })
+    a.setTranscript([{ id: 's1', header: 'H', lines: [] }], [{ id: 'l1', ts: 9, text: 'x' }])
+    Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA))
+    const b = openBoard('shared', { doc: docB })
+    expect(b.getTranscript()).toEqual({
+      frozen: [{ id: 's1', header: 'H', lines: [] }],
+      tail: [{ id: 'l1', ts: 9, text: 'x' }]
+    })
+  })
+})
+
 describe('Board observe + CRDT sync', () => {
   it('observe fires on mutation and can be unsubscribed', () => {
     const b = openBoard('d1')

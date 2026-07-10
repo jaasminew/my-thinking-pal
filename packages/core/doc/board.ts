@@ -38,6 +38,12 @@ export class Board {
   private readonly notesArr: Y.Array<Y.Map<unknown>>
   private readonly imagesArr: Y.Array<Y.Map<unknown>>
   private readonly meta: Y.Map<unknown>
+  // The cleaned transcript (organized sections + open tail) so recorded speech
+  // syncs across devices alongside the canvas. Stored coarsely as two plain
+  // JSON arrays under one map — the recording device rewrites them as it goes;
+  // peers read them back. The core stays type-agnostic about the line/section
+  // shape (the frontend owns it), so these are opaque JSON here.
+  private readonly transcriptMap: Y.Map<unknown>
   private readonly persistence?: BoardPersistence
   private readonly ownsDoc: boolean
 
@@ -48,6 +54,7 @@ export class Board {
     this.notesArr = this.doc.getArray('notes')
     this.imagesArr = this.doc.getArray('images')
     this.meta = this.doc.getMap('meta')
+    this.transcriptMap = this.doc.getMap('transcript')
     if (opts.persistence) this.persistence = opts.persistence(this.doc, docId)
   }
 
@@ -230,6 +237,26 @@ export class Board {
     this.tx(() => {
       const found = this.imageAt(id)
       if (found) this.imagesArr.delete(found.index, 1)
+    })
+  }
+
+  // ---- transcript (coarse, opaque JSON) ----
+  // Returns null when the doc has never carried a transcript (so callers can
+  // tell "not yet set" from "explicitly empty" and decide whether to seed).
+  getTranscript(): { frozen: unknown[]; tail: unknown[] } | null {
+    const frozen = this.transcriptMap.get('frozen')
+    const tail = this.transcriptMap.get('tail')
+    if (frozen === undefined && tail === undefined) return null
+    return {
+      frozen: Array.isArray(frozen) ? (frozen as unknown[]) : [],
+      tail: Array.isArray(tail) ? (tail as unknown[]) : []
+    }
+  }
+
+  setTranscript(frozen: unknown[], tail: unknown[]): void {
+    this.tx(() => {
+      this.transcriptMap.set('frozen', JSON.parse(JSON.stringify(frozen ?? [])))
+      this.transcriptMap.set('tail', JSON.parse(JSON.stringify(tail ?? [])))
     })
   }
 

@@ -74,6 +74,16 @@ type EditTarget = { kind: 'section'; sid: string } | { kind: 'tail' } | null
 /** A dragged-out phrase to faintly mark in the transcript, linked to its note. */
 export type Highlight = { noteId: string; ts: number; text: string }
 
+/** Cross-device transcript sync seam, backed by the space's CRDT board.
+ *  `read` returns null until the doc has ever carried a transcript; `observe`
+ *  fires on REMOTE (and local-persistence load) changes only — never on our own
+ *  writes — so the component can reflect a peer's recording without ping-pong. */
+export interface TranscriptSync {
+  read(): { frozen: Section[]; tail: Line[] } | null
+  write(frozen: Section[], tail: Line[]): void
+  observe(cb: () => void): () => void
+}
+
 export function Transcript({
   recording,
   onToggleRecord,
@@ -85,7 +95,9 @@ export function Transcript({
   highlights = [],
   onHoverNote,
   makeStt,
-  projectInstructions
+  projectInstructions,
+  transcriptSync,
+  seedFromLocal = true
 }: {
   recording: boolean
   onToggleRecord: () => void
@@ -112,6 +124,12 @@ export function Transcript({
    *  the extraction system prompt (knowledge excerpts are deliberately NOT
    *  injected here — bias/latency risk). */
   projectInstructions?: string
+  /** Cross-device transcript sync (present only when signed in + this space is
+   *  bound to a server document). Absent → local-only, as before. */
+  transcriptSync?: TranscriptSync
+  /** Adopting an existing server doc (false) means the doc — not this device's
+   *  local transcript — is the source of truth: an empty remote clears local. */
+  seedFromLocal?: boolean
 }) {
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes;
@@ -146,6 +164,16 @@ export function Transcript({
   useEffect(() => {
     projectInstructionsRef.current = projectInstructions
   }, [projectInstructions])
+  // Latest values read inside the CRDT sync callbacks without re-subscribing.
+  const frozenRef = useRef(frozen)
+  frozenRef.current = frozen
+  const tailRef = useRef(tail)
+  tailRef.current = tail
+  const recordingRef = useRef(recording)
+  recordingRef.current = recording
+  // Set right before we apply a peer's transcript so the autosave below mirrors
+  // it to localStorage but does NOT echo it back to the board (ping-pong guard).
+  const remoteTranscriptRef = useRef(false)
 
   // One engine for the component's life. Extraction (2min) distills raw speech
   // into typed pending signals appended to the tail; the organize pass (5min +
@@ -245,13 +273,61 @@ export function Transcript({
   }, [recording])
 
   // Autosave the cleaned transcript (debounced — it re-renders per STT chunk).
+  // localStorage stays the local mirror; when this space is synced, the same
+  // debounce pushes the transcript into the CRDT board so peers see it too. A
+  // change that arrived FROM a peer is mirrored locally but not echoed back.
   useEffect(() => {
     const t = setTimeout(() => {
       saveJSON(k('transcript-frozen'), frozen)
       saveJSON(k('transcript-tail'), tail)
+      if (remoteTranscriptRef.current) remoteTranscriptRef.current = false
+      else transcriptSync?.write(frozen, tail)
     }, 300)
     return () => clearTimeout(t)
-  }, [frozen, tail])
+  }, [frozen, tail, transcriptSync])
+
+  // Cross-device transcript: reflect a peer's recording (or this device's own
+  // IndexedDB-restored transcript for a bound doc) into the view + engine. Our
+  // own writes carry a 'local' origin and never reach here. While THIS device is
+  // recording we ignore inbound transcript so a peer can't clobber the live pass.
+  useEffect(() => {
+    if (!transcriptSync) return
+    const apply = () => {
+      const remote = transcriptSync.read()
+      if (remote == null) {
+        // Doc never carried a transcript. Seed it from our local content when
+        // we own the seed; when adopting an existing doc, an empty remote means
+        // start clean (mirror how the canvas adopts a server doc).
+        if (recordingRef.current) return
+        if (seedFromLocal) {
+          if (frozenRef.current.length || tailRef.current.length)
+            transcriptSync.write(frozenRef.current, tailRef.current)
+        } else if (frozenRef.current.length || tailRef.current.length) {
+          remoteTranscriptRef.current = true
+          setFrozen([])
+          setTail([])
+          if (engineRef.current) {
+            engineRef.current.frozenSections = []
+            engineRef.current.tail = []
+          }
+        }
+        return
+      }
+      if (recordingRef.current) return
+      const f = snapFrozen(remote.frozen)
+      const tl = snapTail(remote.tail)
+      remoteTranscriptRef.current = true
+      setFrozen(f)
+      setTail(tl)
+      if (engineRef.current) {
+        engineRef.current.frozenSections = snapFrozen(f)
+        engineRef.current.tail = snapTail(tl)
+      }
+    }
+    const off = transcriptSync.observe(apply)
+    apply() // pick up whatever is already loaded / seed on first attach
+    return off
+  }, [transcriptSync, seedFromLocal])
 
   // Keep the newest content in view.
   useEffect(() => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Transcript } from './Transcript'
+import { Transcript, type TranscriptSync } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
 import { loadJSON, saveJSON } from './persist'
@@ -285,6 +285,28 @@ function CanvasSpace({
   // ping-pong full-state updates between synced clients).
   const remoteNotesRef = useRef(false)
   const remoteImagesRef = useRef(false)
+  // Transcript sync seam: <Transcript> owns its own frozen/tail state, so instead
+  // of lifting it we hand it a stable imperative bridge to the board's Y.Doc.
+  // Listeners are notified on board-ready and on every REMOTE doc update so the
+  // component re-reads the transcript; our own writes use origin 'local' and are
+  // filtered out here to avoid a feedback loop.
+  const transcriptListenersRef = useRef(new Set<() => void>())
+  const notifyTranscript = useCallback(() => {
+    for (const cb of transcriptListenersRef.current) cb()
+  }, [])
+  const transcriptSync = useMemo<TranscriptSync>(
+    () => ({
+      read: () => (boardRef.current?.getTranscript() ?? null) as ReturnType<TranscriptSync['read']>,
+      write: (frozen, tail) => {
+        if (boardReadyRef.current) boardRef.current?.setTranscript(frozen, tail)
+      },
+      observe: (cb) => {
+        transcriptListenersRef.current.add(cb)
+        return () => transcriptListenersRef.current.delete(cb)
+      }
+    }),
+    []
+  )
   // The board's persistence/doc id: a bound server document gets its OWN local
   // store (shared across this account's devices via /sync); otherwise the local
   // per-space id (original behavior, unchanged when signed out).
@@ -311,6 +333,8 @@ function CanvasSpace({
         setImages(board.images())
       }
       boardReadyRef.current = true
+      // Board is loaded — let <Transcript> seed/adopt its transcript now.
+      notifyTranscript()
     })
     // Reflect REMOTE updates (from BoardSync) in the UI. Local edits transact with
     // origin 'local' and are skipped here (they already live in React state); the
@@ -321,6 +345,8 @@ function CanvasSpace({
       remoteImagesRef.current = true
       setNotes(hydrateNotes(board.notes()))
       setImages(board.images())
+      // Same doc carries the transcript; let <Transcript> re-read it.
+      notifyTranscript()
     }
     board.doc.on('update', onRemote)
     return () => {
@@ -1550,6 +1576,8 @@ function CanvasSpace({
         onHoverNote={setHoveredNoteId}
         makeStt={makeStt}
         projectInstructions={projectMemory.instructions.transcriptionSummary}
+        transcriptSync={sync ? transcriptSync : undefined}
+        seedFromLocal={seedFromLocal}
       />
       <div
         className="canvas"

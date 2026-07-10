@@ -97,25 +97,57 @@ export class BoardSync {
 // Real browser transport: a WebSocket to /sync/{docId}?token=… (module 03.4).
 // Untested here (needs a live socket); the protocol logic lives in BoardSync and
 // is covered via an in-memory transport.
+//
+// Auto-reconnects: a WebSocket dies silently on sleep/wake, network blips, or a
+// server restart, and without recovery live sync just stops until a page reload
+// (a common "it stopped syncing / isn't timely" symptom). On every fresh
+// connection we re-fire the open callbacks, so BoardSync re-sends full state and
+// peers converge again — no incremental updates are lost across the gap.
 export function websocketTransport(url: string): SyncTransport {
-  const ws = new WebSocket(url)
-  ws.binaryType = 'arraybuffer'
   const openCbs: (() => void)[] = []
   const msgCbs: ((d: Uint8Array) => void)[] = []
-  ws.onopen = () => openCbs.forEach((cb) => cb())
-  ws.onmessage = (ev) => {
-    const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : null
-    if (buf) msgCbs.forEach((cb) => cb(buf))
+  let ws: WebSocket | null = null
+  let closed = false
+  let retry = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+  const connect = () => {
+    if (closed) return
+    const sock = new WebSocket(url)
+    sock.binaryType = 'arraybuffer'
+    ws = sock
+    sock.onopen = () => {
+      retry = 0
+      openCbs.forEach((cb) => cb())
+    }
+    sock.onmessage = (ev) => {
+      const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : null
+      if (buf) msgCbs.forEach((cb) => cb(buf))
+    }
+    sock.onclose = () => {
+      if (closed || ws !== sock) return
+      // Exponential backoff capped at 15s, so a downed/slept relay reconnects
+      // promptly without hammering it.
+      const delay = Math.min(15000, 500 * 2 ** retry++)
+      reconnectTimer = setTimeout(connect, delay)
+    }
+    sock.onerror = () => sock.close()
   }
+  connect()
+
   return {
     send: (data) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)
     },
     onOpen: (cb) => {
       openCbs.push(cb)
-      if (ws.readyState === WebSocket.OPEN) cb()
+      if (ws && ws.readyState === WebSocket.OPEN) cb()
     },
     onMessage: (cb) => msgCbs.push(cb),
-    close: () => ws.close()
+    close: () => {
+      closed = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      ws?.close()
+    }
   }
 }

@@ -78,11 +78,18 @@ doc
 | `items[].editing`（bullet） | 顶层 | **本地态** |
 | `aiRunning` | 顶层 | **本地态** |
 | `selectedIds` / `marquee` | App 顶层 | **本地态**（多人协作用 awareness） |
-| transcript **定稿段落** | `Transcript.tsx` | CRDT（`transcript`，Phase 1b 接入） |
+| transcript **定稿段落** | `Transcript.tsx` | CRDT（`transcript`，已接入，见下方实现说明） |
 | transcript **interim（实时灰字）** | — | **本地态**（未定稿不入 CRDT） |
 | `录音中(recording)` | `App.tsx` 顶层 | **本地态** |
 
-> 注：Phase 1 已把 `notes` + 自由画布 `images` 接入 CRDT（本地优先 IndexedDB）；`transcript` 段落的 CRDT 接入排在 Phase 1b / 随 Phase 2 同步一起做。
+> 注：Phase 1 已把 `notes` + 自由画布 `images` 接入 CRDT（本地优先 IndexedDB）。`transcript`
+> 现也随画布同文档同步了，但落地采用了**更粗粒度的务实实现**（与上方的 `Y.Array<Y.Map>` +
+> `Y.Text` 目标设计有差异）：`doc.transcript` 是一个 `Y.Map`，只存两个不透明 JSON 数组
+> `frozen`（定稿段落）与 `tail`（未定稿的开放段落），录音端整体重写、其它端整读回显
+> （`Board.getTranscript` / `setTranscript`，`Transcript.tsx` 通过 `TranscriptSync` 桥接）。
+> 这与 `notes`/`images` 现有的 `setNotes`/`setImages` 全量替换保持一致；字符级并发合并
+> （`Y.Text`）与段落级 `marks`/`srcSeg` 仍是未来按 `schemaVersion` 迁移的升级项。interim
+> 实时灰字仍为本地瞬态，不入 CRDT。
 
 ### 关于 `bullets[].text` 用 Y.Text
 

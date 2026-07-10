@@ -1,6 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import * as Y from 'yjs'
-import { BoardSync, MSG_UPDATE, MSG_SNAPSHOT_PUT, MSG_AWARENESS, type SyncTransport } from './board-sync'
+import {
+  BoardSync,
+  MSG_UPDATE,
+  MSG_SNAPSHOT_PUT,
+  MSG_AWARENESS,
+  websocketTransport,
+  type SyncTransport
+} from './board-sync'
 
 // In-memory relay that mimics the Go server: fan out UPDATE/AWARENESS to peers,
 // persist UPDATE payloads, and replay them to a newly-connected transport.
@@ -102,6 +109,61 @@ describe('BoardSync', () => {
     const before = tb.sent.length
     docA.getMap('m').set('k', 'v') // B receives it but must not resend
     expect(tb.sent.length).toBe(before)
+  })
+
+  it('reconnects and re-fires onOpen after the socket drops', () => {
+    vi.useFakeTimers()
+    const instances: FakeWS[] = []
+    class FakeWS {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 3
+      readyState = FakeWS.CONNECTING
+      binaryType = ''
+      onopen: (() => void) | null = null
+      onclose: (() => void) | null = null
+      onmessage: ((ev: unknown) => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(readonly url: string) {
+        instances.push(this)
+      }
+      open() {
+        this.readyState = FakeWS.OPEN
+        this.onopen?.()
+      }
+      drop() {
+        this.readyState = FakeWS.CLOSED
+        this.onclose?.()
+      }
+      send() {}
+      close() {
+        this.readyState = FakeWS.CLOSED
+      }
+    }
+    const orig = globalThis.WebSocket
+    ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWS
+    try {
+      const t = websocketTransport('ws://x/sync/1')
+      let opens = 0
+      t.onOpen(() => opens++)
+      expect(instances.length).toBe(1)
+      instances[0].open()
+      expect(opens).toBe(1)
+
+      instances[0].drop() // network blip / server restart
+      vi.advanceTimersByTime(1000) // backoff elapses → a fresh socket is created
+      expect(instances.length).toBe(2)
+      instances[1].open()
+      expect(opens).toBe(2) // BoardSync re-sends full state on every reconnect
+
+      t.close()
+      instances[1].drop() // after close, no further reconnects
+      vi.advanceTimersByTime(60000)
+      expect(instances.length).toBe(2)
+    } finally {
+      ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = orig
+      vi.useRealTimers()
+    }
   })
 
   it('uploads a compacting snapshot that truncates the log', () => {
