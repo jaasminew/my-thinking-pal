@@ -49,7 +49,7 @@ body { background: var(--bg); color: var(--ink); }
 .side-tree { margin-top: 16px; flex: 1; min-height: 0; overflow-y: auto; }
 .tree-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; border-radius: 8px;
+  height: 30px; padding: 0 8px; border-radius: 8px;
   font-size: 13.5px; color: #3a3a3c; cursor: pointer; white-space: nowrap;
 }
 .tree-row:hover { background: #00000008; }
@@ -68,7 +68,19 @@ body { background: var(--bg); color: var(--ink); }
 .drag-tooltip-title { display: flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
 .drag-tooltip-title svg { width: 14px; height: 14px; color: #fff; flex: none; }
 .drag-tooltip-sub { margin-top: 2px; color: #d0d0d0; white-space: nowrap; }
-.tree-name { overflow: hidden; text-overflow: ellipsis; }
+.tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* hover memory button on project/canvas rows */
+.row-tool {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin-left: auto;
+  border: 0; border-radius: 6px; background: transparent;
+  color: #6f6f74; cursor: pointer; padding: 0;
+  visibility: hidden; opacity: 0; pointer-events: none;
+}
+.tree-row:hover .row-tool { visibility: visible; opacity: 1; pointer-events: auto; }
+.row-tool:hover { background: #00000010; color: #1e1e1e; }
+.row-tool svg { width: 14px; height: 14px; color: inherit; }
 .tree-kids { margin-left: 15px; border-left: 1.5px solid #dcdcda; padding-left: 3px; }
 .tree-rename {
   flex: 1; min-width: 0; font: inherit; font-size: 13.5px; color: var(--ink);
@@ -375,10 +387,10 @@ body { background: var(--bg); color: var(--ink); }
   display: flex; align-items: center; gap: 8px;
 }
 .ai-switch-label { font-size: 12px; color: #6b6b70; user-select: none; }
-/* Project Memory entry point, sits left of the AI switch in the same pill row. */
+/* Project Memory entry point in the same pill row as the AI switch. */
 .memory-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; margin-right: 6px;
+  padding: 4px 10px; margin-left: 6px;
   border: 1px solid var(--line); border-radius: 12px;
   background: #ffffffcc; color: #6b6b70; font-size: 12px;
   cursor: pointer; transition: color .15s ease, border-color .15s ease;
@@ -679,11 +691,21 @@ body { background: var(--bg); color: var(--ink); }
 .panel-body { position: relative; }
 .cmd-panel {
   position: absolute; top: 0; right: 0; bottom: 0; z-index: 900;
-  width: min(420px, 80%);
+  min-width: 300px; max-width: min(600px, 100%);
   display: flex; flex-direction: column;
   background: #fff; border-left: 1px solid var(--line);
   box-shadow: -8px 0 24px #0000000d;
 }
+.cmd-panel-resize {
+  position: absolute; z-index: 1; top: 0; bottom: 0; left: -5px; width: 10px;
+  cursor: ew-resize;
+}
+.cmd-panel-resize::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px;
+  background: transparent; transition: background .12s ease;
+}
+.cmd-panel-resize:hover::after,
+.cmd-panel-resize:active::after { background: var(--accent); }
 .cmd-panel-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 16px 10px;
@@ -710,8 +732,40 @@ body { background: var(--bg); color: var(--ink); }
   font-size: 13.5px; white-space: pre-wrap;
 }
 .cmd-msg.assistant { align-self: stretch; }
-.cmd-msg.assistant .cmd-msg-text { font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+.cmd-msg.assistant .cmd-msg-text { font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.cmd-msg.assistant .cmd-msg-text > :first-child { margin-top: 0; }
+.cmd-msg.assistant .cmd-msg-text > :last-child { margin-bottom: 0; }
+.cmd-msg.assistant .cmd-msg-text p { margin: 0 0 8px; }
+.cmd-msg.assistant .cmd-msg-text ul,
+.cmd-msg.assistant .cmd-msg-text ol { margin: 5px 0 9px; padding-left: 21px; }
+.cmd-msg.assistant .cmd-msg-text li { margin: 3px 0; }
+.cmd-msg.assistant .cmd-msg-text a { color: #1a73c9; text-decoration: none; }
+.cmd-msg.assistant .cmd-msg-text a:hover { color: #0b57a3; text-decoration: underline; text-underline-offset: 2px; }
+.cmd-msg.assistant .cmd-msg-text table {
+  display: block; width: 100%; max-width: 100%; overflow-x: auto;
+  border-collapse: collapse; margin: 7px 0 11px; font-size: 12.5px;
+}
+.cmd-msg.assistant .cmd-msg-text th,
+.cmd-msg.assistant .cmd-msg-text td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+.cmd-msg.assistant .cmd-msg-text th { background: #f6f6f4; font-weight: 650; }
+.cmd-msg.assistant .cmd-msg-text code { background: #f2f2f0; border-radius: 4px; padding: 1px 4px; font-size: .92em; }
+.cmd-msg.assistant .cmd-msg-text pre { overflow-x: auto; background: #f6f6f4; border-radius: 8px; padding: 9px 10px; }
+.cmd-msg.assistant .cmd-msg-text pre code { background: transparent; padding: 0; }
 .cmd-thinking { font-style: italic; }
+.cmd-sources {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px;
+  margin-top: 7px; font-size: 12.5px; line-height: 1.35;
+}
+.cmd-sources-label { color: #6f6f74; }
+.cmd-source-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: #1a73c9; text-decoration: none; font-weight: 500;
+}
+a.cmd-source-link:hover { color: #0b57a3; text-decoration: underline; text-underline-offset: 2px; }
+.cmd-source-link img { width: 15px; height: 15px; border-radius: 3px; object-fit: contain; }
+.cmd-source-file {
+  width: 15px; height: 15px; flex: none; color: #1a73c9;
+}
 .cmd-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .cmd-action {
   text-align: left; cursor: pointer;

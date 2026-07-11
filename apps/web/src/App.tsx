@@ -17,7 +17,7 @@ import {
   type CommandSession,
   type CommandMessage
 } from './command-session'
-import { Sidebar, BookIcon, CanvasIcon, type TreeNode } from './Sidebar'
+import { Sidebar, BookIcon, CanvasIcon, MemoryIcon, type TreeNode } from './Sidebar'
 import { openBoard, type Board } from '../../../packages/core/doc'
 import { indexeddbPersistence, hydrateNotes, boardDocId, copyBoard, deleteBoard } from './board-persistence'
 import { BoardSync } from '../../../services/sync/board-sync'
@@ -31,13 +31,15 @@ import { LlmSettingsPanel, type AiModelConfig, type ModelSelections } from './Ll
 import { AuthPanel } from './AuthPanel'
 import { DocumentsPanel } from './DocumentsPanel'
 import { setProviderConfig } from '../../../services/llm/provider-config'
-import { useProjectMemory, type ProjectMemoryDeps } from './use-project-memory'
+import { useMemoryBucket, useProjectMemory, type ProjectMemoryDeps } from './use-project-memory'
 import { ProjectMemoryModal } from './ProjectMemoryModal'
 import { createLocalStore } from '../../../services/project-memory/local-store'
 import { createMemoryClient } from '../../../services/project-memory/client'
 import { extractTextBrowser } from '../../../services/project-memory/ingestion'
-import { findParentProject } from '../../../services/project-memory/scope'
-import type { ProjectMemoryScope } from '../../../services/project-memory/types'
+import { scopeDisplayName } from '../../../services/project-memory/scope'
+import type { MemoryBucket, MemoryScopeSection, ProjectMemoryScope } from '../../../services/project-memory/types'
+import { defaultStageACall } from '../../../services/project-memory/retrieve'
+import { runLocalPrompt, type LocalRuntime } from '../../../services/llm/local-runtime'
 
 const OPEN_PROVIDER: CocreateProvider = 'open'
 const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = [
@@ -106,14 +108,47 @@ const ProfileIcon = (
     <path d="M5.4 20a6.6 6.6 0 0 1 13.2 0" />
   </svg>
 )
-// Archive-box icon for the Project Memory entry points (sidebar + canvas).
-const MemoryIcon = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <rect x="3" y="4" width="18" height="5" rx="1.5" />
-    <path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" />
-    <path d="M10 13h4" />
-  </svg>
-)
+// Adapt a live MemoryBucket (hook surface) to the modal's presentational
+// section shape — the only difference is callback naming and Promise dropping.
+const toMemorySection = (b: MemoryBucket | null): MemoryScopeSection | null =>
+  b && {
+    name: b.name,
+    files: b.files,
+    instructions: b.instructions,
+    instructionsSaved: b.instructionsSaved,
+    onUpload: (fs) => void b.uploadFiles(fs),
+    onDeleteFile: (id) => void b.deleteFile(id),
+    onRetryFile: (id) => void b.retryFile(id),
+    onSaveInstructions: (ins) => void b.saveInstructions(ins)
+  }
+
+// Project-scope-only Memory modal, opened from a project row's hover toolbox
+// in the sidebar. No canvas context — just the project's shared bucket.
+function ProjectMemoryHost({
+  projectId,
+  tree,
+  deps,
+  onClose
+}: {
+  projectId: string
+  tree: TreeNode[]
+  deps: ProjectMemoryDeps
+  onClose: () => void
+}) {
+  const scope = useMemo(() => ({ kind: 'project', projectId }) as const, [projectId])
+  const bucket = useMemoryBucket(scope, deps)
+  const name = scopeDisplayName(tree, scope)
+  return (
+    <ProjectMemoryModal
+      project={toMemorySection({ scope, name, ...bucket })}
+      canvas={null}
+      initialScope="project"
+      busy={bucket.busy}
+      error={bucket.error}
+      onClose={onClose}
+    />
+  )
+}
 
 // Ambient fires wait for this much keyboard silence before landing content.
 const IDLE_MS = 5000
@@ -698,6 +733,23 @@ function CanvasSpace({
     return { provider: cfg.runtime, model: cfg.model || undefined, runtimeCommand: cfg.command || undefined, webSearch: true }
   }, [modelConfigs, modelSelections])
 
+  // Memory selection is a first pass of the SAME role-configured model used
+  // for the final co-creation/command response. It sees catalog metadata only.
+  const memorySelectionCall = useCallback((role: 'coCreation' | 'aiCommand') => {
+    const cfg = modelConfigAt(modelConfigs, modelSelections[role])
+    if (cfg.runtime === 'api' || cfg.runtime === 'ollama') {
+      return defaultStageACall(cfg.providerId || (cfg.runtime === 'ollama' ? 'ollama' : 'groq'), cfg.model || undefined)
+    }
+    return (system: string, user: string) =>
+      runLocalPrompt({
+        runtime: cfg.runtime as LocalRuntime,
+        command: cfg.command || undefined,
+        model: cfg.model || undefined,
+        system,
+        userText: user
+      })
+  }, [modelConfigs, modelSelections])
+
   const summaryModel = useMemo(() => {
     const cfg = modelConfigAt(modelConfigs, modelSelections.transcriptionSummary)
     return {
@@ -847,11 +899,15 @@ function CanvasSpace({
       const memoryTask = [
         isCommand ? `Command: ${command!.trim()}` : `Current focus: ${seed}`,
         humanBullets.length ? `Note bullets:\n${humanBullets.map((b) => `- ${b.text}`).join('\n')}` : '',
+        transcriptWindow ? `Transcript:\n${transcriptWindow}` : '',
         signalWindow ? `Signals:\n${signalWindow}` : ''
       ]
         .filter(Boolean)
         .join('\n\n')
-      const memory = await pm.buildMemoryContext(memoryTask)
+      const memory = await pm.buildMemoryContext(memoryTask, {
+        call: memorySelectionCall(isCommand ? 'aiCommand' : 'coCreation'),
+        allowWebSearch: isCommand
+      })
 
       const result = await requestCocreate(
         {
@@ -971,7 +1027,7 @@ function CanvasSpace({
         return { ...n, aiRunning: false }
       })
     },
-    [patchNote, providerArgs, transcriptSlice]
+    [patchNote, providerArgs, memorySelectionCall, transcriptSlice]
   )
 
   // ---- the trigger: fire once each time human word count grows by 20, but
@@ -1096,9 +1152,18 @@ function CanvasSpace({
     // Project Memory: select against the user's message + selected text (the
     // chat's primary referents). Null on empty catalog; never throws.
     const pm = projectMemoryRef.current
-    const memory = await pm.buildMemoryContext(
-      [text, cur.source?.selectedText ? `Selected text: ${cur.source.selectedText}` : ''].filter(Boolean).join('\n\n')
-    )
+    const memoryTask = [
+      `Current request: ${text}`,
+      cur.source?.selectedText ? `Selected text: ${cur.source.selectedText}` : '',
+      note?.keyword ? `Source note keyword: ${note.keyword}` : '',
+      note ? `Source note bullets:\n${note.items.flatMap((i) => isBullet(i) && i.origin === 'human' && i.text.trim() ? [`- ${i.text}`] : []).join('\n')}` : '',
+      transcriptWindow ? `Transcript:\n${transcriptWindow}` : '',
+      history.length > 1 ? `Conversation:\n${history.map((m) => `${m.role}: ${m.text}`).join('\n')}` : ''
+    ].filter(Boolean).join('\n\n')
+    const memory = await pm.buildMemoryContext(memoryTask, {
+      call: memorySelectionCall('aiCommand'),
+      allowWebSearch: true
+    })
 
     const result = await requestCommandChat(
       {
@@ -1110,6 +1175,7 @@ function CanvasSpace({
       },
       {
         onText: (t) => patchAsst((m) => ({ ...m, text: m.text + t })),
+        onSource: (source) => patchAsst((m) => ({ ...m, sources: [...(m.sources || []), source] })),
         onAction: (action) =>
           patchAsst((m) => ({ ...m, actions: [...(m.actions || []), { id: uid('a'), action }] }))
       },
@@ -1124,7 +1190,7 @@ function CanvasSpace({
       pending: false,
       text: result.error ? (m.text ? `${m.text}\n⚠ ${result.error}` : `⚠ ${result.error}`) : m.text
     }))
-  }, [providerArgs, transcriptSlice])
+  }, [providerArgs, memorySelectionCall, transcriptSlice])
 
   // Open a session from the bubble (snapshot) or the bottom bar (null source),
   // replacing any previous one — its stream is aborted, its highlight replaced.
@@ -1592,15 +1658,6 @@ function CanvasSpace({
           }}
         >
           <div className="ai-switch" onPointerDown={(e) => e.stopPropagation()}>
-            <button
-              className="memory-btn"
-              title={`Project memory — ${projectMemory.scopeName || 'this canvas'}`}
-              aria-label="Project memory"
-              onClick={onOpenMemory}
-            >
-              <span className="memory-btn-icon">{MemoryIcon}</span>
-              <span className="memory-btn-label">Memory</span>
-            </button>
             <span className="ai-switch-label">AI co-creation mode</span>
             <button
               className={`switch ${aiEnabled ? 'on' : ''}`}
@@ -1609,6 +1666,19 @@ function CanvasSpace({
               aria-label="AI co-creation mode"
               onClick={toggleAi}
             />
+            <button
+              className="memory-btn"
+              title={
+                projectMemory.project
+                  ? `Memory — ${projectMemory.project.name} & this canvas`
+                  : `Memory — ${projectMemory.canvas?.name || 'this canvas'}`
+              }
+              aria-label="Project memory"
+              onClick={onOpenMemory}
+            >
+              <span className="memory-btn-icon">{MemoryIcon}</span>
+              <span className="memory-btn-label">Memory</span>
+            </button>
           </div>
 
           {notes.length === 0 && images.length === 0 && (
@@ -1729,19 +1799,16 @@ function CanvasSpace({
         </div>
       )}
 
-      {/* Project Memory: knowledge base + per-scope instructions (M5). */}
+      {/* Project Memory: two-level knowledge base + instructions (M5). The
+          canvas button always opens on the canvas tab; the project tab is
+          there whenever this canvas lives inside a project. */}
       {memoryOpen && (
         <ProjectMemoryModal
-          scopeName={projectMemory.scopeName}
-          files={projectMemory.files}
-          instructions={projectMemory.instructions}
+          project={toMemorySection(projectMemory.project)}
+          canvas={toMemorySection(projectMemory.canvas)}
+          initialScope="canvas"
           busy={projectMemory.busy}
-          instructionsSaved={projectMemory.instructionsSaved}
           error={projectMemory.error}
-          onUpload={(fs) => void projectMemory.uploadFiles(fs)}
-          onDeleteFile={(id) => void projectMemory.deleteFile(id)}
-          onRetryFile={(id) => void projectMemory.retryFile(id)}
-          onSaveInstructions={(ins) => void projectMemory.saveInstructions(ins)}
           onClose={onCloseMemory}
         />
       )}
@@ -1881,9 +1948,13 @@ export function App() {
     () => ({ localStore: memoryLocalStore, client: memoryClient, extractText: extractTextBrowser }),
     [memoryLocalStore, memoryClient]
   )
-  // Which canvas's Project Memory modal is open (null = closed). App owns this
-  // so the sidebar entry point can open it for the ACTIVE canvas.
-  const [memoryOpenId, setMemoryOpenId] = useState<string | null>(null)
+  // Which Memory modal is open (null = closed). Two entry points: a canvas's
+  // Memory button (canvas + optional project tabs, rendered inside that
+  // canvas), and a project row's hover toolbox in the sidebar (project tab
+  // only, rendered at App level — no canvas context needed).
+  const [memoryTarget, setMemoryTarget] = useState<
+    { kind: 'canvas'; spaceId: string } | { kind: 'project'; projectId: string } | null
+  >(null)
 
   const workspaceRef = useRef<HTMLDivElement>(null)
   const [ww, setWw] = useState(1200)
@@ -2135,20 +2206,28 @@ export function App() {
     // Close the panel if it's open.
     if (open.ids.includes(id)) closeSpace(id)
 
-    // Project Memory orphan cleanup (best-effort, §4): deleting a project (or
-    // a top-level space) removes its memory bucket. A space INSIDE a project
-    // shares the project's bucket, so deleting it must not touch memory.
+    // Project Memory orphan cleanup (best-effort, §4). Two-level model: every
+    // canvas owns a space bucket, so deleting a canvas always purges it;
+    // deleting a project purges the shared project bucket AND each child
+    // canvas's own bucket (the children leave the tree with it).
     const node = findNode(tree, id)
-    const memoryScope: ProjectMemoryScope | null =
-      node?.kind === 'project'
-        ? { kind: 'project', projectId: id }
-        : node && !findParentProject(tree, id)
-          ? { kind: 'space', spaceId: id }
-          : null
-    if (memoryScope) {
-      if (memoryOpenId === id) setMemoryOpenId(null)
-      void memoryLocalStore.deleteScope(memoryScope).catch(() => {})
-      if (memoryClient) void memoryClient.deleteScope(memoryScope).catch(() => {})
+    const memoryScopes: ProjectMemoryScope[] = []
+    if (node?.kind === 'project') {
+      memoryScopes.push({ kind: 'project', projectId: id })
+      for (const c of node.children ?? []) {
+        if (c.kind === 'space') memoryScopes.push({ kind: 'space', spaceId: c.id })
+      }
+    } else if (node) {
+      memoryScopes.push({ kind: 'space', spaceId: id })
+    }
+    if (memoryScopes.length) {
+      setMemoryTarget((t) =>
+        t && ((t.kind === 'canvas' && t.spaceId === id) || (t.kind === 'project' && t.projectId === id)) ? null : t
+      )
+      for (const s of memoryScopes) {
+        void memoryLocalStore.deleteScope(s).catch(() => {})
+        if (memoryClient) void memoryClient.deleteScope(s).catch(() => {})
+      }
     }
 
     // Remove from tree.
@@ -2174,7 +2253,7 @@ export function App() {
     } catch {
       // storage disabled — nothing to clean
     }
-  }, [deleteConfirm, open.ids, closeSpace, tree, memoryOpenId, memoryLocalStore, memoryClient])
+  }, [deleteConfirm, open.ids, closeSpace, tree, memoryLocalStore, memoryClient])
 
   // Drag a sheet's handle: only THIS sheet's left edge moves (right edge is
   // pinned), clamped so the sheet below keeps its handle visible and this
@@ -2219,17 +2298,10 @@ export function App() {
         onRename={onRename}
         onMoveNode={onMoveNode}
         onContextMenu={onSpaceContextMenu}
+        onOpenProjectMemory={(projectId) => setMemoryTarget({ kind: 'project', projectId })}
+        onOpenCanvasMemory={(spaceId) => setMemoryTarget({ kind: 'canvas', spaceId })}
         footer={
           <div className="side-controls">
-            <button
-              className="side-control-row"
-              title="Project memory — knowledge files + instructions for the active canvas's project"
-              aria-label="Project memory"
-              onClick={() => activeId && setMemoryOpenId(activeId)}
-            >
-              <span className="side-control-icon">{MemoryIcon}</span>
-              {!collapsed && <span className="side-control-label">Project memory</span>}
-            </button>
             <button className="side-control-row" title="Settings" aria-label="Settings" onClick={() => setShowLlmSettings(true)}>
               <span className="side-control-icon">{GearIcon}</span>
               {!collapsed && <span className="side-control-label">Setting</span>}
@@ -2283,9 +2355,9 @@ export function App() {
                 spaceId={id}
                 tree={tree}
                 memoryDeps={memoryDeps}
-                memoryOpen={memoryOpenId === id}
-                onOpenMemory={() => setMemoryOpenId(id)}
-                onCloseMemory={() => setMemoryOpenId(null)}
+                memoryOpen={memoryTarget?.kind === 'canvas' && memoryTarget.spaceId === id}
+                onOpenMemory={() => setMemoryTarget({ kind: 'canvas', spaceId: id })}
+                onCloseMemory={() => setMemoryTarget(null)}
                 storageSuffix={id === 'default' ? '' : `.${id}`}
                 isActive={activeId === id}
                 recording={recordingId === id}
@@ -2311,6 +2383,14 @@ export function App() {
             setModelSelections(normalizeModelSelections(nextSelections, normalizedConfigs))
           }}
           onClose={() => setShowLlmSettings(false)}
+        />
+      )}
+      {memoryTarget?.kind === 'project' && (
+        <ProjectMemoryHost
+          projectId={memoryTarget.projectId}
+          tree={tree}
+          deps={memoryDeps}
+          onClose={() => setMemoryTarget(null)}
         />
       )}
       {showAuth && backend.enabled && <AuthPanel backend={backend} onClose={() => setShowAuth(false)} />}
