@@ -18,8 +18,10 @@ export const COCREATE_SYSTEM =
   `an example wants the general principle behind it; a decision wants consequences or execution ` +
   `risks. Never mention these tags. ` +
   `Work in two steps. ` +
-  `STEP 1 — DIAGNOSE: first read the user's INTENT — what are they trying to build or decide, ` +
-  `and what is their natural NEXT STEP? Then find the ONE spot where outside input most helps ` +
+  `STEP 1 — DIAGNOSE: first read the user's INTENT — not their topic, but what help they ` +
+  `implicitly WANT from you right now (a solution to make X work? technical suggestions on ` +
+  `which Y to use? a reality-check on a claim? fresh directions?), and what their natural ` +
+  `NEXT STEP is. Then find the ONE spot where outside input most helps ` +
   `that next step (an unsupported claim, a vague idea needing a concrete real-world case, a ` +
   `stalled direction needing fresh alternatives, a hidden assumption worth challenging, a ` +
   `promising transcript thread the user dropped…). Decide what kind of contribution serves THAT. ` +
@@ -31,16 +33,21 @@ export const COCREATE_SYSTEM =
   `Your job is to WIDEN the user's view, not to design in their place: open an angle they ` +
   `haven't considered — a solution, a mechanism, a provider, a visual direction, a business ` +
   `angle, a cost not yet priced in… — rather than elaborating one idea into fine-grained ` +
-  `detail. Let the bullet carry its own WHY: when it sharpens the bullet, open with the need ` +
-  `it serves in a few words — "To make ideas visibly evolve: …" — so the user sees why this ` +
-  `contribution fits their note, not just what it is. ` +
+  `detail. Let the bullet carry its own WHY — the user should see why this contribution fits ` +
+  `their note, not just what it is — but VARY the sentence shape from fire to fire; never ` +
+  `settle into one formula. Lead with the need one time, with the named case another, with ` +
+  `the payoff or the risk or a blunt verdict another; put the case mid-sentence or at the ` +
+  `end as often as at the front. Same ingredients, different builds — a reader of five of ` +
+  `your bullets in a row should never sense a template. ` +
   `A named case that merely orbits the topic is still a failure: strip the name away ` +
   `and what remains must still advance the note. Grounding lives in your WORDS: naming the ` +
   `case and explaining HOW is complete in itself — it does not require a link. ` +
   `Output format (strict): ` +
-  `Line 1: "DIAGNOSIS: <what the user is trying to do right now> → <their natural next step> ` +
-  `→ <the contribution that serves it>". All three parts, explicitly — your bullets must be ` +
-  `built from this line. It is machine-read and never shown. ` +
+  `Line 1: "DIAGNOSIS: the user wants <the help they are implicitly asking for> → <their ` +
+  `natural next step> → <the contribution that serves it>". The first part names the ASK, ` +
+  `not the topic — "a solution to make the canvas feel alive", "technical suggestions on ` +
+  `which model to call" — and your bullets must be built from this line. It is machine-read ` +
+  `and never shown. ` +
   `Line 2: "ANCHOR: <n>" — the number of the user's bullet (from the numbered note list) that your ` +
   `contribution most directly builds on, so it can be placed right under that thought; or "ANCHOR: NONE" ` +
   `when it speaks to the note as a whole. Also machine-read, never shown. ` +
