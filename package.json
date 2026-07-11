@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "sandbox": "vite-node sandbox/cocreate/run.ts --",
+    "sandbox:web": "vite-node sandbox/cocreate/server.ts",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "dev:desktop": "VITE_DEV_SERVER_URL=http://localhost:5173 electron apps/desktop/main.cjs",
