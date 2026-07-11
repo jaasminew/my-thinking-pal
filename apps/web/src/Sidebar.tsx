@@ -31,6 +31,14 @@ const CanvasPlusIcon = (
 )
 // Notebook icon used on the panel spines (exported for App).
 export const BookIcon = icon(<><path d="M5 5a2 2 0 0 1 2-2h12v16H7a2 2 0 0 0-2 2V5z" /><path d="M5 19a2 2 0 0 1 2-2h12" /></>)
+// Archive-box icon for Project Memory entry points.
+export const MemoryIcon = icon(
+  <>
+    <rect x="3" y="4" width="18" height="5" rx="1.5" />
+    <path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" />
+    <path d="M10 13h4" />
+  </>
+)
 
 export function Sidebar({
   collapsed,
@@ -46,6 +54,8 @@ export function Sidebar({
   onRename,
   onMoveNode,
   onContextMenu,
+  onOpenProjectMemory,
+  onOpenCanvasMemory,
   footer
 }: {
   collapsed: boolean
@@ -61,6 +71,10 @@ export function Sidebar({
   onRename: (id: string, name: string) => void
   onMoveNode: (id: string, targetProjectId: string | null) => void
   onContextMenu: (node: TreeNode, x: number, y: number) => void
+  /** Opens the Memory modal for a project (hover toolbox on project rows). */
+  onOpenProjectMemory?: (projectId: string) => void
+  /** Opens the Memory modal for a canvas (hover memory button on canvas rows). */
+  onOpenCanvasMemory?: (spaceId: string) => void
   footer?: ReactNode
 }) {
   // Highlights the project row (or the root drop zone) currently under a
@@ -143,6 +157,26 @@ export function Sidebar({
           />
         ) : (
           <span className="tree-name">{n.name}</span>
+        )}
+        {((n.kind === 'project' && onOpenProjectMemory) || (n.kind === 'space' && onOpenCanvasMemory)) && renamingId !== n.id && (
+          <button
+            className="row-tool"
+            title={`Memory — ${n.name}`}
+            aria-label={`Open memory for ${n.name}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (n.kind === 'project') onOpenProjectMemory?.(n.id)
+              else {
+                // Canvas memory is hosted by the canvas panel itself. Make
+                // sure its panel is mounted before asking App to open it.
+                onSelect(n)
+                onOpenCanvasMemory?.(n.id)
+              }
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {MemoryIcon}
+          </button>
         )}
       </div>
       {n.children && n.children.length > 0 && (

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ProjectMemoryModal } from './ProjectMemoryModal'
 import type {
+  MemoryScopeSection,
   ProjectInstructions,
   ProjectMemoryFile,
   ProjectMemoryModalProps
@@ -31,17 +32,24 @@ const file = (id: string, over: Partial<ProjectMemoryFile> = {}): ProjectMemoryF
   ...over
 })
 
-const baseProps = (over: Partial<ProjectMemoryModalProps> = {}): ProjectMemoryModalProps => ({
-  scopeName: 'Project A',
+const section = (name: string, over: Partial<MemoryScopeSection> = {}): MemoryScopeSection => ({
+  name,
   files: [],
   instructions,
-  busy: false,
   instructionsSaved: true,
-  error: null,
   onUpload: vi.fn(),
   onDeleteFile: vi.fn(),
   onRetryFile: vi.fn(),
   onSaveInstructions: vi.fn(),
+  ...over
+})
+
+/** Canvas-only modal (top-level canvas): single scope, no toggle. */
+const baseProps = (over: Partial<ProjectMemoryModalProps> = {}): ProjectMemoryModalProps => ({
+  project: null,
+  canvas: section('Canvas A'),
+  busy: false,
+  error: null,
   onClose: vi.fn(),
   ...over
 })
@@ -49,10 +57,12 @@ const baseProps = (over: Partial<ProjectMemoryModalProps> = {}): ProjectMemoryMo
 describe('ProjectMemoryModal — file rows', () => {
   it('renders one row per file with title, description, status, and size', () => {
     const props = baseProps({
-      files: [
-        file('f1', { title: 'PRD v2', description: 'Product spec', status: 'indexed', size: 2048 }),
-        file('f2', { title: 'Notes', description: 'Meeting notes', status: 'extracting', size: 512 })
-      ]
+      canvas: section('Canvas A', {
+        files: [
+          file('f1', { title: 'PRD v2', description: 'Product spec', status: 'indexed', size: 2048 }),
+          file('f2', { title: 'Notes', description: 'Meeting notes', status: 'extracting', size: 512 })
+        ]
+      })
     })
     render(<ProjectMemoryModal {...props} />)
 
@@ -68,10 +78,12 @@ describe('ProjectMemoryModal — file rows', () => {
 
   it('a failed row shows retry + delete; an indexed row shows delete only', () => {
     const props = baseProps({
-      files: [
-        file('ok', { title: 'Good Doc', status: 'indexed' }),
-        file('bad', { title: 'Broken Doc', status: 'failed', error: 'oops' })
-      ]
+      canvas: section('Canvas A', {
+        files: [
+          file('ok', { title: 'Good Doc', status: 'indexed' }),
+          file('bad', { title: 'Broken Doc', status: 'failed', error: 'oops' })
+        ]
+      })
     })
     render(<ProjectMemoryModal {...props} />)
 
@@ -116,12 +128,12 @@ describe('ProjectMemoryModal — instructions tabs', () => {
   })
 
   it('shows a visible saved-state indicator', () => {
-    const { getByTestId } = render(<ProjectMemoryModal {...baseProps({ instructionsSaved: true })} />)
+    const { getByTestId } = render(<ProjectMemoryModal {...baseProps()} />)
     expect(getByTestId('saved-indicator').textContent).toBe('Saved')
   })
 
   it('marks unsaved changes when the textarea is edited', () => {
-    const { getByTestId } = render(<ProjectMemoryModal {...baseProps({ instructionsSaved: true })} />)
+    const { getByTestId } = render(<ProjectMemoryModal {...baseProps()} />)
     const ta = screen.getByLabelText('Transcription summary') as HTMLTextAreaElement
     fireEvent.change(ta, { target: { value: 'changed' } })
     expect(getByTestId('saved-indicator').textContent).toBe('Unsaved changes')
@@ -140,7 +152,9 @@ describe('ProjectMemoryModal — callbacks fire on click', () => {
     const onDeleteFile = vi.fn()
     render(
       <ProjectMemoryModal
-        {...baseProps({ files: [file('f1', { title: 'Doc One', status: 'indexed' })], onDeleteFile })}
+        {...baseProps({
+          canvas: section('Canvas A', { files: [file('f1', { title: 'Doc One', status: 'indexed' })], onDeleteFile })
+        })}
       />
     )
     fireEvent.click(screen.getByLabelText('Delete Doc One'))
@@ -151,7 +165,9 @@ describe('ProjectMemoryModal — callbacks fire on click', () => {
     const onRetryFile = vi.fn()
     render(
       <ProjectMemoryModal
-        {...baseProps({ files: [file('f2', { title: 'Bad Doc', status: 'failed' })], onRetryFile })}
+        {...baseProps({
+          canvas: section('Canvas A', { files: [file('f2', { title: 'Bad Doc', status: 'failed' })], onRetryFile })
+        })}
       />
     )
     fireEvent.click(screen.getByLabelText('Retry Bad Doc'))
@@ -160,7 +176,7 @@ describe('ProjectMemoryModal — callbacks fire on click', () => {
 
   it('fires onSaveInstructions with the current draft', () => {
     const onSaveInstructions = vi.fn()
-    render(<ProjectMemoryModal {...baseProps({ onSaveInstructions })} />)
+    render(<ProjectMemoryModal {...baseProps({ canvas: section('Canvas A', { onSaveInstructions }) })} />)
     fireEvent.change(screen.getByLabelText('Transcription summary'), {
       target: { value: 'new summary' }
     })
@@ -175,7 +191,7 @@ describe('ProjectMemoryModal — callbacks fire on click', () => {
 
   it('fires onUpload when files are picked via the file input', () => {
     const onUpload = vi.fn()
-    render(<ProjectMemoryModal {...baseProps({ onUpload })} />)
+    render(<ProjectMemoryModal {...baseProps({ canvas: section('Canvas A', { onUpload }) })} />)
     const input = screen.getByLabelText('Upload files') as HTMLInputElement
     const f = new File(['hello'], 'note.txt', { type: 'text/plain' })
     fireEvent.change(input, { target: { files: [f] } })
@@ -194,5 +210,86 @@ describe('ProjectMemoryModal — error banner', () => {
   it('renders no alert when error is null', () => {
     render(<ProjectMemoryModal {...baseProps({ error: null })} />)
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('ProjectMemoryModal — scope toggle (two-level memory)', () => {
+  const bothProps = (over: Partial<ProjectMemoryModalProps> = {}): ProjectMemoryModalProps =>
+    baseProps({
+      project: section('Project X', {
+        files: [file('pf', { title: 'Project Doc', scopeKind: 'project', scopeId: 'p1' })]
+      }),
+      canvas: section('Canvas A', { files: [file('cf', { title: 'Canvas Doc' })] }),
+      ...over
+    })
+
+  it('shows no toggle when only one scope exists', () => {
+    render(<ProjectMemoryModal {...baseProps()} />)
+    expect(screen.queryByRole('tablist', { name: 'Memory scope' })).toBeNull()
+    expect(screen.queryByTestId('scope-hint')).toBeNull()
+  })
+
+  it('shows both tabs and defaults to the canvas scope', () => {
+    render(<ProjectMemoryModal {...bothProps()} />)
+    expect(screen.getByRole('tab', { name: /Project — Project X/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /This canvas — Canvas A/ })).toBeTruthy()
+    // hover tooltips present with refined helper text
+    expect(screen.getByTestId('project-scope-tooltip').textContent).toBe(
+      'Knowledge base content is shared with all canvases in this project.'
+    )
+    expect(screen.getByTestId('canvas-scope-tooltip').textContent).toBe(
+      'Knowledge base content is visible only to this canvas.'
+    )
+    // canvas scope active by default → canvas file visible, project file hidden
+    expect(screen.getByText('Canvas Doc')).toBeTruthy()
+    const projectDoc = screen.getByText('Project Doc')
+    expect(projectDoc.closest('div[hidden]')).toBeTruthy()
+  })
+
+  it('honors initialScope="project" and switches file lists on toggle', () => {
+    render(<ProjectMemoryModal {...bothProps({ initialScope: 'project' })} />)
+    expect(screen.getByText('Canvas Doc').closest('div[hidden]')).toBeTruthy()
+    expect(screen.getByText('Project Doc').closest('div[hidden]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: /This canvas — Canvas A/ }))
+    expect(screen.getByText('Canvas Doc').closest('div[hidden]')).toBeNull()
+    expect(screen.getByText('Project Doc').closest('div[hidden]')).toBeTruthy()
+  })
+
+  it('uploads land in the active scope', () => {
+    const onUploadProject = vi.fn()
+    const onUploadCanvas = vi.fn()
+    render(
+      <ProjectMemoryModal
+        {...bothProps({
+          project: section('Project X', { onUpload: onUploadProject }),
+          canvas: section('Canvas A', { onUpload: onUploadCanvas }),
+          initialScope: 'project'
+        })}
+      />
+    )
+    const inputs = screen.getAllByLabelText('Upload files') as HTMLInputElement[]
+    // First body rendered is the project's (order: project, canvas).
+    const f = new File(['x'], 'doc.txt', { type: 'text/plain' })
+    fireEvent.change(inputs[0], { target: { files: [f] } })
+    expect(onUploadProject).toHaveBeenCalledTimes(1)
+    expect(onUploadCanvas).not.toHaveBeenCalled()
+  })
+
+  it('keeps unsaved drafts alive across scope toggles', () => {
+    render(<ProjectMemoryModal {...bothProps()} />)
+    // Edit the canvas draft (visible by default; textareas order: project, canvas).
+    const canvasTa = screen
+      .getAllByLabelText('Transcription summary')
+      .find((el) => !el.closest('div[hidden]')) as HTMLTextAreaElement
+    fireEvent.change(canvasTa, { target: { value: 'canvas edit' } })
+
+    // Toggle to project and back — the canvas edit survives.
+    fireEvent.click(screen.getByRole('tab', { name: /Project — Project X/ }))
+    fireEvent.click(screen.getByRole('tab', { name: /This canvas — Canvas A/ }))
+    const back = screen
+      .getAllByLabelText('Transcription summary')
+      .find((el) => !el.closest('div[hidden]')) as HTMLTextAreaElement
+    expect(back.value).toBe('canvas edit')
   })
 })

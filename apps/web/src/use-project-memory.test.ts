@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useProjectMemory } from './use-project-memory'
 import type { ScopeTreeNode } from '../../../services/project-memory/scope'
-import type { LocalStore, ProjectInstructions, ProjectMemoryFile } from '../../../services/project-memory/types'
+import type {
+  LocalStore,
+  ProjectInstructions,
+  ProjectMemoryFile,
+  ProjectMemoryScope
+} from '../../../services/project-memory/types'
+import { scopeKey } from '../../../services/project-memory/types'
 
 const tree: ScopeTreeNode[] = [{ id: 'space-1', kind: 'space', name: 'Canvas' }]
 
@@ -64,7 +70,7 @@ describe('useProjectMemory — file mutations do not clobber instructions', () =
 
     const file = new File(['hello'], 'note.txt', { type: 'text/plain' })
     await act(async () => {
-      await result.current.uploadFiles([file])
+      await result.current.canvas!.uploadFiles([file])
     })
 
     // The file mutation refreshed the file list but must not have re-fetched
@@ -85,7 +91,7 @@ describe('useProjectMemory — file mutations do not clobber instructions', () =
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.deleteFile('nonexistent')
+      await result.current.canvas!.deleteFile('nonexistent')
     })
 
     expect(getInstructions).toHaveBeenCalledTimes(1)
@@ -100,11 +106,95 @@ describe('useProjectMemory — file mutations do not clobber instructions', () =
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.saveInstructions({ transcriptionSummary: 'new', coCreation: '', aiCommand: '' })
+      await result.current.canvas!.saveInstructions({ transcriptionSummary: 'new', coCreation: '', aiCommand: '' })
     })
 
     expect(result.current.busy).toBe(false)
-    expect(result.current.instructionsSaved).toBe(true)
+    expect(result.current.canvas!.instructionsSaved).toBe(true)
     expect(result.current.instructions.transcriptionSummary).toBe('new')
+  })
+})
+
+// Two-level memory: a canvas nested in a project reads BOTH buckets.
+describe('useProjectMemory — two-level scopes (merged semantics)', () => {
+  const nestedTree: ScopeTreeNode[] = [
+    {
+      id: 'proj-1',
+      kind: 'project',
+      name: 'Project One',
+      children: [{ id: 'space-1', kind: 'space', name: 'Canvas One' }]
+    }
+  ]
+
+  // A store whose instructions differ per scope, so merge order is observable.
+  function makePerScopeStore() {
+    const byScope = new Map<string, ProjectInstructions>([
+      ['project:proj-1', { transcriptionSummary: '', coCreation: 'project rule', aiCommand: '' }],
+      ['space:space-1', { transcriptionSummary: '', coCreation: 'canvas rule', aiCommand: '' }]
+    ])
+    const filesByScope = new Map<string, ProjectMemoryFile[]>()
+    const key = (s: ProjectMemoryScope) => {
+      const { scopeKind, scopeId } = scopeKey(s)
+      return `${scopeKind}:${scopeId}`
+    }
+    const store: LocalStore = {
+      async createFile(meta) {
+        const k = `${meta.scopeKind}:${meta.scopeId}`
+        filesByScope.set(k, [...(filesByScope.get(k) ?? []), meta])
+      },
+      async listFiles(scope) {
+        return filesByScope.get(key(scope)) ?? []
+      },
+      async getFile() {
+        return undefined
+      },
+      async updateFile(meta) {
+        const k = `${meta.scopeKind}:${meta.scopeId}`
+        filesByScope.set(k, (filesByScope.get(k) ?? []).map((f) => (f.id === meta.id ? meta : f)))
+      },
+      async deleteFile() {},
+      async putText() {},
+      async getText() {
+        return undefined
+      },
+      async putBlob() {},
+      async getBlob() {
+        return undefined
+      },
+      async getInstructions(scope) {
+        return byScope.get(key(scope))
+      },
+      async putInstructions(scope, ins) {
+        byScope.set(key(scope), ins)
+      },
+      async deleteScope() {}
+    }
+    return store
+  }
+
+  it('exposes both buckets and merges instructions project-first', async () => {
+    // Created OUTSIDE the render callback: a fresh store per render would give
+    // the refresh effect a new dependency identity every render → render loop.
+    const store = makePerScopeStore()
+    const { result } = renderHook(() =>
+      useProjectMemory(nestedTree, 'space-1', { localStore: store, client: null, extractText: null })
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.project?.name).toBe('Project One')
+    expect(result.current.canvas?.name).toBe('Canvas One')
+    await waitFor(() =>
+      expect(result.current.instructions.coCreation).toBe('project rule\n\ncanvas rule')
+    )
+  })
+
+  it('a top-level canvas has no project bucket', async () => {
+    const { store } = makeLocalStore({ transcriptionSummary: '', coCreation: '', aiCommand: '' })
+    const { result } = renderHook(() =>
+      useProjectMemory(tree, 'space-1', { localStore: store, client: null, extractText: null })
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.project).toBeNull()
+    expect(result.current.canvas?.scope).toEqual({ kind: 'space', spaceId: 'space-1' })
   })
 })

@@ -1,6 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { actionLabel, type CommandSession } from './command-session'
 import { isImeEvent } from './ime'
+
+const faviconUrl = (url: string) => {
+  try {
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(new URL(url).hostname)}&sz=32`
+  } catch {
+    return ''
+  }
+}
+
+const DocumentFavicon = () => (
+  <svg className="cmd-source-file" viewBox="0 0 16 16" fill="none" aria-hidden>
+    <path d="M4 1.75h5l3 3v9.5H4z" fill="currentColor" opacity=".16" />
+    <path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3M6.2 8h3.6M6.2 10.25h3.6" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round" />
+  </svg>
+)
 
 // Temporary Tier-3 chat panel, pinned to the right edge of its CanvasSpace
 // (rendered inside .panel-body, NOT at workspace level — sessions belong to
@@ -22,7 +39,9 @@ export function CommandSidePanel({
   onClose: () => void
 }) {
   const [value, setValue] = useState('')
+  const [width, setWidth] = useState(420)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
 
   // Keep the newest message in view while streaming.
   useEffect(() => {
@@ -37,8 +56,25 @@ export function CommandSidePanel({
     setValue('')
   }
 
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = panelRef.current?.offsetWidth ?? width
+    const maxWidth = () => Math.min(600, panelRef.current?.parentElement?.clientWidth ?? 600)
+    const onMove = (move: PointerEvent) => {
+      setWidth(Math.max(300, Math.min(maxWidth(), startWidth + startX - move.clientX)))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+  }
+
   return (
-    <aside className="cmd-panel" onPointerDown={(e) => e.stopPropagation()}>
+    <aside ref={panelRef} className="cmd-panel" style={{ width }} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="cmd-panel-resize" role="separator" aria-orientation="vertical" onPointerDown={startResize} />
       <header className="cmd-panel-head">
         <span className="cmd-panel-title">{session.title}</span>
         <button className="cmd-panel-close" title="Close conversation" onClick={onClose}>×</button>
@@ -54,8 +90,43 @@ export function CommandSidePanel({
         {session.messages.map((m) => (
           <div key={m.id} className={`cmd-msg ${m.role}`}>
             <div className="cmd-msg-text">
-              {m.text || (m.pending ? <span className="cmd-thinking ai-thinking">Thinking…</span> : null)}
+              {m.text ? (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  skipHtml
+                  components={{
+                    a: ({ href, children }) => (
+                      <a href={href} target="_blank" rel="noreferrer">{children}</a>
+                    )
+                  }}
+                >
+                  {m.text}
+                </ReactMarkdown>
+              ) : (m.pending ? <span className="cmd-thinking ai-thinking">Thinking…</span> : null)}
             </div>
+            {!!m.sources?.length && (
+              <div className="cmd-sources" aria-label="Sources">
+                <span className="cmd-sources-label">Sources:</span>
+                {m.sources.map((source) => source.kind === 'web' ? (
+                  <a
+                    key={`web:${source.url}`}
+                    className="cmd-source-link"
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={source.url}
+                  >
+                    <img src={faviconUrl(source.url)} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} />
+                    <span>{source.title}</span>
+                  </a>
+                ) : (
+                  <span key={`knowledge:${source.id}`} className="cmd-source-link knowledge" title="Knowledge base">
+                    <DocumentFavicon />
+                    <span>{source.title}</span>
+                  </span>
+                ))}
+              </div>
+            )}
             {!!m.actions?.length && (
               <div className="cmd-actions">
                 {m.actions.map((pa) => (

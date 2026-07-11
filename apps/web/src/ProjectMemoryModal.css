@@ -194,6 +194,95 @@
   height: 16px;
 }
 
+/* scope toggle (Project / This canvas) */
+.pm-scope-toggle {
+  display: flex;
+  gap: 4px;
+  background: #f2f2f0;
+  padding: 3px;
+  border-radius: 9px;
+  margin-bottom: 12px;
+}
+.pm-scope-tab {
+  position: relative;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  min-width: 0;
+  overflow: visible;
+}
+.pm-scope-tab > span:not(.pm-scope-tooltip) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pm-scope-tab svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.pm-scope-tab:hover {
+  color: var(--ink);
+}
+.pm-scope-tab.active {
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px #00000018;
+}
+/* hover tooltip for scope tabs */
+.pm-scope-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  color: #000;
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 8px #00000018;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  word-break: break-word;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: 280px;
+  line-height: 1.5;
+  text-align: left;
+  overflow: visible;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  z-index: 10;
+}
+.pm-scope-tooltip::after {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-bottom-color: var(--line);
+}
+.pm-scope-tab:hover .pm-scope-tooltip {
+  opacity: 1;
+}
+
 /* instructions tabs */
 .pm-tabs {
   display: flex;
@@ -256,7 +345,7 @@
 }
 .pm-save-btn {
   border: 0;
-  background: var(--accent);
+  background: #000;
   color: #fff;
   font: inherit;
   font-size: 12.5px;
@@ -271,4 +360,12 @@
 .pm-save-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* separator between Knowledge base and Instructions sections */
+.pm-separator {
+  height: 0.5px;
+  background: rgba(0, 0, 0, 0.05);
+  margin: 22px 0;
+  border: 0;
 }

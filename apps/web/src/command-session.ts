@@ -3,9 +3,9 @@
 // everything the AI creates on the canvas goes through applyAction and lands
 // as PENDING content, reusing the exact item shapes Tier-2 produces.
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem } from './canvas-types'
-import type { CommandChatAction, CommandChatRequest } from '../../../services/llm/command-chat-types'
+import type { CommandChatAction, CommandChatRequest, CommandChatSource } from '../../../services/llm/command-chat-types'
 
-export type { CommandChatAction }
+export type { CommandChatAction, CommandChatSource }
 
 // ---- selection snapshot ------------------------------------------------------
 // The live browser selection is only used to OPEN the bubble. The moment it
@@ -43,6 +43,7 @@ export type CommandMessage = {
   text: string
   pending?: boolean // assistant message still streaming
   actions?: ProposedAction[]
+  sources?: CommandChatSource[]
 }
 
 export type CommandSession = {
