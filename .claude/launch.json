@@ -21,6 +21,13 @@
       "runtimeArgs": ["run", "dev", "--", "--port", "5199", "--strictPort"],
       "port": 5199,
       "autoPort": false
+    },
+    {
+      "name": "cocreate-playground",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "sandbox:web"],
+      "port": 5188,
+      "autoPort": false
     }
   ]
 }

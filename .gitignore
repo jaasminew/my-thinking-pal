@@ -8,6 +8,9 @@ dist
 apps/desktop/release/
 apps/desktop/build/
 
+# Prompt sandbox run outputs
+sandbox/cocreate/runs/
+
 # Go backend
 server-go/data/
 server-go/bin/
