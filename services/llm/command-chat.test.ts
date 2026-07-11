@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { requestCommandChat } from './command-chat'
-import type { CommandChatAction } from './command-chat-types'
+import type { CommandChatAction, CommandChatSource } from './command-chat-types'
 import { TEST_PROVIDER, sseResponse, rawJsonResponse, mockFetchRouter } from '../../packages/core/llm/__mocks__/mock-provider'
 
 describe('requestCommandChat (client-direct)', () => {
@@ -65,5 +65,77 @@ describe('requestCommandChat (client-direct)', () => {
       { provider: TEST_PROVIDER, fetchImpl: mockFetchRouter([]).fetch }
     )
     expect(res.error).toMatch(/messages/)
+  })
+
+  it('searches the planned query and emits only validated knowledge/web sources', async () => {
+    const sources: CommandChatSource[] = []
+    const mock = mockFetchRouter([
+      {
+        match: (u) => u.includes('/api/search'),
+        respond: () => rawJsonResponse({ results: [{ title: 'Example Research', url: 'https://example.com/research', snippet: 'Evidence' }] })
+      },
+      {
+        match: (u) => u.includes('/chat/completions'),
+        respond: () => sseResponse([
+          'Grounded answer.\n',
+          'SOURCE: {"kind":"knowledge","id":"file-1"}\n',
+          'SOURCE: {"kind":"web","url":"https://example.com/research"}\n',
+          'SOURCE: {"kind":"web","url":"https://invented.example/fake"}\n'
+        ])
+      }
+    ])
+    await requestCommandChat(
+      {
+        provider: 'open',
+        openSub: 'groq',
+        webSearch: true,
+        messages: [{ role: 'user', text: 'what is current?' }],
+        context: {},
+        projectMemory: {
+          block: 'reference body',
+          files: [{ id: 'file-1', title: 'Canvas brief', truncated: false }],
+          webSearchQuery: 'current canvas research'
+        }
+      },
+      { onText: () => {}, onSource: (source) => sources.push(source) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(sources).toEqual([
+      { kind: 'knowledge', id: 'file-1', title: 'Canvas brief' },
+      { kind: 'web', title: 'Example Research', url: 'https://example.com/research' }
+    ])
+    const chatBody = mock.calls.find((c) => c.url.includes('/chat/completions'))!.body
+    expect(chatBody.messages[1].content).toContain('Example Research')
+    expect(chatBody.messages[1].content).toContain('file-1')
+  })
+
+  it('falls back to the supplied reference set when the model omits SOURCE lines', async () => {
+    const sources: CommandChatSource[] = []
+    const mock = mockFetchRouter([
+      {
+        match: (u) => u.includes('/api/search'),
+        respond: () => rawJsonResponse({ results: [{ title: 'Web brief', url: 'https://example.com/brief' }] })
+      },
+      { match: (u) => u.includes('/chat/completions'), respond: () => sseResponse(['Answer without protocol.\n']) }
+    ])
+    await requestCommandChat(
+      {
+        provider: 'open', openSub: 'groq', webSearch: true,
+        messages: [{ role: 'user', text: 'answer' }], context: {},
+        projectMemory: {
+          block: 'reference body',
+          files: [{ id: 'f1', title: 'Knowledge brief', truncated: false }],
+          webSearchQuery: 'current brief'
+        }
+      },
+      { onText: () => {}, onSource: (source) => sources.push(source) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(sources).toEqual([
+      { kind: 'knowledge', id: 'f1', title: 'Knowledge brief' },
+      { kind: 'web', title: 'Web brief', url: 'https://example.com/brief' }
+    ])
   })
 })

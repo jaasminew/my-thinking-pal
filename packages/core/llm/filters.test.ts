@@ -103,4 +103,18 @@ describe('makeCommandActionFilter', () => {
     expect(actions).toEqual(['{"type":"insert-bullet","text":"try Notion"}'])
     expect(text.join('')).toBe('Here you go.\nDone.\n')
   })
+
+  it('separates SOURCE json lines from visible chat text', () => {
+    const text: string[] = []
+    const sources: string[] = []
+    const f = makeCommandActionFilter(
+      (t) => text.push(t),
+      () => {},
+      (s) => sources.push(s)
+    )
+    f.push('Answer.\nSOURCE: {"kind":"web","url":"https://example.com"}\n')
+    f.flush()
+    expect(text.join('')).toBe('Answer.\n')
+    expect(sources).toEqual(['{"kind":"web","url":"https://example.com"}'])
+  })
 })

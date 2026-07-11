@@ -22,6 +22,10 @@ export type CommandChatAction =
   | { type: 'add-card'; noteId: string; title: string; url: string; snippet?: string; image?: string }
   | { type: 'create-note'; keyword: string; bullets: string[] }
 
+export type CommandChatSource =
+  | { kind: 'knowledge'; id: string; title: string }
+  | { kind: 'web'; title: string; url: string }
+
 export interface CommandChatRequest {
   /** Project Memory: per-scope aiCommand instructions (appended after the base system). */
   projectInstructions?: string
@@ -59,6 +63,7 @@ export interface CommandChatRequest {
 export type CommandChatEvent =
   | { type: 'text'; text: string }
   | { type: 'action'; action: CommandChatAction }
+  | { type: 'source'; source: CommandChatSource }
   | { type: 'done'; model?: string; provider: CocreateProvider }
   | { type: 'error'; error: string }
 

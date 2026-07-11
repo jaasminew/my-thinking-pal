@@ -8,6 +8,7 @@ import {
   estimateTokens,
   formatMemoryBlock,
   parseStageASelection,
+  releaseImages,
   releaseWholeFiles,
   selectFiles,
   truncateToTokens
@@ -213,5 +214,97 @@ describe('buildProjectMemoryContext', () => {
     expect(ctx!.files).toEqual([{ id: 'a', title: 'Title a', truncated: false }])
     expect(ctx!.block).toContain('the prd body')
     expect(ctx!.block).toContain(MEMORY_BLOCK_HEADER)
+  })
+
+  it('retains a proposed web query even when no files exist', async () => {
+    const call = vi.fn(async () => '{"files":[],"webSearchQuery":"latest canvas research"}')
+    const ctx = await buildProjectMemoryContext({
+      files: [],
+      task: 'find current evidence',
+      getText: async () => undefined,
+      call,
+      allowWebSearch: true
+    })
+    expect(call).toHaveBeenCalledOnce()
+    expect(ctx).toEqual({ block: '', files: [], webSearchQuery: 'latest canvas research' })
+  })
+})
+
+describe('image release (Part C)', () => {
+  const img = (id: string, over: Partial<ProjectMemoryFile> = {}) =>
+    file(id, { name: `${id}.png`, mimeType: 'image/png', ...over })
+  const tinyDataUrl = 'data:image/png;base64,aGVsbG8='
+
+  it('flags image files in the catalog', () => {
+    const cat = buildCatalog([img('i'), file('t')])
+    expect(cat.find((c) => c.id === 'i')?.image).toBe(true)
+    expect(cat.find((c) => c.id === 't')?.image).toBeUndefined()
+  })
+
+  it('releaseImages returns picked images as data URLs, capped in count', async () => {
+    const catalog = buildCatalog([img('i1'), img('i2'), img('i3')])
+    const out = await releaseImages(
+      { files: [{ id: 'i1' }, { id: 'i2' }, { id: 'i3' }] },
+      catalog,
+      async () => tinyDataUrl,
+      { maxImages: 2 }
+    )
+    expect(out.map((o) => o.id)).toEqual(['i1', 'i2'])
+    expect(out[0].dataUrl).toBe(tinyDataUrl)
+  })
+
+  it('releaseImages skips oversized and unfetchable images', async () => {
+    const catalog = buildCatalog([img('big'), img('gone'), img('ok')])
+    const huge = 'data:image/png;base64,' + 'A'.repeat(2000)
+    const out = await releaseImages(
+      { files: [{ id: 'big' }, { id: 'gone' }, { id: 'ok' }] },
+      catalog,
+      async (id) => (id === 'big' ? huge : id === 'gone' ? undefined : tinyDataUrl),
+      { maxBytes: 100 }
+    )
+    expect(out.map((o) => o.id)).toEqual(['ok'])
+  })
+
+  it('releaseWholeFiles never releases an image as text', async () => {
+    const catalog = buildCatalog([img('i'), file('t')])
+    const out = await releaseWholeFiles({ files: [{ id: 'i' }, { id: 't' }] }, catalog, async () => 'ocr text')
+    expect(out.map((o) => o.id)).toEqual(['t'])
+  })
+
+  it('buildProjectMemoryContext attaches images and names them in the block', async () => {
+    const ctx = await buildProjectMemoryContext({
+      files: [img('i'), file('t')],
+      task: 'look at the mockup',
+      getText: async () => 'doc text',
+      getImageDataUrl: async () => tinyDataUrl,
+      call: async () => '{"files":[{"id":"i"},{"id":"t"}]}'
+    })
+    expect(ctx).not.toBeNull()
+    expect(ctx!.images).toEqual([{ id: 'i', title: 'Title i', dataUrl: tinyDataUrl }])
+    expect(ctx!.block).toContain('IMAGE (attached to this message): Title i')
+    expect(ctx!.block).toContain('doc text')
+  })
+
+  it('an image-only selection still produces a context (no text released)', async () => {
+    const ctx = await buildProjectMemoryContext({
+      files: [img('i')],
+      task: 't',
+      getText: async () => undefined,
+      getImageDataUrl: async () => tinyDataUrl,
+      call: async () => '{"files":[{"id":"i"}]}'
+    })
+    expect(ctx).not.toBeNull()
+    expect(ctx!.files).toEqual([])
+    expect(ctx!.images).toHaveLength(1)
+  })
+
+  it('without a getImageDataUrl seam, picked images are silently dropped', async () => {
+    const ctx = await buildProjectMemoryContext({
+      files: [img('i')],
+      task: 't',
+      getText: async () => undefined,
+      call: async () => '{"files":[{"id":"i"}]}'
+    })
+    expect(ctx).toBeNull()
   })
 })

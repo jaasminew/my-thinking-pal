@@ -22,11 +22,14 @@ export type {
 export {
   scopeKey,
   EMPTY_INSTRUCTIONS,
+  mergeInstructions,
   PM_MAX_UPLOAD_BYTES,
   PM_TEXT_CHAR_CAP,
   PM_PER_FILE_TOKEN_CAP,
   PM_TOTAL_TOKEN_BUDGET,
-  PM_MAX_SELECTED_FILES
+  PM_MAX_SELECTED_FILES,
+  PM_MAX_IMAGE_BYTES,
+  PM_MAX_RELEASED_IMAGES
 } from '../../shared-contract/project-memory'
 
 import type {
@@ -113,8 +116,10 @@ export interface UploadFileInput {
   title: string
   description: string
   /**
-   * Extracted text when the browser could parse the format. Omit for PDF/Office
-   * — the server extracts those synchronously during upload.
+   * Extracted text when the browser could parse the format. Omit for Office —
+   * the server extracts those synchronously during upload. For IMAGES this is
+   * the browser's vision OCR output and is ALWAYS sent, even when empty (the
+   * server has no way to read pixels).
    */
   extractedText?: string
 }
@@ -125,6 +130,8 @@ export interface MemoryClient {
   uploadFile(scope: ProjectMemoryScope, input: UploadFileInput): Promise<ProjectMemoryFile>
   deleteFile(fileId: string): Promise<void>
   getText(fileId: string): Promise<string>
+  /** Original uploaded bytes — used to re-attach image files at AI-call time. */
+  getBlob(fileId: string): Promise<Blob>
   getInstructions(scope: ProjectMemoryScope): Promise<ProjectInstructions>
   putInstructions(scope: ProjectMemoryScope, ins: ProjectInstructions): Promise<void>
   /** Whole-scope orphan cleanup (project/space deleted client-side). */
@@ -153,24 +160,35 @@ export class MemoryApiError extends Error {
 // H3 — ProjectMemoryModal (presentational only)
 // ---------------------------------------------------------------------------
 //
-// Pure props-driven component; no fetching, no stores, no App import. The Lead
-// mounts it and supplies every callback.
+// Pure props-driven component; no fetching, no stores, no App import. The
+// mounter supplies one section per visible scope; each section carries its own
+// callbacks so the modal never needs to know which storage bucket is behind it.
 
-export interface ProjectMemoryModalProps {
-  /** Human name of the active scope (project or space) — shown in the header. */
-  scopeName: string
+/** One memory bucket as the modal sees it (project or canvas scope). */
+export interface MemoryScopeSection {
+  /** Human name of the scope's tree node (toggle label / header). */
+  name: string
   files: ProjectMemoryFile[]
   instructions: ProjectInstructions
-  /** True while an upload/delete/save round-trip is in flight. */
-  busy: boolean
   /** True when the shown instructions match the last persisted state. */
   instructionsSaved: boolean
-  /** Non-null renders an inline error banner. */
-  error: string | null
   onUpload: (files: File[]) => void
   onDeleteFile: (id: string) => void
   onRetryFile: (id: string) => void
   onSaveInstructions: (ins: ProjectInstructions) => void
+}
+
+export interface ProjectMemoryModalProps {
+  /** Shared project bucket — null when the canvas is top-level (no project tab). */
+  project: MemoryScopeSection | null
+  /** The canvas's own bucket — null when opened from a project row (no canvas tab). */
+  canvas: MemoryScopeSection | null
+  /** Which tab opens first; defaults to 'canvas' when present, else 'project'. */
+  initialScope?: 'project' | 'canvas'
+  /** True while an upload/delete/save round-trip is in flight. */
+  busy: boolean
+  /** Non-null renders an inline error banner. */
+  error: string | null
   onClose: () => void
 }
 
@@ -178,24 +196,45 @@ export interface ProjectMemoryModalProps {
 // M1 — useProjectMemory hook return shape (Lead-owned)
 // ---------------------------------------------------------------------------
 
-export interface UseProjectMemoryResult {
-  /** Resolved scope for the active canvas (null while the tree is loading). */
-  scope: ProjectMemoryScope | null
-  /** Display name of the scope's tree node (for the modal header). */
-  scopeName: string
+/** One live memory bucket (scope + data + mutations), as the hook exposes it. */
+export interface MemoryBucket {
+  scope: ProjectMemoryScope
+  /** Display name of the scope's tree node. */
+  name: string
   files: ProjectMemoryFile[]
   instructions: ProjectInstructions
-  loading: boolean
-  busy: boolean
-  error: string | null
   instructionsSaved: boolean
   uploadFiles: (files: File[]) => Promise<void>
   deleteFile: (id: string) => Promise<void>
   retryFile: (id: string) => Promise<void>
   saveInstructions: (ins: ProjectInstructions) => Promise<void>
+}
+
+export interface UseProjectMemoryResult {
+  /** Parent project's shared bucket — null for a top-level canvas. */
+  project: MemoryBucket | null
+  /** The canvas's own bucket — null only while the deps are inert. */
+  canvas: MemoryBucket | null
   /**
-   * Catalog → Stage-A pick → whole-file release, formatted as a labeled block.
-   * Null when the catalog is empty or nothing was selected. Never throws.
+   * Merged instructions for AI calls: project first, canvas appended.
+   * AI call sites read THIS, never the per-bucket instructions.
    */
-  buildMemoryContext: (task: string) => Promise<ProjectMemoryContext | null>
+  instructions: ProjectInstructions
+  loading: boolean
+  busy: boolean
+  error: string | null
+  /**
+   * Catalog (project + canvas files merged) → Stage-A pick → whole-file
+   * release, formatted as a labeled block. Null when the catalog is empty or
+   * nothing was selected. Never throws.
+   */
+  buildMemoryContext: (
+    task: string,
+    options?: {
+      /** Role-configured selection call; defaults to the active API provider. */
+      call?: (system: string, user: string) => Promise<string>
+      /** Let the selection pass propose a web query even when the catalog is empty. */
+      allowWebSearch?: boolean
+    }
+  ) => Promise<ProjectMemoryContext | null>
 }

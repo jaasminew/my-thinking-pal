@@ -99,6 +99,15 @@ export const createMemoryClient: CreateMemoryClient = (deps) => {
       return body.text
     },
 
+    async getBlob(fileId) {
+      const res = await fetchImpl(url(`/project-memory/files/${encodeURIComponent(fileId)}/blob`), {
+        method: 'GET',
+        headers: { ...authHeaders() }
+      })
+      await ensureOk(res)
+      return await res.blob()
+    },
+
     async getInstructions(scope) {
       const res = await fetchImpl(url(`${scopePath(scope)}/instructions`), {
         method: 'GET',

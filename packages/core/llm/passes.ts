@@ -132,7 +132,7 @@ export interface CocreateOutcome {
 // search + network policy), driven by the returned searchIntent.
 export async function cocreateStream(
   provider: LlmProvider,
-  input: { system: string; userText: string },
+  input: { system: string; userText: string; images?: string[] },
   handlers: CocreateHandlers,
   fetchImpl?: FetchLike,
   signal?: AbortSignal
@@ -151,6 +151,7 @@ export async function cocreateStream(
     const searchIntent = await streamOpenModel(provider, {
       system: input.system,
       userText: input.userText,
+      images: input.images,
       onText: (t) => proto.push(t),
       fetchImpl,
       signal
