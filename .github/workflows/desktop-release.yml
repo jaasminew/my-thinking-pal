@@ -1,0 +1,120 @@
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to package, for example v0.1.0
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  APP_DOMAIN: ${{ vars.APP_DOMAIN || 'mythinkingpal.xyz' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  desktop:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            target: --mac
+            artifact: thinking-pal-desktop-macos
+            files: |
+              apps/desktop/release/*.dmg
+              apps/desktop/release/*.zip
+              apps/desktop/release/latest-mac.yml
+          - name: Windows
+            os: windows-latest
+            target: --win
+            artifact: thinking-pal-desktop-windows
+            files: |
+              apps/desktop/release/*.exe
+              apps/desktop/release/*.blockmap
+              apps/desktop/release/latest.yml
+          - name: Linux
+            os: ubuntu-latest
+            target: --linux
+            artifact: thinking-pal-desktop-linux
+            files: |
+              apps/desktop/release/*.AppImage
+              apps/desktop/release/latest-linux.yml
+
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}([-.][0-9A-Za-z.-]+)?$ ]]
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build renderer for production API
+        env:
+          VITE_API_URL: https://${{ env.APP_DOMAIN }}
+        run: npm run build
+
+      - name: Build desktop package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --config apps/desktop/electron-builder.yml ${{ matrix.target }} --publish never
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 30
+
+  github-release:
+    name: Publish GitHub Release
+    needs: desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t files < <(find release-artifacts -type f | sort)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No desktop artifacts found." >&2
+            exit 1
+          fi
+
+          notes="Desktop installers built from ${RELEASE_TAG}. The packaged renderer connects to https://${APP_DOMAIN}."
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${files[@]}" \
+              --title "Thinking Pal ${RELEASE_TAG}" \
+              --notes "${notes}"
+          fi
