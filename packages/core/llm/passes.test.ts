@@ -2,7 +2,7 @@
 // mock provider (no network, no keys). These are the flows the app relies on.
 
 import { describe, it, expect } from 'vitest'
-import { extractSignals, organize, sectionHeader, cocreateStream } from './passes'
+import { extractSignals, organize, sectionHeader, cocreateCompletion, cocreateStream } from './passes'
 import type { UrlCard } from './types'
 import { TEST_PROVIDER, sseResponse, jsonResponse, mockFetchSequence } from './__mocks__/mock-provider'
 
@@ -124,5 +124,31 @@ describe('cocreateStream (integration)', () => {
     const mock = mockFetchSequence([sseResponse(['- a real bullet\n', 'SEARCH: query here\n'])])
     const out = await cocreateStream(TEST_PROVIDER, { system: 's', userText: 'u' }, { onText: () => {} }, mock.fetch)
     expect(out.searchIntent).toEqual({ query: 'query here', image: false })
+  })
+
+  it('reports an empty non-PASS completion instead of treating it as success', async () => {
+    const mock = mockFetchSequence([sseResponse(['DIAGNOSIS: useful angle\n', 'ANCHOR: NONE\n'])])
+    const out = await cocreateStream(TEST_PROVIDER, { system: 's', userText: 'u' }, { onText: () => {} }, mock.fetch)
+    expect(out.passed).toBe(false)
+    expect(out.contentLines).toBe(0)
+    expect(out.error).toMatch(/without a displayable co-creation bullet/i)
+  })
+})
+
+describe('cocreateCompletion (fallback)', () => {
+  it('parses a whole response through the co-creation protocol', async () => {
+    const text: string[] = []
+    const mock = mockFetchSequence([
+      jsonResponse('DIAGNOSIS: add a test\nANCHOR: NONE\n- Test with five creators')
+    ])
+    const out = await cocreateCompletion(
+      TEST_PROVIDER,
+      { system: 's', userText: 'u' },
+      { onText: (chunk) => text.push(chunk) },
+      mock.fetch
+    )
+    expect(out.error).toBeUndefined()
+    expect(out.contentLines).toBe(1)
+    expect(text.join('')).toContain('Test with five creators')
   })
 })

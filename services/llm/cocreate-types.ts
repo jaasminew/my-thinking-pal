@@ -115,6 +115,10 @@ export interface CocreateResult {
   /** Inspiration URLs found via web search (empty if none / search off). */
   urls?: UrlCard[]
   error?: string
+  /** The model explicitly chose the protocol's no-contribution PASS outcome. */
+  passed?: boolean
+  /** Number of displayable content lines emitted by the protocol parser. */
+  contentLines?: number
   /** True when the request was cancelled (e.g. AI mode switched off mid-stream). */
   aborted?: boolean
 }

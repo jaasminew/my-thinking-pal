@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Transcript, type TranscriptSync } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
 import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
@@ -53,6 +53,10 @@ import type {
   ObserverSignal,
   ObserverState
 } from '../../../packages/core/llm/observer-types'
+import { reduceAiCursor } from './ai-cursor'
+import { createRevealScheduler } from './ai-reveal'
+import { initialAiCursorState, type AiCursorState, type BufferedFireEvent, type RevealScheduler, type WorldPoint } from './ai-cursor-types'
+import { AiCursorOverlay } from './AiCursorOverlay'
 
 // DEV-only pretty-printer for observer decisions — see engine.onLog wiring.
 // Every gate skip, evaluation, emission, and error prints one clear line so a
@@ -195,6 +199,7 @@ function ProjectMemoryHost({
 
 // Ambient fires wait for this much keyboard silence before landing content.
 const IDLE_MS = 5000
+const AI_CURSOR_NOTE_GAP_PX = 12
 
 // Strip a leading bullet marker ("- ", "• ", "* ") from a model line.
 const stripMarker = (l: string) => l.replace(/^[\s\-*•]+/, '').trim()
@@ -204,6 +209,14 @@ const stripMarker = (l: string) => l.replace(/^[\s\-*•]+/, '').trim()
 const META = /^(i['’]?ll\b|i will\b|let me\b|i['’]?m going\b|searching\b|here'?s?\b|sources?\b|first[,:]? i)/i
 const isContentBullet = (l: string) =>
   l.length > 0 && !META.test(l) && !/^\[.*\]\(https?:\/\//.test(l) && !/^URLS:/i.test(l)
+
+const displayBulletLines = (text: string) =>
+  text
+    .split('\n')
+    .flatMap((l) => l.split(/(?<=[.!?])\s*(?=[-•*]\s)/))
+    .map(stripMarker)
+    .filter(isContentBullet)
+    .slice(0, 3)
 
 // Count "words": each CJK char = 1, each latin run = 1. Drives the every-20 fire.
 const countWords = (s: string) => {
@@ -551,6 +564,10 @@ function CanvasSpace({
   const [view, setView] = useState(() => loadJSON(k('view'), { x: 0, y: 0, scale: 1 }))
   const viewRef = useRef(view)
   useEffect(() => { viewRef.current = view }, [view])
+  // AI Pal cursor — single screen-space cursor that follows the current AI
+  // activity. Serialized reveal: only the current activity's content is
+  // applied to the canvas; all others buffer invisibly.
+  const [cursor, cursorDispatch] = useReducer(reduceAiCursor, initialAiCursorState)
   const notesRef = useRef<KeywordNote[]>(notes)
   useEffect(() => { notesRef.current = notes }, [notes])
   const imagesRef = useRef<CanvasImage[]>(images)
@@ -583,6 +600,24 @@ function CanvasSpace({
   const [observerNotice, setObserverNotice] = useState<string | null>(null)
   // In-flight fires, so switching AI off can cancel ambient streams immediately.
   const firesRef = useRef(new Map<string, { controller: AbortController; isCommand: boolean }>())
+  // Per fire/activity: its reveal scheduler + the deferred-apply local state
+  // (diagnosis/anchor are produced early but consumed when text is APPLIED,
+  // which may be much later than when they arrived — so they can't be closure
+  // locals anymore; they live here).
+  const revealRef = useRef(new Map<string, {
+    noteId: string
+    scheduler: RevealScheduler
+    humanBullets: BulletItem[]
+    diagnosis?: string
+    anchorId?: string
+    firstTextApplied: boolean
+    hasDisplayOutput: boolean
+    receivedText: string
+  }>())
+  // The current-activity effect is declared before the observer callbacks.
+  // This ref lets it promote either kind through one queue without depending
+  // on declaration order or maintaining a second observer-only effect.
+  const promoteNonCocreateRef = useRef<(activityId: string) => void>(() => {})
   // Bullets rejected mid-stream, per fire (fireId → set of fireLine): the
   // streaming upsert must not recreate them. Cleared when the fire ends.
   const rejectedFireLinesRef = useRef(new Map<string, Set<number>>())
@@ -840,6 +875,23 @@ function CanvasSpace({
     return { x: (clientX - r.left - v.x) / v.scale, y: (clientY - r.top - v.y) / v.scale }
   }
 
+  // World-space anchor point for the AI cursor: just outside the note's
+  // bottom-right corner. Keeping the glyph and its right-growing name pill beyond
+  // the note prevents the status from covering text as new bullets appear.
+  // Falls back to placement geometry before a new note has rendered.
+  const anchorForNote = useCallback((noteId: string): WorldPoint => {
+    const el = document.querySelector(`[data-noteid="${noteId}"]`) as HTMLElement | null
+    if (el) {
+      const r = el.getBoundingClientRect()
+      return toWorld(r.right + AI_CURSOR_NOTE_GAP_PX, r.bottom)
+    }
+    const note = notesRef.current.find((n) => n.id === noteId)
+    const gap = AI_CURSOR_NOTE_GAP_PX / viewRef.current.scale
+    return note
+      ? { x: note.x + DEFAULT_NOTE_W + gap, y: note.y + DEFAULT_NOTE_H }
+      : { x: 0, y: 0 }
+  }, [])
+
   // ---- images: drop / paste a picture into the canvas ----
   // Local files can't be referenced by URL, so read them into a base64 data URL
   // — it renders directly and survives a refresh through the localStorage save.
@@ -912,6 +964,85 @@ function CanvasSpace({
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
+  // Apply a buffered fire event to the canvas. Called by the reveal scheduler
+  // when it drains (or passes through live). diagnosis/anchorId are read from
+  // the revealRef record (NOT closure locals) because they arrive early but
+  // are consumed late — after buffering (§9c).
+  const applyFireEvent = useCallback(
+    (noteId: string, fireId: string, e: BufferedFireEvent) => {
+      const rec = revealRef.current.get(fireId)
+      if (!rec) return
+      switch (e.kind) {
+        case 'diagnosis':
+          rec.diagnosis = e.text
+          return
+        case 'anchor':
+          rec.anchorId = rec.humanBullets[e.line]?.id
+          return
+        case 'text': {
+          aiBufRef.current[fireId] = (aiBufRef.current[fireId] || '') + e.chunk
+          // First text chunk: the cursor switches from "thinking" to "writing".
+          if (!rec.firstTextApplied) {
+            rec.firstTextApplied = true
+            cursorDispatch({ type: 'label', activityId: fireId, label: 'writing', at: Date.now() })
+          }
+          // The model decides the amount (1-3 bullets); hard cap at 3.
+          const lines = displayBulletLines(aiBufRef.current[fireId])
+          setNotes((ns) =>
+            ns.map((n) => {
+              if (n.id !== noteId) return n
+              let items = n.items
+              lines.forEach((t, i) => {
+                if (rejectedFireLinesRef.current.get(fireId)?.has(i)) return
+                const idx = items.findIndex((it) => isBullet(it) && it.fireId === fireId && it.fireLine === i)
+                if (idx >= 0) {
+                  const cur = items[idx] as BulletItem
+                  if (cur.status !== 'pending' || cur.text === t) return
+                  items = [...items.slice(0, idx), { ...cur, text: t }, ...items.slice(idx + 1)]
+                } else {
+                  items = insertAnchored(items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, fireLine: i, diagnosis: rec.diagnosis, text: t, status: 'pending' }, rec.anchorId)
+                }
+              })
+              return items === n.items ? n : { ...n, items }
+            })
+          )
+          return
+        }
+        case 'urls': {
+          cursorDispatch({ type: 'label', activityId: fireId, label: 'found sources', at: Date.now() })
+          patchNote(noteId, (n) => {
+            const cards = e.urls.slice(0, 3).map((u): CardItem => ({ ...u, kind: 'card', id: uid('c'), origin: 'ai', status: 'pending', diagnosis: rec.diagnosis }))
+            let at = n.items.length
+            for (let j = n.items.length - 1; j >= 0; j--) {
+              const it = n.items[j]
+              if (isBullet(it) && it.fireId === fireId) { at = j + 1; break }
+            }
+            return { ...n, items: [...n.items.slice(0, at), ...cards, ...n.items.slice(at)] }
+          })
+          return
+        }
+        case 'image': {
+          patchNote(noteId, (n) => {
+            let idx = n.items.findIndex((it) => isBullet(it) && it.fireId === fireId && it.fireLine === e.line && !it.image)
+            if (idx < 0) {
+              for (let j = n.items.length - 1; j >= 0; j--) {
+                const it = n.items[j]
+                if (isBullet(it) && it.fireId === fireId && !it.image) { idx = j; break }
+              }
+            }
+            if (idx < 0) return n
+            const cur = n.items[idx] as BulletItem
+            const items = [...n.items]
+            items[idx] = { ...cur, image: { src: e.src, sourceUrl: e.sourceUrl, title: e.title } }
+            return { ...n, items }
+          })
+          return
+        }
+      }
+    },
+    [patchNote]
+  )
+
   // ---- AI co-creation: each fire DIAGNOSES what the note needs most (invisible
   // to the user), then contributes what the diagnosis calls for — 1-3 bullets,
   // or nothing at all (PASS). Appended, never replacing prior suggestions;
@@ -938,12 +1069,20 @@ function CanvasSpace({
       const controller = new AbortController()
       firesRef.current.set(fireId, { controller, isCommand })
       patchNote(noteId, (n) => ({ ...n, aiRunning: true }))
-      // The model's self-diagnosis for THIS fire — arrives before any text and
-      // is attached (invisibly) to every suggestion the fire produces.
-      let diagnosis: string | undefined
-      // The human bullet this fire builds on (ANCHOR event, by index into the
-      // numbered contextNotes) — its bullets land as sub-points under it.
-      let anchorId: string | undefined
+      // Serialized reveal: events buffer until this activity becomes current,
+      // then drain in push order. diagnosis/anchorId are produced early but
+      // consumed when text is APPLIED (potentially much later) — so they live
+      // in the revealRef record, NOT closure locals (§9c).
+      const scheduler = createRevealScheduler()
+      revealRef.current.set(fireId, {
+        noteId,
+        scheduler,
+        humanBullets,
+        firstTextApplied: false,
+        hasDisplayOutput: false,
+        receivedText: ''
+      })
+      cursorDispatch({ type: 'start', activityId: fireId, target: anchorForNote(noteId), at: Date.now() })
 
       // Rule B (keyword-dragged note) beats rule A (rolling window); an empty
       // slice — nothing recorded, or nothing said in the window — sends none.
@@ -994,77 +1133,25 @@ function CanvasSpace({
           ...providerArgs()
         },
         {
-          onDiagnosis: (d) => {
-            diagnosis = d
-          },
-          onAnchor: (line) => {
-            anchorId = humanBullets[line]?.id
-          },
+          onDiagnosis: (d) => scheduler.push({ kind: 'diagnosis', text: d }),
+          onAnchor: (line) => scheduler.push({ kind: 'anchor', line }),
           onText: (chunk) => {
-            aiBufRef.current[fireId] = (aiBufRef.current[fireId] || '') + chunk
-            // The model decides the amount (1-3 bullets); hard cap at 3.
-            const lines = aiBufRef.current[fireId]
-              .split('\n')
-              .flatMap((l) => l.split(/(?<=[.!?])\s*(?=[-•*]\s)/))
-              .map(stripMarker)
-              .filter(isContentBullet)
-              .slice(0, 3)
-            setNotes((ns) =>
-              ns.map((n) => {
-                if (n.id !== noteId) return n
-                // Upsert each of this fire's bullets IN PLACE by (fireId, line
-                // index), anchored under the fire's target bullet on first
-                // sight. Once the user has accepted (or started editing) one,
-                // the stream stops overwriting it; a mid-stream rejected line
-                // is never recreated.
-                let items = n.items
-                lines.forEach((t, i) => {
-                  if (rejectedFireLinesRef.current.get(fireId)?.has(i)) return
-                  const idx = items.findIndex((it) => isBullet(it) && it.fireId === fireId && it.fireLine === i)
-                  if (idx >= 0) {
-                    const cur = items[idx] as BulletItem
-                    if (cur.status !== 'pending' || cur.text === t) return
-                    items = [...items.slice(0, idx), { ...cur, text: t }, ...items.slice(idx + 1)]
-                  } else {
-                    items = insertAnchored(items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, fireLine: i, diagnosis, text: t, status: 'pending' }, anchorId)
-                  }
-                })
-                return items === n.items ? n : { ...n, items }
-              })
-            )
+            const rec = revealRef.current.get(fireId)
+            if (rec) {
+              rec.receivedText += chunk
+              if (displayBulletLines(rec.receivedText).length) rec.hasDisplayOutput = true
+            }
+            scheduler.push({ kind: 'text', chunk })
           },
           onUrls: (urls) => {
-            // One card per cited case (server caps at 3, matching the bullets).
-            // Placed right after this fire's last bullet — a card grounds those
-            // bullets, so it must not drift to the end of an anchored note.
-            patchNote(noteId, (n) => {
-              const cards = urls.slice(0, 3).map((u): CardItem => ({ ...u, kind: 'card', id: uid('c'), origin: 'ai', status: 'pending', diagnosis }))
-              let at = n.items.length
-              for (let j = n.items.length - 1; j >= 0; j--) {
-                const it = n.items[j]
-                if (isBullet(it) && it.fireId === fireId) { at = j + 1; break }
-              }
-              return { ...n, items: [...n.items.slice(0, at), ...cards, ...n.items.slice(at)] }
-            })
+            const rec = revealRef.current.get(fireId)
+            if (urls.length && rec) rec.hasDisplayOutput = true
+            scheduler.push({ kind: 'urls', urls })
           },
           onImage: (img) => {
-            // The image is PART of its bullet (no ✓/✕ of its own): attach it to
-            // the bullet the server anchored it to; if line counts drifted, fall
-            // back to this fire's last image-less bullet.
-            patchNote(noteId, (n) => {
-              let idx = n.items.findIndex((it) => isBullet(it) && it.fireId === fireId && it.fireLine === img.line && !it.image)
-              if (idx < 0) {
-                for (let j = n.items.length - 1; j >= 0; j--) {
-                  const it = n.items[j]
-                  if (isBullet(it) && it.fireId === fireId && !it.image) { idx = j; break }
-                }
-              }
-              if (idx < 0) return n
-              const cur = n.items[idx] as BulletItem
-              const items = [...n.items]
-              items[idx] = { ...cur, image: { src: img.src, sourceUrl: img.sourceUrl, title: img.title } }
-              return { ...n, items }
-            })
+            const rec = revealRef.current.get(fireId)
+            if (rec) rec.hasDisplayOutput = true
+            scheduler.push({ kind: 'image', src: img.src, sourceUrl: img.sourceUrl, title: img.title, line: img.line })
           }
         },
         controller.signal
@@ -1073,29 +1160,79 @@ function CanvasSpace({
       firesRef.current.delete(fireId)
       rejectedFireLinesRef.current.delete(fireId)
       if (result.aborted) {
-        // Cancelled by the switch: discard this fire's partial suggestions.
+        // Cancelled by the switch: discard this fire's partial suggestions and
+        // drop any buffered content that was never applied to the canvas.
+        scheduler.cancel()
         delete aiBufRef.current[fireId]
         patchNote(noteId, (n) => ({
           ...n,
           aiRunning: false,
           items: n.items.filter((it) => !(isBullet(it) && it.fireId === fireId))
         }))
+        cursorDispatch({ type: 'end', activityId: fireId, linger: false, at: Date.now() })
+        revealRef.current.delete(fireId)
         return
       }
 
-      patchNote(noteId, (n) => {
-        if (result.error && !aiBufRef.current[fireId]?.trim()) {
-          return {
-            ...n,
-            aiRunning: false,
-            items: [...n.items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, text: `⚠ ${result.error}`, status: 'pending' }]
-          }
-        }
-        return { ...n, aiRunning: false }
-      })
+      const reveal = revealRef.current.get(fireId)
+      if (result.error && reveal && !reveal.hasDisplayOutput) {
+        // Keep errors in the same serialized reveal path as normal AI output.
+        // aiBufRef only tracks APPLIED text, so it is empty while this activity
+        // waits behind another one even if the provider already streamed text.
+        reveal.hasDisplayOutput = true
+        scheduler.push({ kind: 'text', chunk: `⚠ ${result.error}` })
+      }
+      patchNote(noteId, (n) => ({ ...n, aiRunning: false }))
+      if (!result.error && !reveal?.hasDisplayOutput) {
+        // PASS (or an otherwise empty successful completion) has no canvas
+        // payload to reveal. Remove it from the FIFO immediately so it cannot
+        // leave a truthful-but-misleading "thinking" cursor behind or block a
+        // queued observer/co-creation activity.
+        scheduler.cancel()
+        revealRef.current.delete(fireId)
+        delete aiBufRef.current[fireId]
+        cursorDispatch({ type: 'end', activityId: fireId, linger: false, at: Date.now() })
+        return
+      }
+      // Signal the scheduler that no more events will arrive. The done()
+      // callback (wired in the currentId effect) dispatches 'end' once the
+      // queue drains — don't dispatch end here.
+      scheduler.finish()
     },
-    [patchNote, providerArgs, memorySelectionCall, transcriptSlice]
+    [patchNote, providerArgs, memorySelectionCall, transcriptSlice, anchorForNote]
   )
+
+  // ---- serialized reveal gate: when an activity becomes current, start
+  // draining its buffered events in push order. The done() callback dispatches
+  // 'end' once the queue is empty AND finish() has been called (§9d).
+  useEffect(() => {
+    const id = cursor.currentId
+    if (!id) return
+    const rec = revealRef.current.get(id)
+    if (!rec) {
+      promoteNonCocreateRef.current(id)
+      return
+    }
+    if (rec.scheduler.isLive()) return // already draining (effect re-fired)
+    rec.scheduler.goLive(
+      (e) => applyFireEvent(rec.noteId, id, e),
+      () => {
+        cursorDispatch({ type: 'end', activityId: id, at: Date.now() })
+        revealRef.current.delete(id)
+      }
+    )
+  }, [cursor.currentId, applyFireEvent])
+
+  // ---- cursor fade tick: a 5s interval that dispatches 'tick' so the reducer
+  // can hide the cursor after the 2-min idle window. Only runs while visible
+  // to avoid unnecessary renders when the cursor is already hidden (§9f).
+  useEffect(() => {
+    if (!cursor.visible) return
+    const id = setInterval(() => {
+      cursorDispatch({ type: 'tick', at: Date.now() })
+    }, 5000)
+    return () => clearInterval(id)
+  }, [cursor.visible])
 
   // ---- the trigger: fire once each time human word count grows by 20, but
   // only after ≥5s without a keystroke in that note. Word growth says the note
@@ -1719,10 +1856,24 @@ function CanvasSpace({
     }
   }, [transcriptSlice, observerDominantLanguage])
 
-  // Approved contribution → a pending, AI-originated keyword note placed near the
-  // viewport center without overlapping existing notes. Human content is never
-  // touched (this only appends a new note).
-  const handleObserverEmit = useCallback((e: ObserverEmission) => {
+  // Observer cursor activity tracking. The activityId is generated in
+  // onContributeStart; the emission is HELD when onEmit fires and the note is
+  // created only when that activity's turn in the reveal queue comes — so
+  // observer notes obey the same one-at-a-time rule as co-creation fires.
+  // Held emissions are transient (lost on unmount), like all cursor state.
+  const obsCounterRef = useRef(0)
+  const obsActivityIdRef = useRef<string | null>(null)
+  const heldObserverEmitsRef = useRef(new Map<string, ObserverEmission>())
+  // Latest currentId for engine callbacks (they outlive any single render).
+  const cursorCurrentIdRef = useRef(cursor.currentId)
+  cursorCurrentIdRef.current = cursor.currentId
+
+  // Build + place the observer note: a pending, AI-originated keyword note
+  // near the viewport center without overlapping existing notes, whole note
+  // at once (bullets uncapped, cards as-is). Human content is never touched
+  // (this only appends a new note). Placement is computed fresh at creation
+  // time; returns the placed position for the cursor to move to.
+  const createObserverNote = useCallback((e: ObserverEmission): WorldPoint => {
     const r = e.result
     const bullets = r.bullets.map((text): BulletItem => ({ kind: 'bullet', id: uid('b'), origin: 'ai', text, status: 'pending' }))
     const cards = r.sources.map((s): CardItem => ({ kind: 'card', id: uid('c'), origin: 'ai', status: 'pending', title: s.title, url: s.url, snippet: s.snippet, image: s.image }))
@@ -1744,13 +1895,45 @@ function CanvasSpace({
       observerMeta: { opportunityType: e.decision.opportunityType!, reason: e.decision.reason, confidence: e.decision.confidence }
     }
     setNotes((ns) => [...ns, note])
-    if (observerRef.current) saveJSON(k('observer-state'), observerRef.current.getState())
+    return {
+      x: pos.x + DEFAULT_NOTE_W + AI_CURSOR_NOTE_GAP_PX / viewRef.current.scale,
+      y: pos.y + DEFAULT_NOTE_H
+    }
   }, [toWorld])
+
+  // Reveal a held emission IF its activity is the cursor's current one — its
+  // turn in the queue. Idempotent (the held entry is consumed). Called from
+  // emit (already-current case) and the currentId effect (promotion after a
+  // fire's reveal finishes).
+  const revealHeldObserver = useCallback((activityId: string) => {
+    const emission = heldObserverEmitsRef.current.get(activityId)
+    if (!emission || activityId !== cursorCurrentIdRef.current) return
+    heldObserverEmitsRef.current.delete(activityId)
+    const pos = createObserverNote(emission)
+    cursorDispatch({ type: 'move', activityId, target: pos, at: Date.now() })
+    cursorDispatch({ type: 'end', activityId, at: Date.now() })
+  }, [createObserverNote])
+
+  // Approved contribution → hold it for the reveal queue (or create directly
+  // if no cursor activity exists to wait on — belt and braces).
+  const handleObserverEmit = useCallback((e: ObserverEmission) => {
+    if (observerRef.current) saveJSON(k('observer-state'), observerRef.current.getState())
+    const activityId = obsActivityIdRef.current
+    if (!activityId) {
+      createObserverNote(e)
+      return
+    }
+    heldObserverEmitsRef.current.set(activityId, e)
+    revealHeldObserver(activityId)
+  }, [createObserverNote, revealHeldObserver])
 
   // Latest emit/context closures held in refs so the once-constructed engine
   // always calls the current versions (its deps read live — never stale).
   const observerEmitRef = useRef(handleObserverEmit)
   observerEmitRef.current = handleObserverEmit
+  const revealHeldObserverRef = useRef(revealHeldObserver)
+  revealHeldObserverRef.current = revealHeldObserver
+  promoteNonCocreateRef.current = revealHeldObserver
   const observerContextRef = useRef(getObserverContext)
   observerContextRef.current = getObserverContext
 
@@ -1776,6 +1959,27 @@ function CanvasSpace({
         const w = window as unknown as { __observerTrace?: boolean }
         if (w.__observerTrace !== false) logObserverRecord(rec)
       }
+    }
+    // AI cursor: appear when contribute starts, reveal/linger when it settles.
+    engine.onContributeStart = () => {
+      const activityId = `obs_${++obsCounterRef.current}`
+      obsActivityIdRef.current = activityId
+      const rect = canvasRef.current?.getBoundingClientRect()
+      const target = rect ? toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2) : { x: 0, y: 0 }
+      cursorDispatch({ type: 'start', activityId, target, at: Date.now() })
+    }
+    engine.onContributeSettled = (emitted: boolean) => {
+      const activityId = obsActivityIdRef.current
+      obsActivityIdRef.current = null
+      if (!activityId) return
+      if (emitted) {
+        // onEmit may have revealed synchronously when this activity was current;
+        // if it was queued, this is a harmless no-op until currentId promotes it.
+        revealHeldObserverRef.current(activityId)
+        return
+      }
+      heldObserverEmitsRef.current.delete(activityId)
+      cursorDispatch({ type: 'end', activityId, linger: false, at: Date.now() })
     }
     observerRef.current = engine
     // DEV-only manual trigger for smoke-testing without waiting for live speech.
@@ -2032,6 +2236,8 @@ function CanvasSpace({
             />
           ))}
           </div>
+          {/* AI Pal cursor — screen-space, constant size at any zoom (§9f). */}
+          <AiCursorOverlay state={cursor} view={view} />
       </div>
 
       {/* Right-click on a note: duplicate/rename/delete. Viewport-space (fixed),

@@ -633,3 +633,159 @@ describe('getState and initialState', () => {
     expect(logs.at(-1)).toMatchObject({ kind: 'skip', gate: 'disabled' })
   })
 })
+
+// ---- onContributeStart / onContributeSettled -----------------------------
+
+describe('onContributeStart / onContributeSettled', () => {
+  it('start fires only when contribute is reached; settled fires once with emitted=true on success', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: async () => makeResult({ keyword: 'New' }),
+      getContext: () => makeCtx(),
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    const starts: number[] = []
+    const settles: boolean[] = []
+    engine.onContributeStart = () => starts.push(Date.now())
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(starts.length).toBe(1)
+    expect(settles.length).toBe(1)
+    expect(settles[0]).toBe(true)
+  })
+
+  it('start does NOT fire on gate skips (cooldown)', () => {
+    const deps = makeDeps({ now: () => 100000 })
+    const engine = makeEngine(deps, { lastEmittedAt: 99500 }) // 500ms ago, cooldown 1000
+    wire(engine)
+    let startCount = 0
+    let settleCount = 0
+    engine.onContributeStart = () => startCount++
+    engine.onContributeSettled = () => settleCount++
+
+    engine.pushSignals([sig('a', 10)])
+    expect(startCount).toBe(0)
+    expect(settleCount).toBe(0)
+  })
+
+  it('start does NOT fire on emit:false (evaluator-only pass)', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ emit: false, confidence: 0 }),
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    let startCount = 0
+    let settleCount = 0
+    engine.onContributeStart = () => startCount++
+    engine.onContributeSettled = () => settleCount++
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(startCount).toBe(0)
+    expect(settleCount).toBe(0)
+  })
+
+  it('settled fires once with emitted=false on contribute throw', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: async () => { throw new Error('boom') },
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    const settles: boolean[] = []
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(settles.length).toBe(1)
+    expect(settles[0]).toBe(false)
+  })
+
+  it('settled fires once with emitted=false on stale generation (post-contribute)', async () => {
+    let resolveContrib!: (v: ObserverContributionResult) => void
+    const contribPromise = new Promise<ObserverContributionResult>((r) => { resolveContrib = r })
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: () => contribPromise,
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    const settles: boolean[] = []
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush() // let the evaluator resolve and reach contribute
+    // Reset mid-contribute → stale when it resolves.
+    engine.reset()
+    resolveContrib(makeResult({ keyword: 'Late' }))
+    await flush()
+
+    expect(settles.length).toBe(1)
+    expect(settles[0]).toBe(false)
+  })
+
+  it('settled fires once with emitted=false on null result', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: async () => null,
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    const settles: boolean[] = []
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(settles.length).toBe(1)
+    expect(settles[0]).toBe(false)
+  })
+
+  it('settled fires once with emitted=false on result.error', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: async () => makeResult({ error: 'overloaded' }),
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    const settles: boolean[] = []
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(settles.length).toBe(1)
+    expect(settles[0]).toBe(false)
+  })
+
+  it('settled fires once with emitted=false on duplicate-title', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: async () => makeResult({ keyword: 'Existing Topic' }),
+      getContext: () => makeCtx({ noteTitles: ['existing topic'] }),
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    wire(engine)
+    const settles: boolean[] = []
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(settles.length).toBe(1)
+    expect(settles[0]).toBe(false)
+  })
+})

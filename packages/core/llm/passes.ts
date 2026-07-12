@@ -154,10 +154,85 @@ export async function cocreateStream(
       images: input.images,
       onText: (t) => proto.push(t),
       fetchImpl,
-      signal
+      signal,
+      // Reasoning models can spend a substantial part of the completion budget
+      // before emitting the strict DIAGNOSIS/ANCHOR/bullet protocol. Match the
+      // observer contributor's practical budget with extra headroom so the
+      // visible bullet is not starved after otherwise-successful reasoning.
+      maxTokens: 2000
     })
     proto.flush()
     strip.flush()
+    if (!proto.passed && proto.contentLines === 0) {
+      return {
+        passed: false,
+        contentLines: 0,
+        model: provider.model,
+        error: 'Model completed without a displayable co-creation bullet'
+      }
+    }
+    return {
+      searchIntent: proto.passed ? undefined : searchIntent,
+      passed: proto.passed,
+      contentLines: proto.contentLines,
+      model: provider.model
+    }
+  } catch (e) {
+    proto.flush()
+    strip.flush()
+    return { passed: proto.passed, contentLines: proto.contentLines, error: errMsg(e) }
+  }
+}
+
+// Whole-response fallback for providers/models that successfully complete but
+// fail to expose visible content through their streaming delta shape. It uses
+// the exact same protocol/link filters, so canvas behavior is unchanged.
+export async function cocreateCompletion(
+  provider: LlmProvider,
+  input: { system: string; userText: string; images?: string[] },
+  handlers: CocreateHandlers,
+  fetchImpl?: FetchLike,
+  signal?: AbortSignal
+): Promise<CocreateOutcome> {
+  const strip = makeLinkStripper(
+    (t) => handlers.onText(t),
+    (u) => handlers.onUrl?.(u),
+    (im) => handlers.onInlineImage?.({ ...im, line: Math.max(0, proto.contentLines - 1) })
+  )
+  const proto = makeProtocolFilter(
+    (l) => strip.push(l),
+    (d) => handlers.onDiagnosis?.(d),
+    (a) => handlers.onAnchor?.(a)
+  )
+  try {
+    const { content } = await chatCompletion(provider, {
+      system: input.system,
+      userText: input.userText,
+      images: input.images,
+      fetchImpl,
+      signal,
+      maxTokens: 2000,
+      reasoning: getReasoningParams(provider.model)
+    })
+    let searchIntent: SearchIntent | undefined
+    for (const line of content.split('\n')) {
+      const search = line.match(/^\s*SEARCH(\s+IMAGE)?\s*:\s*(.+)$/i)
+      if (search) {
+        searchIntent = { query: search[2].trim(), image: !!search[1] }
+      } else {
+        proto.push(line + '\n')
+      }
+    }
+    proto.flush()
+    strip.flush()
+    if (!proto.passed && proto.contentLines === 0) {
+      return {
+        passed: false,
+        contentLines: 0,
+        model: provider.model,
+        error: 'Model completed without a displayable co-creation bullet'
+      }
+    }
     return {
       searchIntent: proto.passed ? undefined : searchIntent,
       passed: proto.passed,

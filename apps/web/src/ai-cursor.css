@@ -1,0 +1,80 @@
+/* AI Pal cursor — screen-space overlay, constant size at any zoom.
+   See AI_CURSOR_PLAN.md §7. Do NOT edit styles.css or design-system.css. */
+
+.ai-cursor-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+  display: flex;
+  align-items: flex-start;
+  /* The tip of the arrow sits at the positioned point (left/top). */
+  transform-origin: top left;
+  will-change: left, top, opacity;
+}
+
+.ai-cursor-overlay.visible {
+  opacity: 1;
+  transition: opacity 200ms ease-in;
+}
+
+.ai-cursor-overlay:not(.visible) {
+  opacity: 0;
+  transition: opacity 400ms ease-out;
+}
+
+.ai-cursor-glyph {
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+  pointer-events: none;
+}
+
+.ai-cursor-pill {
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  pointer-events: none;
+  margin-left: 14px;
+  margin-top: 18px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+/* Fixed-width ellipsis avoids pill jitter while cycling . → .. → ... → . */
+.ai-cursor-thinking-dots {
+  display: inline-flex;
+  width: 1.2em;
+}
+
+.ai-cursor-thinking-dot-2 {
+  animation: ai-cursor-thinking-dot-2 1.2s step-end infinite;
+}
+
+.ai-cursor-thinking-dot-3 {
+  animation: ai-cursor-thinking-dot-3 1.2s step-end infinite;
+}
+
+@keyframes ai-cursor-thinking-dot-2 {
+  0%, 32% { opacity: 0; }
+  33%, 99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes ai-cursor-thinking-dot-3 {
+  0%, 65% { opacity: 0; }
+  66%, 99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-cursor-thinking-dot-2,
+  .ai-cursor-thinking-dot-3 {
+    animation: none;
+    opacity: 1;
+  }
+}
