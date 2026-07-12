@@ -54,6 +54,29 @@ import type {
   ObserverState
 } from '../../../packages/core/llm/observer-types'
 
+// DEV-only pretty-printer for observer decisions — see engine.onLog wiring.
+// Every gate skip, evaluation, emission, and error prints one clear line so a
+// live test shows exactly whether the observer emitted and, if not, why.
+function logObserverRecord(rec: ObserverLogRecord): void {
+  const tag = '%c[observer]'
+  const base = 'font-weight:bold;padding:1px 4px;border-radius:3px;'
+  if (rec.kind === 'evaluation' && rec.decision) {
+    const d = rec.decision
+    const color = d.emit ? 'color:#fff;background:#16a34a' : 'color:#fff;background:#6b7280'
+    console.log(
+      `${tag} EVALUATE → emit=${d.emit ? 'YES' : 'no'}  "${d.topic ?? ''}"  (conf ${d.confidence ?? '?'}, ${rec.latencyMs}ms)`,
+      base + color,
+      d.emit ? '' : `\n         reason: ${d.reason ?? '(none)'}`
+    )
+  } else if (rec.kind === 'emission') {
+    console.log(`${tag} EMIT ✓  note placed  (model ${rec.model ?? '?'}, search ${rec.searchPath ?? '?'})`, base + 'color:#fff;background:#2563eb')
+  } else if (rec.kind === 'skip') {
+    console.log(`${tag} skip: ${rec.gate}`, base + 'color:#fff;background:#b45309')
+  } else if (rec.kind === 'error') {
+    console.log(`${tag} ERROR: ${rec.error}`, base + 'color:#fff;background:#dc2626')
+  }
+}
+
 const OPEN_PROVIDER: CocreateProvider = 'open'
 const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = []
 const LEGACY_PLACEHOLDER_MODEL_IDS = new Set([
@@ -1614,6 +1637,36 @@ function CanvasSpace({
     if (wasPending0) recordObserverOutcome(id, 'rejected')
   }
 
+  // Whole-note keep/dismiss for a purely AI-generated observer note: unlike
+  // co-creation bullets (judged line by line), an observer note is accepted or
+  // dismissed as ONE unit via its bottom-right ✓/✕, and records a single
+  // engine outcome.
+  const keepNote = (id: string) => () => {
+    patchNote(id, (n) => {
+      const keptTexts = n.items
+        .map((x) =>
+          isBullet(x) && x.status === 'pending'
+            ? withDiag(x.text, x.diagnosis)
+            : isCard(x) && x.status === 'pending'
+              ? withDiag(x.title, x.diagnosis)
+              : null
+        )
+        .filter((t): t is string => t !== null)
+      return {
+        ...n,
+        items: n.items.map((x) =>
+          (isBullet(x) || isCard(x)) && x.status === 'pending' ? { ...x, status: 'kept' } : x
+        ),
+        kept: [...n.kept, ...keptTexts]
+      }
+    })
+    recordObserverOutcome(id, 'kept')
+  }
+  const rejectNote = (id: string) => () => {
+    recordObserverOutcome(id, 'rejected') // read before the note is removed
+    onDeleteNote(id)()
+  }
+
   // ---- Observer engine wiring -----------------------------------------------
   // Keep the two category assignments current so a mid-session model switch is
   // honored by the engine deps (which read these refs live).
@@ -1714,7 +1767,16 @@ function CanvasSpace({
       loadJSON<ObserverState | null>(k('observer-state'), null) || undefined
     )
     engine.onEmit = (e) => observerEmitRef.current(e)
-    engine.onLog = (rec) => observerLogRef.current.append(rec)
+    engine.onLog = (rec) => {
+      observerLogRef.current.append(rec)
+      // DEV-only live console trace: prints every observer decision as it happens
+      // so real-time testing shows whether/why it emitted. Toggle by unsetting
+      // window.__observerTrace (defaults on in DEV).
+      if (import.meta.env.DEV) {
+        const w = window as unknown as { __observerTrace?: boolean }
+        if (w.__observerTrace !== false) logObserverRecord(rec)
+      }
+    }
     observerRef.current = engine
     // DEV-only manual trigger for smoke-testing without waiting for live speech.
     // In the browser console: __observer.fire([...signals]) — see the reply.
@@ -1945,6 +2007,8 @@ function CanvasSpace({
               onDeleteRange={onDeleteRange(n.id)}
               onKeepBullet={keepBullet(n.id)}
               onRejectBullet={rejectBullet(n.id)}
+              onKeepNote={keepNote(n.id)}
+              onRejectNote={rejectNote(n.id)}
               onKeepCard={keepCard(n.id)}
               onRemoveCard={removeCard(n.id)}
               onInsertAfter={onInsertAfter(n.id)}

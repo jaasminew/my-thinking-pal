@@ -152,6 +152,26 @@ describe('requestObserverContribute — web Thinker', () => {
     expect(res?.sources).toEqual([])
   })
 
+  it('falls back to the evaluator suggestedSearchQuery when the contributor omits SEARCH', async () => {
+    let askedQuery = ''
+    const deps: ObserverServiceDeps = {
+      relayAvailable: true,
+      resolveCategory: resolver({ thinker: { provider: webProvider } }),
+      contributePass: async () => ({ contribution: { keyword: 'k', bullets: ['a'] }, serverMs: 5 }),
+      searchWebImpl: (async (q: string) => {
+        askedQuery = q
+        return [card(1)]
+      }) as any
+    }
+    const input: ObserverContributorInput = {
+      ...contribInput,
+      decision: { ...contribInput.decision, needsResearch: true, suggestedSearchQuery: 'crdt offline merge' }
+    }
+    const res = await requestObserverContribute(input, deps)
+    expect(askedQuery).toBe('crdt offline merge')
+    expect(res?.sources).toEqual([card(1)])
+  })
+
   it('returns null on a failed contributor pass', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ thinker: { provider: webProvider } }),
