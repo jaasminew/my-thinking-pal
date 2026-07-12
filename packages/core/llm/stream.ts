@@ -3,11 +3,14 @@
 // dispatcher. `fetch` is injectable so tests drive it with a mock SSE stream.
 
 import { getReasoningParams } from './parse'
+import { userContent } from './chat'
 import type { FetchLike, LlmProvider } from './types'
 
 export interface StreamOptions {
   system: string
   userText: string
+  /** Data-URL images attached to the user message (vision-capable providers). */
+  images?: string[]
   onText: (t: string) => void
   fetchImpl?: FetchLike
   signal?: AbortSignal
@@ -44,7 +47,7 @@ export async function streamOpenModel(
       ...getReasoningParams(provider.model),
       messages: [
         { role: 'system', content: opts.system + noThink },
-        { role: 'user', content: opts.userText }
+        { role: 'user', content: userContent(opts.userText, opts.images) }
       ]
     }),
     signal: opts.signal

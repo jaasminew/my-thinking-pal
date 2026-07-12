@@ -27,6 +27,13 @@ export const COMMAND_CHAT_SYSTEM =
   `ACTION: {"type":"add-card","title":"<page title>","url":"https://…","snippet":"<one line>"} ` +
   `ACTION: {"type":"append-image","caption":"<≤12 words naming what the image shows>","url":"https://<PAGE url, not an image file>","title":"<case name>"} ` +
   `ACTION: {"type":"create-note","keyword":"<2-5 word header>","bullets":["<bullet>","<bullet>"]} ` +
+  `When your answer uses an uploaded knowledge file or a supplied web-search result, append ` +
+  `one source line per source AFTER your prose/actions, exactly: ` +
+  `SOURCE: {"kind":"knowledge","id":"<supplied file id>"} ` +
+  `SOURCE: {"kind":"web","url":"<supplied result url>"} ` +
+  `Cite only sources supplied in the user message, cite every source you materially used, ` +
+  `and never invent an id or URL. The app renders these as source links, so do not add a ` +
+  `written Sources section to your prose. ` +
   `The JSON must be valid and single-line; one action per line; never mention these lines ` +
   `in your prose (the user sees them as buttons). Card/image URLs must be REAL pages you ` +
   `found via search or genuinely know — never invent URLs. Do not reveal reasoning.`

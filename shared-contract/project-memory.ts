@@ -69,6 +69,25 @@ export const EMPTY_INSTRUCTIONS: ProjectInstructions = {
   aiCommand: ''
 }
 
+/**
+ * Merge two instruction sets for AI calls (two-level memory): project
+ * instructions first, canvas instructions appended — so the canvas can
+ * specialize or override the project's standing guidance ("specific beats
+ * general" reads last). Empty fields drop out cleanly.
+ */
+export function mergeInstructions(
+  project: ProjectInstructions | undefined,
+  canvas: ProjectInstructions | undefined
+): ProjectInstructions {
+  const join = (a?: string, b?: string) =>
+    [a?.trim(), b?.trim()].filter(Boolean).join('\n\n')
+  return {
+    transcriptionSummary: join(project?.transcriptionSummary, canvas?.transcriptionSummary),
+    coCreation: join(project?.coCreation, canvas?.coCreation),
+    aiCommand: join(project?.aiCommand, canvas?.aiCommand)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Retrieval output — what rides on an AI request
 // ---------------------------------------------------------------------------
@@ -76,12 +95,19 @@ export const EMPTY_INSTRUCTIONS: ProjectInstructions = {
 /**
  * The assembled memory payload attached to a co-creation / command request.
  * `block` is the fully formatted, labeled reference block (untrusted-data
- * framing already applied) — prompt assembly just places it.
+ * framing already applied) — prompt assembly just places it. Selected IMAGE
+ * files ride separately as data URLs: at upload time only their OCR text is
+ * stored (so the catalog/Stage-A can reason about them), but at call time the
+ * model gets the actual pixels.
  */
 export type ProjectMemoryContext = {
   block: string
   /** Files included, in the model's selection order (for logging/UI). */
   files: { id: string; title: string; truncated: boolean }[]
+  /** Selected image files, attached to the request as multimodal parts. */
+  images?: { id: string; title: string; dataUrl: string }[]
+  /** Optional focused query proposed during the catalog-selection pass. */
+  webSearchQuery?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -93,11 +119,15 @@ export type CatalogEntry = {
   id: string
   title: string
   description: string
+  /** True for image files — released as pixels, not text, when picked. */
+  image?: boolean
 }
 
 /** The strict JSON the Stage-A model must return. */
 export type StageASelection = {
   files: { id: string; reason?: string }[]
+  /** Empty/omitted when uploaded knowledge is sufficient for the task. */
+  webSearchQuery?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -109,3 +139,5 @@ export const PM_TEXT_CHAR_CAP = 250_000 // stored extracted text
 export const PM_PER_FILE_TOKEN_CAP = 8_000 // per-file injection
 export const PM_TOTAL_TOKEN_BUDGET = 12_000 // per-call injection budget
 export const PM_MAX_SELECTED_FILES = 4 // Stage-A pick limit
+export const PM_MAX_IMAGE_BYTES = 4 * 1024 * 1024 // per-image release cap (provider payload limits)
+export const PM_MAX_RELEASED_IMAGES = 2 // images attached per AI call

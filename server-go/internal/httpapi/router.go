@@ -64,6 +64,7 @@ func New(d Deps) http.Handler {
 		mux.Handle("POST /project-memory/{scopeKind}/{scopeId}/files", d.Auth.RequireAuth(http.HandlerFunc(pm.UploadFile)))
 		mux.Handle("DELETE /project-memory/files/{id}", d.Auth.RequireAuth(http.HandlerFunc(pm.DeleteFile)))
 		mux.Handle("GET /project-memory/files/{id}/text", d.Auth.RequireAuth(http.HandlerFunc(pm.GetText)))
+		mux.Handle("GET /project-memory/files/{id}/blob", d.Auth.RequireAuth(http.HandlerFunc(pm.GetBlob)))
 		mux.Handle("GET /project-memory/{scopeKind}/{scopeId}/instructions", d.Auth.RequireAuth(http.HandlerFunc(pm.GetInstructions)))
 		mux.Handle("PUT /project-memory/{scopeKind}/{scopeId}/instructions", d.Auth.RequireAuth(http.HandlerFunc(pm.PutInstructions)))
 		mux.Handle("DELETE /project-memory/{scopeKind}/{scopeId}", d.Auth.RequireAuth(http.HandlerFunc(pm.DeleteScope)))

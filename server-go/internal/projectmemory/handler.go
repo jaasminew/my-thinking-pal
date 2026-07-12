@@ -130,10 +130,15 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	// Extraction (deterministic; no AI). The client never sees a transient
 	// queued/extracting status from this endpoint.
+	//
+	// extractedText PRESENCE (not just non-emptiness) marks browser-side
+	// extraction: image OCR can legitimately be an empty string, and the server
+	// cannot read pixels — such uploads must still index.
+	_, hasExtractedText := r.MultipartForm.Value["extractedText"]
 	status := "queued"
 	errMsg := ""
 	switch {
-	case extractedText != "":
+	case hasExtractedText:
 		// Browser already parsed a text format; trust + cap it.
 		capped, trunc := capText(extractedText, textCharCap)
 		if err := h.store.PutPMText(r.Context(), ownerID, f.ID, capped, trunc); err != nil {
@@ -195,6 +200,30 @@ func (h *Handler) GetText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"text": text, "truncated": truncated})
+}
+
+// GetBlob serves the original uploaded bytes (used by the browser to re-attach
+// image files to AI calls). Ownership is enforced by the store lookup.
+func (h *Handler) GetBlob(w http.ResponseWriter, r *http.Request) {
+	ownerID := auth.UserID(r.Context())
+	fileID := r.PathValue("id")
+	f, err := h.store.GetPMFile(r.Context(), ownerID, fileID)
+	if err != nil || f.BlobPath == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	data, err := os.ReadFile(f.BlobPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if f.MimeType != "" {
+		w.Header().Set("Content-Type", f.MimeType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // --- Instructions ---

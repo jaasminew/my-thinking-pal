@@ -4,16 +4,25 @@
 
 import type { UrlCard } from './types'
 
-// Line filter for the ACTION protocol (command-chat). Whole lines only: a chunk
+// Line filter for the ACTION/SOURCE protocols (command-chat). Whole lines only: a chunk
 // boundary can split "ACT|ION:", so classifying anything smaller would leak
 // protocol text into chat. ACTION lines go to onAction as raw JSON; every other
 // line streams through as chat text (blank lines are paragraph breaks).
-export function makeCommandActionFilter(emitText: (t: string) => void, onAction: (rawJson: string) => void) {
+export function makeCommandActionFilter(
+  emitText: (t: string) => void,
+  onAction: (rawJson: string) => void,
+  onSource?: (rawJson: string) => void
+) {
   let buf = ''
   const handleLine = (l: string) => {
     const m = l.match(/^\s*ACTION:\s*(\{.*\})\s*$/)
     if (m) {
       onAction(m[1])
+      return
+    }
+    const source = l.match(/^\s*SOURCE:\s*(\{.*\})\s*$/)
+    if (source) {
+      onSource?.(source[1])
       return
     }
     emitText(l + '\n')

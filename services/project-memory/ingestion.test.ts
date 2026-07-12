@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { extractTextBrowser } from './ingestion'
 import { PM_TEXT_CHAR_CAP } from './types'
+
+// The real pdfjs module needs a browser worker; here we only assert routing.
+vi.mock('./ingestion-pdf', () => ({
+  extractPdfText: vi.fn(async () => ({ ok: true, text: 'parsed pdf text', truncated: false }))
+}))
 
 const blob = (text: string, type?: string) => new Blob([text], type ? { type } : undefined)
 
@@ -39,12 +44,19 @@ describe('extractTextBrowser — supported formats', () => {
   })
 })
 
-describe('extractTextBrowser — unsupported formats', () => {
-  it('returns unsupported for a PDF by mime + extension', async () => {
+describe('extractTextBrowser — PDF routing (Part B)', () => {
+  it('routes a PDF by mime type to the lazy pdf extractor', async () => {
     const r = await extractTextBrowser(blob('%PDF-1.4', 'application/pdf'), 'report.pdf', 'application/pdf')
-    expect(r).toEqual({ ok: false, reason: 'unsupported' })
+    expect(r).toEqual({ ok: true, text: 'parsed pdf text', truncated: false })
   })
 
+  it('routes a PDF by extension alone (unknown mime)', async () => {
+    const r = await extractTextBrowser(blob('%PDF-1.4'), 'report.pdf', 'application/octet-stream')
+    expect(r).toEqual({ ok: true, text: 'parsed pdf text', truncated: false })
+  })
+})
+
+describe('extractTextBrowser — unsupported formats', () => {
   it('returns unsupported for an unknown extension with no mime hint', async () => {
     const r = await extractTextBrowser(blob('???', 'application/octet-stream'), 'archive.zip', 'application/octet-stream')
     expect(r).toEqual({ ok: false, reason: 'unsupported' })
