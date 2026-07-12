@@ -2115,7 +2115,7 @@ const insertAfter = (arr: TreeNode[], afterId: string, newNode: TreeNode): TreeN
 // Handle = the spine strip on a panel's top-left (drag it to slide/resize).
 // Its width is what an open-but-buried canvas always keeps visible.
 const HANDLE = 44
-const MAX_OPEN = 3
+const MAX_OPEN = 2
 
 // Overlapping paper-stack model (Obsidian-like): every open canvas pins its
 // RIGHT edge to the workspace's right edge and keeps its own independent
@@ -2275,8 +2275,8 @@ export function App() {
 
   // Open an idea space as a canvas panel: already open → just activate; room
   // left → a new sheet slides in on top (right edge pinned, one HANDLE
-  // narrower than the sheet below); already 3 open → the new canvas replaces
-  // the ACTIVE one in its slot, keeping that slot's width.
+  // narrower than the sheet below); already at MAX_OPEN → the new canvas
+  // replaces the ACTIVE one in its slot, keeping that slot's width.
   const openSpace = (id: string) => {
     if (!open.ids.includes(id)) {
       if (open.ids.length < MAX_OPEN) {
@@ -2572,19 +2572,21 @@ export function App() {
         {open.ids.map((id, i) => (
           <section
             key={id}
-            className={`panel${activeId === id ? ' active' : ''}`}
+            className={`panel${i === 0 ? ' base' : ''}${activeId === id ? ' active' : ''}`}
             style={{ width: widths[i], zIndex: i + 1 }}
             onPointerDownCapture={() => setActiveId(id)}
           >
             <div className="panel-spine spine-drag" onPointerDown={startPanelDrag(i)} title="Drag to slide / resize">
-              <button
-                className="panel-close"
-                title="Close this canvas"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={() => closeSpace(id)}
-              >
-                ×
-              </button>
+              {open.ids.length > 1 && (
+                <button
+                  className="panel-close"
+                  title="Close this canvas"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => closeSpace(id)}
+                >
+                  ×
+                </button>
+              )}
               <span className="spine-canvas-icon">{CanvasIcon}</span>
               <span className="spine-title">{findNode(tree, id)?.name ?? 'A New Canvas'}</span>
             </div>

@@ -131,6 +131,10 @@ export function Transcript({
    *  local transcript — is the source of truth: an empty remote clears local. */
   seedFromLocal?: boolean
 }) {
+  const collapseKey = `transcript-collapsed${storageSuffix}`
+  const [collapsed, setCollapsed] = useState(() => loadJSON(collapseKey, false))
+
+  useEffect(() => saveJSON(collapseKey, collapsed), [collapseKey, collapsed])
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes;
   // starting a NEW recording still resets it (existing semantics).
@@ -475,8 +479,27 @@ export function Transcript({
   const hasContent = frozen.length > 0 || tail.length > 0
   const caption = STATUS_CAPTION[status]
 
+  const onRecordClick = () => {
+    if (collapsed) {
+      setCollapsed(false)
+      if (!recording) onToggleRecord()
+      return
+    }
+    onToggleRecord()
+  }
+
   return (
-    <div className="transcript-pane">
+    <div className={`transcript-pane${collapsed ? ' collapsed' : ''}`}>
+      <button
+        className="transcript-collapse"
+        type="button"
+        aria-label={collapsed ? 'Expand transcription' : 'Collapse transcription'}
+        title={collapsed ? 'Expand transcription' : 'Collapse transcription'}
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((value) => !value)}
+      >
+        {collapsed ? '›' : '‹'}
+      </button>
       <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
         <div className="hint">
           {recording
@@ -507,8 +530,9 @@ export function Transcript({
         <button
           className={`record ${recording ? 'on' : ''}`}
           title={recording ? 'Stop recording' : 'Start recording'}
-          onClick={onToggleRecord}
+          onClick={onRecordClick}
         >
+          {collapsed && <span className="record-label">Record</span>}
           {recording ? <span className="stop-sq" /> : <span className="rec-dot" />}
         </button>
       </div>
