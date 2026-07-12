@@ -6,6 +6,7 @@ class FakeTransport implements SttTransport {
   private openCb: (() => void) | null = null
   private msgCb: ((t: string) => void) | null = null
   private errCb: ((e: Error) => void) | null = null
+  private closeCb: (() => void) | null = null
   texts: string[] = []
   binaries: ArrayBuffer[] = []
   closed = false
@@ -14,11 +15,12 @@ class FakeTransport implements SttTransport {
   onOpen(cb: () => void) { this.openCb = cb }
   onMessage(cb: (t: string) => void) { this.msgCb = cb }
   onError(cb: (e: Error) => void) { this.errCb = cb }
-  onClose() {}
+  onClose(cb: () => void) { this.closeCb = cb }
   close() { this.closed = true }
   open() { this.openCb?.() }
   deliver(t: string) { this.msgCb?.(t) }
   fail(e: Error) { this.errCb?.(e) }
+  remoteClose() { this.closeCb?.() }
 }
 
 class FakePcm implements PcmSource {
@@ -78,9 +80,11 @@ describe('BackendSTT', () => {
     const { transport, pcm, stt } = setup()
     await stt.start({ lang: 'auto' })
     transport.open()
-    stt.stop()
+    const stopping = stt.stop()
     expect(JSON.parse(transport.texts.at(-1)!)).toEqual({ type: 'stop' })
     expect(pcm.stopped).toBe(true)
+    transport.remoteClose()
+    await stopping
     expect(transport.closed).toBe(true)
   })
 })

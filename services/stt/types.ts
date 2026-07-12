@@ -22,7 +22,7 @@ export interface STTStartOpts {
 export interface STTProvider {
   readonly name: string
   start(opts: STTStartOpts): Promise<void>
-  stop(): void
+  stop(): void | Promise<void>
   onTranscript(cb: (e: TranscriptEvent) => void): void
   onError(cb: (err: Error) => void): void
 }

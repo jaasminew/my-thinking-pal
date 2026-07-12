@@ -301,7 +301,7 @@ function CanvasSpace({
   /** When signed in + this space is mapped to a server doc, attach live sync. */
   sync?: SyncParams | null
   /** STT provider factory (backend proxy when signed in; else browser Soniox). */
-  makeStt?: () => STTProvider
+  makeStt?: () => STTProvider | Promise<STTProvider>
   /** Seed a fresh board from local canvas content (migrate). False when adopting
    *  an existing/blank server document — that board comes from the server. */
   seedFromLocal?: boolean
@@ -2206,10 +2206,17 @@ export function App() {
     // reference every render would re-run this constantly).
   }, [backendUser, docsLoaded, hasDocs, ensureDoc, open.ids, tree])
 
-  // A backend-proxied STT factory (docs module 07) once signed in; left undefined
-  // otherwise so the Transcript falls back to browser-direct Soniox.
-  const makeStt: (() => STTProvider) | undefined = backend.user
-    ? () => new BackendSTT({ url: backend.sttUrl() ?? '' })
+  // A backend-proxied STT factory (docs module 07). Before opening the
+  // WebSocket, refresh the HTTP session because /stt cannot retry a 401 once
+  // the browser starts the upgrade.
+  const makeStt: (() => STTProvider | Promise<STTProvider>) | undefined = backend.enabled
+    ? async () => {
+        const ok = await backend.refreshAuth()
+        if (!ok) throw new Error('Sign in to use backend speech transcription.')
+        const url = backend.sttUrl()
+        if (!url) throw new Error('Backend speech session is unavailable. Please sign in again.')
+        return new BackendSTT({ url })
+      }
     : undefined
 
   useEffect(() => saveJSON('sidebar-collapsed', collapsed), [collapsed])

@@ -25,6 +25,8 @@ export interface Backend {
   syncFor: (spaceId: string) => SyncParams | null
   /** Backend /stt WebSocket URL (with token), or null when not authed. */
   sttUrl: () => string | null
+  /** Refresh/validate auth before opening non-HTTP transports such as /stt. */
+  refreshAuth: () => Promise<boolean>
 
   /** The user's server documents (loaded when signed in). */
   documents: DocumentMeta[]
@@ -171,10 +173,17 @@ export function useBackend(): Backend {
   )
 
   const sttUrl = useCallback((): string | null => {
-    if (!client || !user) return null
+    if (!client) return null
     const token = client.tokens.access
     return token ? wsUrl(client.baseUrl, '/stt', token) : null
-  }, [client, user])
+  }, [client])
+
+  const refreshAuth = useCallback(async (): Promise<boolean> => {
+    if (!client) return false
+    const me = await client.restoreSession()
+    setUser(me)
+    return !!me
+  }, [client])
 
   const [adopted, setAdopted] = useState<Record<string, boolean>>({})
   const docIdFor = useCallback((spaceId: string) => docMap[spaceId], [docMap])
@@ -239,6 +248,7 @@ export function useBackend(): Backend {
       ensureDoc,
       syncFor,
       sttUrl,
+      refreshAuth,
       documents,
       docsLoaded,
       refreshDocuments,
@@ -260,6 +270,7 @@ export function useBackend(): Backend {
       ensureDoc,
       syncFor,
       sttUrl,
+      refreshAuth,
       documents,
       docsLoaded,
       refreshDocuments,
