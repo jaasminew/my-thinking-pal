@@ -575,6 +575,9 @@ body { background: var(--bg); color: var(--ink); }
   transition: color .35s ease;
 }
 .kw-header.hovered .kw-input { color: var(--accent); }
+/* Observer (AI-generated) note: gray keyword header to mark its AI origin,
+   matching the gray of pending AI bullets. Hover still fades it to accent. */
+.kw-header.observer:not(.hovered) .kw-text { color: var(--pending); }
 
 /* one ordered flow of items: bullet rows + inline url cards */
 .items {
@@ -703,6 +706,19 @@ body { background: var(--bg); color: var(--ink); }
 }
 .accept button:hover { opacity: .55; }
 
+/* Observer note keep/dismiss: a single control for the WHOLE note, sitting at
+   the bottom-right below its bullets (the note is accepted/dismissed as one). */
+.note-accept {
+  display: flex; justify-content: flex-end; align-items: center; gap: 16px;
+  margin: 8px 4px 0; padding-top: 2px;
+}
+.note-accept button {
+  border: 0; background: transparent; padding: 0;
+  cursor: pointer; color: var(--ink);
+  font-size: 18px; font-weight: 700; line-height: 1.2;
+}
+.note-accept button:hover { opacity: .55; }
+
 /* url cards: flat gray, no border/shadow. An inline line in the note's flow —
    focusable, so arrow keys land on it, ⏎ continues below it, ⌫ removes it. */
 .url-card {
@@ -780,13 +796,18 @@ body { background: var(--bg); color: var(--ink); }
 /* ---- Tier-3: inline command bubble ---- */
 .cmd-bubble {
   position: fixed; z-index: 1200;
-  display: flex; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) 30px; align-items: center; column-gap: 8px;
   width: 384px;
   background: #fff; border: 1px solid var(--line); border-radius: 26px;
   padding: 7px 8px 7px 16px; box-shadow: var(--shadow);
 }
-.cmd-bubble .spark { color: var(--ink-secondary); font-size: 14px; }
-.cmd-bubble input { flex: 1; border: 0; outline: none; font-size: 14px; background: transparent; color: var(--ink); }
+.cmd-bubble .spark {
+  width: 20px; height: 20px; flex: none;
+}
+.cmd-bubble input {
+  width: 100%; height: 30px; padding: 0; border: 0; outline: none;
+  font-size: 14px; line-height: 30px; background: transparent; color: var(--ink);
+}
 .cmd-bubble .send {
   width: 30px; height: 30px; border-radius: 50%; border: 0; cursor: pointer;
   background: var(--ink); color: #fff; font-size: 15px; flex: none;

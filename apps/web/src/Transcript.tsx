@@ -119,7 +119,7 @@ export function Transcript({
   onHoverNote?: (noteId: string | null) => void
   /** STT provider factory. Defaults to browser-direct Soniox; when signed in the
    *  app injects a backend-proxied provider (docs module 07). */
-  makeStt?: () => STTProvider
+  makeStt?: () => STTProvider | Promise<STTProvider>
   /** Project Memory: the scope's transcriptionSummary instructions, appended to
    *  the extraction system prompt (knowledge excerpts are deliberately NOT
    *  injected here — bias/latency risk). */
@@ -136,8 +136,8 @@ export function Transcript({
 
   useEffect(() => saveJSON(collapseKey, collapsed), [collapseKey, collapsed])
   const k = (key: string) => key + storageSuffix
-  // Restored from localStorage so the cleaned transcript survives refreshes;
-  // starting a NEW recording still resets it (existing semantics).
+  // Restored from localStorage so the cleaned transcript survives refreshes.
+  // New recording sessions append to this content instead of replacing it.
   const [frozen, setFrozen] = useState<Section[]>(() => loadJSON(k('transcript-frozen'), []))
   const [tail, setTail] = useState<Line[]>(() => loadJSON(k('transcript-tail'), []))
   const [status, setStatus] = useState<EngineStatus>('idle')
@@ -202,7 +202,7 @@ export function Transcript({
     engine.onError = (msg) => setErr(`⚠ ${msg}`)
     engine.onSignals = (lines) => onSignalsRef.current?.(lines)
     // Seed the engine with the restored transcript so editing a restored line
-    // or header still works. A new recording resets this, as before.
+    // or header still works and later recording sessions can append to it.
     engine.frozenSections = snapFrozen(frozen)
     engine.tail = snapTail(tail)
     engineRef.current = engine
@@ -233,11 +233,9 @@ export function Transcript({
     let cancelled = false
 
     void (async () => {
-      engineRef.current?.reset()
+      engineRef.current?.resetCapture()
       setEditing(null)
       setErr('')
-      setFrozen([])
-      setTail([])
       engineRef.current?.start()
 
       let stream: MediaStream
@@ -252,7 +250,18 @@ export function Transcript({
         return
       }
 
-      const stt = makeStt ? makeStt() : new SonioxSTT()
+      let stt: STTProvider
+      try {
+        stt = makeStt ? await makeStt() : new SonioxSTT()
+      } catch (e: any) {
+        stream.getTracks().forEach((t) => t.stop())
+        if (!cancelled) setErr(`⚠ ${e.message}`)
+        return
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       sttRef.current = stt
       stt.onError((e) => setErr(`⚠ ${e.message}`))
       stt.onTranscript((ev) => {
@@ -264,15 +273,17 @@ export function Transcript({
       try {
         await stt.start({ lang: 'auto', stream })
       } catch (e: any) {
-        setErr(`⚠ ${e.message}`)
+        if (!cancelled) setErr(`⚠ ${e.message}`)
       }
     })()
 
     return () => {
       cancelled = true
-      sttRef.current?.stop()
+      const stopping = sttRef.current?.stop()
       sttRef.current = null
-      void engineRef.current?.stop() // final cleanup + closing segmentation pass
+      // Backend STT may receive a provider's final transcript only after its
+      // stop frame. Wait for that graceful close before extracting/organizing.
+      void Promise.resolve(stopping).finally(() => engineRef.current?.stop())
     }
   }, [recording])
 

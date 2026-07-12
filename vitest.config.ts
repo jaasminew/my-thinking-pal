@@ -14,7 +14,8 @@ export default defineConfig({
     include: [
       'packages/**/*.{test,spec}.{ts,tsx}',
       'services/**/*.{test,spec}.{ts,tsx}',
-      'apps/web/**/*.{test,spec}.{ts,tsx}'
+      'apps/web/**/*.{test,spec}.{ts,tsx}',
+      'server/**/*.{test,spec}.{ts,tsx}'
     ],
     coverage: {
       provider: 'v8',

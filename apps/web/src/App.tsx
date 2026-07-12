@@ -58,24 +58,50 @@ import { createRevealScheduler } from './ai-reveal'
 import { initialAiCursorState, type AiCursorState, type BufferedFireEvent, type RevealScheduler, type WorldPoint } from './ai-cursor-types'
 import { AiCursorOverlay } from './AiCursorOverlay'
 
-const OPEN_PROVIDER: CocreateProvider = 'open'
-const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = [
-  { id: 'groq-llama-3-3-70b', runtime: 'api', providerId: 'groq', model: 'llama-3.3-70b-versatile', label: 'Groq · Llama 3.3 70B' },
-  { id: 'groq-gpt-oss-120b', runtime: 'api', providerId: 'groq', model: 'openai/gpt-oss-120b', label: 'Groq · GPT-OSS 120B' },
-  { id: 'groq-qwen3-32b', runtime: 'api', providerId: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
-  { id: 'ollama-local', runtime: 'ollama', providerId: 'ollama', baseUrl: 'http://localhost:11434/v1', model: '', label: 'Ollama · local' }
-]
-// Both categories default to Groq gpt-oss-120b (DEFAULT_BASE_MODEL, contract §4).
-const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
-  listener: 'groq-gpt-oss-120b',
-  thinker: 'groq-gpt-oss-120b'
+// DEV-only pretty-printer for observer decisions — see engine.onLog wiring.
+// Every gate skip, evaluation, emission, and error prints one clear line so a
+// live test shows exactly whether the observer emitted and, if not, why.
+function logObserverRecord(rec: ObserverLogRecord): void {
+  const tag = '%c[observer]'
+  const base = 'font-weight:bold;padding:1px 4px;border-radius:3px;'
+  if (rec.kind === 'evaluation' && rec.decision) {
+    const d = rec.decision
+    const color = d.emit ? 'color:#fff;background:#16a34a' : 'color:#fff;background:#6b7280'
+    console.log(
+      `${tag} EVALUATE → emit=${d.emit ? 'YES' : 'no'}  "${d.topic ?? ''}"  (conf ${d.confidence ?? '?'}, ${rec.latencyMs}ms)`,
+      base + color,
+      d.emit ? '' : `\n         reason: ${d.reason ?? '(none)'}`
+    )
+  } else if (rec.kind === 'emission') {
+    console.log(`${tag} EMIT ✓  note placed  (model ${rec.model ?? '?'}, search ${rec.searchPath ?? '?'})`, base + 'color:#fff;background:#2563eb')
+  } else if (rec.kind === 'skip') {
+    console.log(`${tag} skip: ${rec.gate}`, base + 'color:#fff;background:#b45309')
+  } else if (rec.kind === 'error') {
+    console.log(`${tag} ERROR: ${rec.error}`, base + 'color:#fff;background:#dc2626')
+  }
 }
 
-function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModelConfig[] {
-  const byId = new Map(DEFAULT_MODEL_CONFIGS.map((c) => [c.id, c]))
+const OPEN_PROVIDER: CocreateProvider = 'open'
+const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = []
+const LEGACY_PLACEHOLDER_MODEL_IDS = new Set([
+  'groq-llama-3-3-70b',
+  'groq-gpt-oss-120b',
+  'groq-qwen3-32b',
+  'ollama-local'
+])
+const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
+  listener: '',
+  thinker: ''
+}
+
+export function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModelConfig[] {
+  const byId = new Map<string, AiModelConfig>()
   if (Array.isArray(raw)) {
     for (const cfg of raw) {
       if (!cfg?.id || !cfg?.runtime) continue
+      // Older builds persisted four starter entries even though the user had
+      // never configured them. Remove those misleading placeholders once.
+      if (LEGACY_PLACEHOLDER_MODEL_IDS.has(cfg.id)) continue
       byId.set(cfg.id, {
         id: String(cfg.id),
         label: String(cfg.label || cfg.id),
@@ -91,17 +117,13 @@ function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModel
   return [...byId.values()]
 }
 
-function normalizeModelSelections(
+export function normalizeModelSelections(
   raw: Partial<ModelSelections> | Record<string, unknown> | null | undefined,
   configs: readonly AiModelConfig[]
 ): ModelSelections {
   const ids = new Set(configs.map((c) => c.id))
-  const legacyAt = (idx: number) => DEFAULT_MODEL_CONFIGS[idx]?.id
   const pick = (value: unknown, fallback: string) => {
     if (typeof value === 'string' && ids.has(value)) return value
-    if (typeof value === 'number') return legacyAt(value) ?? fallback
-    const n = Math.floor(Number(value))
-    if (Number.isFinite(n)) return legacyAt(n) ?? fallback
     return fallback
   }
   // Migrate legacy per-role selections (contract §5): transcriptionSummary →
@@ -114,7 +136,13 @@ function normalizeModelSelections(
 }
 
 const modelConfigAt = (configs: readonly AiModelConfig[], id: string) =>
-  configs.find((cfg) => cfg.id === id) ?? configs[0] ?? DEFAULT_MODEL_CONFIGS[0]
+  configs.find((cfg) => cfg.id === id) ??
+  configs[0] ?? {
+    id: '',
+    label: 'No model configured',
+    runtime: 'api' as const,
+    providerId: 'groq'
+  }
 const GearIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="3" />
@@ -309,7 +337,7 @@ function CanvasSpace({
   /** When signed in + this space is mapped to a server doc, attach live sync. */
   sync?: SyncParams | null
   /** STT provider factory (backend proxy when signed in; else browser Soniox). */
-  makeStt?: () => STTProvider
+  makeStt?: () => STTProvider | Promise<STTProvider>
   /** Seed a fresh board from local canvas content (migrate). False when adopting
    *  an existing/blank server document — that board comes from the server. */
   seedFromLocal?: boolean
@@ -510,7 +538,7 @@ function CanvasSpace({
 
   // AI co-creation mode: OFF suppresses ambient fires and cancels in-flight
   // ones. Tier-3 commands stay live — an explicit command is an invitation.
-  const [aiEnabled, setAiEnabled] = useState(true)
+  const [aiEnabled, setAiEnabled] = useState(modelConfigs.length > 0)
 
   // ---- Tier-3 command sessions: select text → bubble → side-panel chat ----
   // bubbleSel is the FROZEN SelectionSnapshot the bubble was opened from; the
@@ -547,7 +575,7 @@ function CanvasSpace({
   const selectedIdsRef = useRef(selectedIds)
   useEffect(() => { selectedIdsRef.current = selectedIds }, [selectedIds])
   const aiBufRef = useRef<Record<string, string>>({})
-  const aiEnabledRef = useRef(true)
+  const aiEnabledRef = useRef(modelConfigs.length > 0)
   useEffect(() => { aiEnabledRef.current = aiEnabled }, [aiEnabled])
   const isActiveRef = useRef(isActive)
   useEffect(() => { isActiveRef.current = isActive }, [isActive])
@@ -1146,17 +1174,15 @@ function CanvasSpace({
         return
       }
 
-      patchNote(noteId, (n) => {
-        if (result.error && !aiBufRef.current[fireId]?.trim()) {
-          return {
-            ...n,
-            aiRunning: false,
-            items: [...n.items, { kind: 'bullet', id: uid('b'), origin: 'ai', fireId, text: `⚠ ${result.error}`, status: 'pending' }]
-          }
-        }
-        return { ...n, aiRunning: false }
-      })
       const reveal = revealRef.current.get(fireId)
+      if (result.error && reveal && !reveal.hasDisplayOutput) {
+        // Keep errors in the same serialized reveal path as normal AI output.
+        // aiBufRef only tracks APPLIED text, so it is empty while this activity
+        // waits behind another one even if the provider already streamed text.
+        reveal.hasDisplayOutput = true
+        scheduler.push({ kind: 'text', chunk: `⚠ ${result.error}` })
+      }
+      patchNote(noteId, (n) => ({ ...n, aiRunning: false }))
       if (!result.error && !reveal?.hasDisplayOutput) {
         // PASS (or an otherwise empty successful completion) has no canvas
         // payload to reveal. Remove it from the FIFO immediately so it cannot
@@ -1244,6 +1270,7 @@ function CanvasSpace({
   // CURRENT word count, so writing done while off never triggers a burst of
   // stale suggestions. OFF cancels in-flight ambient fires (commands finish).
   const toggleAi = useCallback(() => {
+    if (modelConfigs.length === 0) return
     const next = !aiEnabledRef.current
     if (next) {
       setNotes((ns) => ns.map((n) => ({ ...n, lastFiredWords: humanWords(n) })))
@@ -1253,7 +1280,7 @@ function CanvasSpace({
       }
     }
     setAiEnabled(next)
-  }, [])
+  }, [modelConfigs.length])
 
   // ---- Tier-3: persistent context highlight --------------------------------
   // Painted from the frozen snapshot (bubble open or session running), rebuilt
@@ -1747,6 +1774,36 @@ function CanvasSpace({
     if (wasPending0) recordObserverOutcome(id, 'rejected')
   }
 
+  // Whole-note keep/dismiss for a purely AI-generated observer note: unlike
+  // co-creation bullets (judged line by line), an observer note is accepted or
+  // dismissed as ONE unit via its bottom-right ✓/✕, and records a single
+  // engine outcome.
+  const keepNote = (id: string) => () => {
+    patchNote(id, (n) => {
+      const keptTexts = n.items
+        .map((x) =>
+          isBullet(x) && x.status === 'pending'
+            ? withDiag(x.text, x.diagnosis)
+            : isCard(x) && x.status === 'pending'
+              ? withDiag(x.title, x.diagnosis)
+              : null
+        )
+        .filter((t): t is string => t !== null)
+      return {
+        ...n,
+        items: n.items.map((x) =>
+          (isBullet(x) || isCard(x)) && x.status === 'pending' ? { ...x, status: 'kept' } : x
+        ),
+        kept: [...n.kept, ...keptTexts]
+      }
+    })
+    recordObserverOutcome(id, 'kept')
+  }
+  const rejectNote = (id: string) => () => {
+    recordObserverOutcome(id, 'rejected') // read before the note is removed
+    onDeleteNote(id)()
+  }
+
   // ---- Observer engine wiring -----------------------------------------------
   // Keep the two category assignments current so a mid-session model switch is
   // honored by the engine deps (which read these refs live).
@@ -1893,7 +1950,16 @@ function CanvasSpace({
       loadJSON<ObserverState | null>(k('observer-state'), null) || undefined
     )
     engine.onEmit = (e) => observerEmitRef.current(e)
-    engine.onLog = (rec) => observerLogRef.current.append(rec)
+    engine.onLog = (rec) => {
+      observerLogRef.current.append(rec)
+      // DEV-only live console trace: prints every observer decision as it happens
+      // so real-time testing shows whether/why it emitted. Toggle by unsetting
+      // window.__observerTrace (defaults on in DEV).
+      if (import.meta.env.DEV) {
+        const w = window as unknown as { __observerTrace?: boolean }
+        if (w.__observerTrace !== false) logObserverRecord(rec)
+      }
+    }
     // AI cursor: appear when contribute starts, reveal/linger when it settles.
     engine.onContributeStart = () => {
       const activityId = `obs_${++obsCounterRef.current}`
@@ -1971,7 +2037,7 @@ function CanvasSpace({
       cancelled = true
       engine.stop()
     }
-  }, [isActive, recording, aiEnabled])
+  }, [isActive, recording, aiEnabled, modelConfigs, modelSelections.listener])
 
   // Which id(s) move when a pointer-drag starts on obj `id`: the whole selection
   // if `id` is part of a multi-select, else just `id` (which becomes the lone
@@ -2086,6 +2152,8 @@ function CanvasSpace({
               role="switch"
               aria-checked={aiEnabled}
               aria-label="AI co-creation mode"
+              title={modelConfigs.length === 0 ? 'Configure a model in Settings first' : undefined}
+              disabled={modelConfigs.length === 0}
               onClick={toggleAi}
             />
             <button
@@ -2143,6 +2211,8 @@ function CanvasSpace({
               onDeleteRange={onDeleteRange(n.id)}
               onKeepBullet={keepBullet(n.id)}
               onRejectBullet={rejectBullet(n.id)}
+              onKeepNote={keepNote(n.id)}
+              onRejectNote={rejectNote(n.id)}
               onKeepCard={keepCard(n.id)}
               onRemoveCard={removeCard(n.id)}
               onInsertAfter={onInsertAfter(n.id)}
@@ -2406,10 +2476,17 @@ export function App() {
     // reference every render would re-run this constantly).
   }, [backendUser, docsLoaded, hasDocs, ensureDoc, open.ids, tree])
 
-  // A backend-proxied STT factory (docs module 07) once signed in; left undefined
-  // otherwise so the Transcript falls back to browser-direct Soniox.
-  const makeStt: (() => STTProvider) | undefined = backend.user
-    ? () => new BackendSTT({ url: backend.sttUrl() ?? '' })
+  // A backend-proxied STT factory (docs module 07). Before opening the
+  // WebSocket, refresh the HTTP session because /stt cannot retry a 401 once
+  // the browser starts the upgrade.
+  const makeStt: (() => STTProvider | Promise<STTProvider>) | undefined = backend.enabled
+    ? async () => {
+        const ok = await backend.refreshAuth()
+        if (!ok) throw new Error('Sign in to use backend speech transcription.')
+        const url = backend.sttUrl()
+        if (!url) throw new Error('Backend speech session is unavailable. Please sign in again.')
+        return new BackendSTT({ url })
+      }
     : undefined
 
   useEffect(() => saveJSON('sidebar-collapsed', collapsed), [collapsed])

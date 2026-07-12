@@ -172,6 +172,7 @@ export class ApiClient {
       // Only wipe the session on auth rejection — a transient 5xx should not
       // force a re-login on the next page load.
       if (res.status === 401 || res.status === 403) this.tokens.clear()
+      else throw await this.error(res)
       return false
     }
     const pair = (await res.json()) as TokenPair
@@ -185,9 +186,13 @@ export class ApiClient {
       const user = await this.me()
       this.tokens.saveUser(user)
       return user
-    } catch {
-      if (!this.tokens.hasSession) this.tokens.clear()
-      return null
+    } catch (e) {
+      if (!this.tokens.hasSession) return null
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 404)) {
+        this.tokens.clear()
+        return null
+      }
+      return this.tokens.loadUser()
     }
   }
 

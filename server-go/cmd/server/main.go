@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -49,19 +50,20 @@ func main() {
 	authH := auth.NewHandler(account, []byte(cfg.AccessSecret), []byte(cfg.RefreshSecret), cfg.AccessTTL, cfg.RefreshTTL)
 	docsH := documents.NewHandler(account)
 	pmH := projectmemory.NewHandler(account, cfg.ProjectMemoryPath)
-	syncH := syncsvc.NewHandler(docStore, account)
-	sttH := stt.NewHandler(buildUpstream(cfg))
+	origins := websocketOrigins(cfg.CORSOrigin)
+	syncH := syncsvc.NewHandler(docStore, account, origins...)
+	sttH := stt.NewHandler(buildUpstream(cfg), origins...)
 
 	handler := httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, ProjectMemory: pmH, Sync: syncH, STT: sttH, CORSOrigin: cfg.CORSOrigin})
 
 	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
+		Addr:              cfg.Host + ":" + cfg.Port,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
-		slog.Info("server listening", "port", cfg.Port)
+		slog.Info("server listening", "host", cfg.Host, "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "err", err)
 			os.Exit(1)
@@ -77,12 +79,24 @@ func main() {
 	_ = srv.Shutdown(ctx)
 }
 
+func websocketOrigins(corsOrigin string) []string {
+	if corsOrigin == "*" {
+		return []string{"*"}
+	}
+	parsed, err := url.Parse(corsOrigin)
+	if err != nil || parsed.Host == "" {
+		slog.Warn("invalid CORS origin; WebSocket requests will require same-origin", "origin", corsOrigin)
+		return nil
+	}
+	return []string{parsed.Host}
+}
+
 // buildUpstream selects the pluggable STT vendor (module 07.2). The client-facing
 // /stt protocol is identical regardless of choice.
 func buildUpstream(cfg config.Config) stt.Upstream {
 	switch cfg.STTProvider {
 	case "tencent":
-		return stt.NewTencent(cfg.TencentAppID, cfg.TencentSecretID, cfg.TencentSecretKey)
+		return stt.NewTencent(cfg.TencentAppID, cfg.TencentSecretID, cfg.TencentSecretKey, cfg.TencentEngineModel)
 	case "mock":
 		return &stt.MockUpstream{}
 	default:

@@ -354,6 +354,24 @@ describe('cooldown blocks then unblocks', () => {
     const cooldownSkips = logs.filter((l) => l.kind === 'skip' && l.gate === 'cooldown')
     expect(cooldownSkips.length).toBe(0)
   })
+
+  it('also throttles evaluator calls when the last decision did not emit', async () => {
+    let now = 100000
+    const evaluate = vi.fn(async () => makeDecision({ emit: false, confidence: 0.2 }))
+    const deps = makeDeps({ evaluate, now: () => now })
+    const engine = makeEngine(deps)
+    const { logs } = wire(engine)
+
+    engine.pushSignals([sig('first', 10)])
+    await flush()
+    expect(evaluate).toHaveBeenCalledTimes(1)
+
+    now += 500
+    engine.pushSignals([sig('second', 20)])
+
+    expect(logs.at(-1)).toMatchObject({ kind: 'skip', gate: 'cooldown' })
+    expect(evaluate).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ---- rejection backoff ----------------------------------------------------

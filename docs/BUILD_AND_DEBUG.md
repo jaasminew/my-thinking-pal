@@ -58,10 +58,14 @@ VITE_API_URL=http://127.0.0.1:8080 npm run dev
 
 ```bash
 npm run dev:desktop     # 起 Electron,加载 http://localhost:5173(需先跑 npm run dev)
-npm run build:desktop   # 先 vite build,再 electron-builder 打包(产物在 apps/desktop/release/)
+npm run build:desktop   # 默认连接 https://mythinkingpal.xyz 的桌面包
+npm run build:desktop:local # 本地-only 桌面包(未设置 VITE_API_URL)
+npm run build:desktop:prod  # 显式生产桌面包
 ```
 
 - 复用 `apps/web` 同一套 renderer(dev 读 Vite URL,打包读 `dist/index.html`)。
+- 默认桌面包设置 `VITE_API_URL=https://mythinkingpal.xyz`;需要本地-only 时用 `build:desktop:local`。
+- 桌面包是否连接后端由打包时的 `VITE_API_URL` 决定;未设置时保持本地-only。
 - key 经 `safeStorage`(OS keychain)加密落盘,通过 preload 的 `secureKeys` 暴露给渲染进程;`provider-config.ts` 会优先从 keychain 补全空 key。
 
 ---
@@ -99,7 +103,7 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `PORT` | `8080` | 监听端口 |
+| `HOST` / `PORT` | `127.0.0.1` / `8080` | 监听地址与端口 |
 | `ACCOUNT_STORE` | `memory` | `memory`\|`sqlite`(生产用 sqlite) |
 | `ACCOUNT_DSN` | `file:data/accounts.db?_journal=WAL` | sqlite 路径 |
 | `DOC_STORE` / `DOC_PATH` | `fs` / `data/docs` | CRDT 更新日志 + 快照目录 |
@@ -116,10 +120,19 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 
 ```bash
 npm run build           # 前端 → dist/
+npm run build:relay     # 生产搜索中继 → dist-server/relay.cjs
 npm run preview         # 本地预览 dist/
 cd server-go && make build   # → server-go/bin/server
-npm run build:desktop   # 桌面安装包 → apps/desktop/release/
+npm run build:desktop   # 生产桌面安装包 → apps/desktop/release/
 ```
+
+`mythinkingpal.xyz` 的单机生产环境使用 Nginx + systemd，并由 GitHub Actions
+在 `main` CI 成功后自动发布。首次服务器初始化、DNS/TLS、GitHub Environment、
+备份恢复和回滚步骤见 [`deploy/README.md`](../deploy/README.md)。
+
+桌面软件包不随服务器 CD 发布;创建 `v*` tag 时 `.github/workflows/desktop-release.yml`
+会在 macOS、Windows、Linux 上分别打包,上传 Actions artifacts,并把安装包附加到
+同名 GitHub Release。手动触发该 workflow 时必须指定已有 tag。
 
 ## 7. 调试技巧 & 常见坑
 
@@ -139,7 +152,7 @@ apps/web/          React renderer(Vite root 仍是仓库根,入口 apps/web/src/
 apps/desktop/      Electron 壳(main.cjs / preload.cjs / electron-builder.yml)
 packages/core/     共享:CRDT doc(schema/board)、LLM 解析、设置
 services/          浏览器客户端库:api(auth/documents)、sync(BoardSync)、stt、llm、dev-keys
-server/            dev-only Vite 中间件:/api/search + /api/url-meta
+server/            dev 中间件 + 可独立构建的生产搜索/URL 元数据中继
 server-go/         Go 后端:auth/JWT、documents、/sync 中继、/stt 转发(cmd + internal + Makefile)
 docs/              技术方案与模块文档(见 technical-plan.md)
 ```

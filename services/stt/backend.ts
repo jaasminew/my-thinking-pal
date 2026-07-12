@@ -39,6 +39,8 @@ export class BackendSTT implements STTProvider {
   private cb?: (e: TranscriptEvent) => void
   private err?: (e: Error) => void
   private readonly rate: number
+  private closed?: Promise<void>
+  private stopping = false
 
   constructor(private readonly opts: BackendSTTOptions) {
     this.rate = opts.sampleRate ?? 16000
@@ -49,6 +51,7 @@ export class BackendSTT implements STTProvider {
     const pcm = this.opts.pcm ?? new PcmMicStream()
     this.transport = transport
     this.pcm = pcm
+    this.closed = new Promise((resolve) => transport.onClose(resolve))
 
     transport.onOpen(() => {
       transport.sendText(
@@ -78,16 +81,25 @@ export class BackendSTT implements STTProvider {
       }
     })
 
-    transport.onError((e) => this.err?.(e))
+    transport.onError((e) => {
+      if (!this.stopping) this.err?.(e)
+    })
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopping = true
     try {
       this.transport?.sendText(JSON.stringify({ type: 'stop' }))
     } catch {
       /* socket may already be closing */
     }
     this.pcm?.stop()
+    if (this.closed) {
+      await Promise.race([
+        this.closed,
+        new Promise<void>((resolve) => setTimeout(resolve, 3500))
+      ])
+    }
     this.transport?.close()
   }
 

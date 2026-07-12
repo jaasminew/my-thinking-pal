@@ -115,11 +115,18 @@ export async function requestObserverContribute(
   const contribution = out.contribution
 
   const searchPath = resolveSearchPath(res.provider.id, deps.relayAvailable ?? false)
+  // Prefer the contributor's own SEARCH: query, but fall back to the evaluator's
+  // suggestedSearchQuery when the contributor omits it (it often does). The
+  // evaluator already committed to needsResearch, so a missing contributor
+  // SEARCH line must not silently drop the source cards.
+  const searchQuery =
+    contribution.searchQuery ||
+    (input.decision.needsResearch ? input.decision.suggestedSearchQuery : undefined)
   let sources: UrlCard[] = []
-  if (searchPath === 'relay' && contribution.searchQuery) {
+  if (searchPath === 'relay' && searchQuery) {
     const doSearch = deps.searchWebImpl ?? searchWeb
     try {
-      const raw = await doSearch(contribution.searchQuery, MAX_SOURCE_CARDS, deps.fetchImpl as typeof fetch)
+      const raw = await doSearch(searchQuery, MAX_SOURCE_CARDS, deps.fetchImpl as typeof fetch)
       sources = validCards(raw)
     } catch {
       // Search failure → no sources; never fabricate. The bullets stand alone.

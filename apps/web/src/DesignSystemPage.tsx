@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { applyTokenValues, defaultTokenValues, DESIGN_TOKEN_CHANNEL, DESIGN_TOKEN_STORAGE_KEY, designTokens, readTokenValues, type TokenValues } from './design-tokens'
+import { applyTokenValues, defaultTokenValues, DESIGN_TOKEN_CHANNEL, DESIGN_TOKEN_STORAGE_KEY, designTokens, readTokenValues, type DesignToken, type TokenValues } from './design-tokens'
 import './design-system.css'
 
 export function DesignSystemPage() {
@@ -7,7 +7,10 @@ export function DesignSystemPage() {
   const [query, setQuery] = useState('')
   const groups = useMemo(() => {
     const filtered = designTokens.filter((token) => `${token.group} ${token.label} ${token.name}`.toLowerCase().includes(query.toLowerCase()))
-    return Object.groupBy(filtered, (token) => token.group)
+    return filtered.reduce<Record<string, DesignToken[]>>((grouped, token) => {
+      (grouped[token.group] ??= []).push(token)
+      return grouped
+    }, {})
   }, [query])
 
   function update(name: string, value: string) {

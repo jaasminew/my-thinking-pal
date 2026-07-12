@@ -55,6 +55,7 @@ export class ObserverEngine {
   private running = false
   private enabled = false
   private evaluating = false
+  private lastEvaluatorStartedAt: number | undefined
   // Bumped on reset() so late async results can't write stale state (same
   // pattern as SignalEngine.gen — see apps/web/src/signal-engine.ts:96).
   private gen = 0
@@ -88,6 +89,7 @@ export class ObserverEngine {
   reset(): void {
     this.gen++
     this.evaluating = false
+    this.lastEvaluatorStartedAt = undefined
   }
 
   setEnabled(enabled: boolean): void {
@@ -157,12 +159,16 @@ export class ObserverEngine {
         return
       }
 
-      // Gate 6: cooldown — now - lastEmittedAt >= effectiveCooldownMs.
+      // Gate 6: cooldown — applies to evaluator calls as well as emissions.
       const effectiveCooldownMs =
         this.state.consecutiveRejected >= 3
           ? this.config.cooldownMs * 2
           : this.config.cooldownMs
-      const elapsed = now - (this.state.lastEmittedAt ?? 0)
+      const lastObserverActivityAt = Math.max(
+        this.state.lastEmittedAt ?? 0,
+        this.lastEvaluatorStartedAt ?? 0
+      )
+      const elapsed = now - lastObserverActivityAt
       if (elapsed < effectiveCooldownMs) {
         this.logSkip('cooldown', signalTsRange!)
         return
@@ -177,6 +183,7 @@ export class ObserverEngine {
       // All gates passed — set lastEvaluatedSignalTs BEFORE awaiting the
       // evaluator (prevents double evaluation), mark evaluating, kick cycle.
       this.state.lastEvaluatedSignalTs = newestTs
+      this.lastEvaluatorStartedAt = now
       this.evaluating = true
       const gen = this.gen
       void this.runCycle(lines, signalTsRange!, gen)
