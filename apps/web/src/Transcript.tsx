@@ -119,7 +119,7 @@ export function Transcript({
   onHoverNote?: (noteId: string | null) => void
   /** STT provider factory. Defaults to browser-direct Soniox; when signed in the
    *  app injects a backend-proxied provider (docs module 07). */
-  makeStt?: () => STTProvider
+  makeStt?: () => STTProvider | Promise<STTProvider>
   /** Project Memory: the scope's transcriptionSummary instructions, appended to
    *  the extraction system prompt (knowledge excerpts are deliberately NOT
    *  injected here — bias/latency risk). */
@@ -131,6 +131,10 @@ export function Transcript({
    *  local transcript — is the source of truth: an empty remote clears local. */
   seedFromLocal?: boolean
 }) {
+  const collapseKey = `transcript-collapsed${storageSuffix}`
+  const [collapsed, setCollapsed] = useState(() => loadJSON(collapseKey, false))
+
+  useEffect(() => saveJSON(collapseKey, collapsed), [collapseKey, collapsed])
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes.
   // New recording sessions append to this content instead of replacing it.
@@ -246,7 +250,18 @@ export function Transcript({
         return
       }
 
-      const stt = makeStt ? makeStt() : new SonioxSTT()
+      let stt: STTProvider
+      try {
+        stt = makeStt ? await makeStt() : new SonioxSTT()
+      } catch (e: any) {
+        stream.getTracks().forEach((t) => t.stop())
+        if (!cancelled) setErr(`⚠ ${e.message}`)
+        return
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       sttRef.current = stt
       stt.onError((e) => setErr(`⚠ ${e.message}`))
       stt.onTranscript((ev) => {
@@ -258,15 +273,17 @@ export function Transcript({
       try {
         await stt.start({ lang: 'auto', stream })
       } catch (e: any) {
-        setErr(`⚠ ${e.message}`)
+        if (!cancelled) setErr(`⚠ ${e.message}`)
       }
     })()
 
     return () => {
       cancelled = true
-      sttRef.current?.stop()
+      const stopping = sttRef.current?.stop()
       sttRef.current = null
-      void engineRef.current?.stop() // final cleanup + closing segmentation pass
+      // Backend STT may receive a provider's final transcript only after its
+      // stop frame. Wait for that graceful close before extracting/organizing.
+      void Promise.resolve(stopping).finally(() => engineRef.current?.stop())
     }
   }, [recording])
 
@@ -460,8 +477,27 @@ export function Transcript({
   const hasContent = frozen.length > 0 || tail.length > 0
   const caption = STATUS_CAPTION[status]
 
+  const onRecordClick = () => {
+    if (collapsed) {
+      setCollapsed(false)
+      if (!recording) onToggleRecord()
+      return
+    }
+    onToggleRecord()
+  }
+
   return (
-    <div className="transcript-pane">
+    <div className={`transcript-pane${collapsed ? ' collapsed' : ''}`}>
+      <button
+        className="transcript-collapse"
+        type="button"
+        aria-label={collapsed ? 'Expand transcription' : 'Collapse transcription'}
+        title={collapsed ? 'Expand transcription' : 'Collapse transcription'}
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((value) => !value)}
+      >
+        {collapsed ? '›' : '‹'}
+      </button>
       <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
         <div className="hint">
           {recording
@@ -492,8 +528,9 @@ export function Transcript({
         <button
           className={`record ${recording ? 'on' : ''}`}
           title={recording ? 'Stop recording' : 'Start recording'}
-          onClick={onToggleRecord}
+          onClick={onRecordClick}
         >
+          {collapsed && <span className="record-label">Record</span>}
           {recording ? <span className="stop-sq" /> : <span className="rec-dot" />}
         </button>
       </div>

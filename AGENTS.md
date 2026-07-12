@@ -34,7 +34,8 @@ Desktop (Electron) shell — reuses the same `apps/web` renderer:
 ```bash
 npm run dev            # terminal 1: Vite dev server (5173)
 npm run dev:desktop    # terminal 2: Electron window loading the dev server
-npm run build:desktop  # package installers via electron-builder → apps/desktop/release/
+npm run build:desktop  # production-domain installers → apps/desktop/release/
+npm run build:desktop:local # local-only installers
 ```
 
 Before handing off changes:

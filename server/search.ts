@@ -20,6 +20,7 @@ export async function tavilySearch(query: string, max = 3): Promise<UrlCard[]> {
   const r = await fetch('https://api.tavily.com/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(10_000),
     body: JSON.stringify({
       api_key: key,
       query,

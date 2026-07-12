@@ -3,6 +3,7 @@ package stt_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -72,6 +73,23 @@ func TestSTTRequiresToken(t *testing.T) {
 	defer cancel()
 	if _, _, err := websocket.Dial(ctx, url, nil); err == nil {
 		t.Fatal("dial without token should fail")
+	}
+}
+
+func TestSTTRejectsUntrustedOrigin(t *testing.T) {
+	srv, token := newSTTServer(t, &stt.MockUpstream{})
+	defer srv.Close()
+	url := strings.Replace(srv.URL, "http://", "ws://", 1) + "/stt?token=" + token
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, response, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"https://evil.example"}},
+	})
+	if err == nil {
+		t.Fatal("dial from an untrusted origin should fail")
+	}
+	if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got response %#v (error %v)", response, err)
 	}
 }
 

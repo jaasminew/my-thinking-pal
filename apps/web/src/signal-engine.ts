@@ -257,9 +257,16 @@ export class SignalEngine {
 
     if (res.error || res.skipped) {
       // No usable output this round — put the raw back so no speech is lost; the
-      // next tick retries. Never surfaced as an error to the user.
+      // next tick retries during live capture. On a forced flush (stop), surface
+      // the failure so a missing Listener key/config isn't silent empty UI.
       this.pendingRaw = raw + (this.pendingRaw ? ` ${this.pendingRaw}` : '')
       this.pendingRawStartTs = rawTs // restored raw is the oldest speech again
+      if (force) {
+        this.onError(
+          res.error ||
+            'Could not extract signals from the recording. Configure a Listener model with an API key in Settings.'
+        )
+      }
       this.setStatus(this.idleStatus())
       return
     }
