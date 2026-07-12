@@ -5,6 +5,7 @@ import { useProjectMemory } from './use-project-memory'
 import type { ScopeTreeNode } from '../../../services/project-memory/scope'
 import type {
   LocalStore,
+  MemoryClient,
   ProjectInstructions,
   ProjectMemoryFile,
   ProjectMemoryScope
@@ -77,6 +78,57 @@ describe('useProjectMemory — file mutations do not clobber instructions', () =
     // instructions — that would clobber any unsaved draft in the modal.
     expect(getInstructions).toHaveBeenCalledTimes(1)
     expect(result.current.instructions.transcriptionSummary).toBe('persisted')
+  })
+
+  it('remote upload sends a non-empty description when browser extraction is unavailable', async () => {
+    const uploadFile = vi.fn(async (_scope: ProjectMemoryScope, _input: any): Promise<ProjectMemoryFile> => ({
+      id: 'remote-1',
+      scopeKind: 'space',
+      scopeId: 'space-1',
+      name: 'brief.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      size: 5,
+      title: 'brief.docx',
+      description: 'server extracted',
+      status: 'indexed',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }))
+    const client: MemoryClient = {
+      async listFiles() {
+        return []
+      },
+      uploadFile,
+      async deleteFile() {},
+      async getText() {
+        return ''
+      },
+      async getBlob() {
+        return new Blob()
+      },
+      async getInstructions() {
+        return { transcriptionSummary: '', coCreation: '', aiCommand: '' }
+      },
+      async putInstructions() {},
+      async deleteScope() {}
+    }
+    const extractText = vi.fn(async () => ({ ok: false as const, reason: 'unsupported' as const }))
+    const { result } = renderHook(() =>
+      useProjectMemory(tree, 'space-1', { localStore: null, client, extractText })
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    const file = new File(['hello'], 'brief.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    })
+    await act(async () => {
+      await result.current.canvas!.uploadFiles([file])
+    })
+
+    expect(uploadFile).toHaveBeenCalledTimes(1)
+    const input = uploadFile.mock.calls[0][1]
+    expect(input.description).toBeTruthy()
+    expect(input.extractedText).toBeUndefined()
   })
 
   it('does not re-fetch instructions after deleteFile resolves', async () => {

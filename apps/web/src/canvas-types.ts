@@ -1,3 +1,5 @@
+import type { ObserverOpportunityType } from '../../../packages/core/llm/observer-types'
+
 // A free-floating "keyword note" on the canvas. Internally an outline: a keyword
 // header and ONE ordered sequence of items — text bullets and URL cards — so a
 // card is an inline line in the flow (arrow keys walk onto it, Enter continues
@@ -97,6 +99,19 @@ export interface KeywordNote {
    * as seedType so the model knows what KIND of thought seeded this note.
    */
   originSignalType?: string
+  /**
+   * Present ONLY on notes the observer agent created (not human notes, not
+   * reactive co-creation). Hidden metadata — never rendered — recording WHY the
+   * observer emitted: the opportunity kind, the evaluator's reason, and its
+   * self-reported confidence. Survives reload/sync so post-session triage and
+   * later log replay can attribute the note. Its presence also marks the note as
+   * observer-originated for any visual distinction.
+   */
+  observerMeta?: {
+    opportunityType: ObserverOpportunityType
+    reason?: string
+    confidence: number
+  }
 }
 
 export const isBullet = (i: NoteItem): i is BulletItem => i.kind === 'bullet'

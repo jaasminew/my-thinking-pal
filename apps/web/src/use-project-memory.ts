@@ -221,7 +221,7 @@ export function useMemoryBucket(scope: ProjectMemoryScope | null, deps: ProjectM
       const extractedText = result?.ok ? result.text.slice(0, PM_TEXT_CHAR_CAP) : undefined
       const desc = extractedText
         ? ((await describe(f.name, extractedText)) ?? fallbackDescription(f.name, extractedText))
-        : { title: f.name, description: '' }
+        : { title: f.name, description: `${f.name} (${mimeType}) awaiting server-side text extraction.` }
       await client!.uploadFile(s, {
         blob: f,
         name: f.name,
