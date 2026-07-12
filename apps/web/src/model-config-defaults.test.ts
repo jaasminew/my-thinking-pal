@@ -6,6 +6,7 @@ describe('model configuration defaults', () => {
     const configs = normalizeModelConfigs([
       {
         id: 'groq-gpt-oss-120b',
+        label: 'Groq · GPT-OSS 120B',
         runtime: 'api',
         providerId: 'groq',
         model: 'openai/gpt-oss-120b'
@@ -23,6 +24,7 @@ describe('model configuration defaults', () => {
     const configs = normalizeModelConfigs([
       {
         id: 'user-groq',
+        label: 'My Groq model',
         runtime: 'api',
         providerId: 'groq',
         model: 'openai/gpt-oss-120b',
