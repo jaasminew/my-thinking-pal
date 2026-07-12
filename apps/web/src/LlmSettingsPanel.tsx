@@ -282,6 +282,10 @@ export function LlmSettingsPanel({
     setSetupError('')
     const id = newConfigId()
     const next = draftToConfig(id)
+    if (next.runtime === 'api' && !next.apiKey) {
+      setSetupError('API key is required for an API model.')
+      return
+    }
     if (next.runtime === 'codex' || next.runtime === 'claude-code' || next.runtime === 'cursor') {
       const ready = await checkRuntimeSetup(next)
       if (!ready) return
@@ -361,6 +365,7 @@ export function LlmSettingsPanel({
                     <label className="llm-field">
                       <span>{CATEGORY_LABELS[category]}</span>
                       <select value={draftSelections[category]} onChange={(e) => patchSelection(category, e.target.value)}>
+                        {options.length === 0 && <option value="">No model configured</option>}
                         {options.map((m) => (
                           <option key={m.id} value={m.id}>{displayLabel(m)}</option>
                         ))}

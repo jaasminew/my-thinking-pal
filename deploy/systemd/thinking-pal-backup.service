@@ -1,0 +1,25 @@
+[Unit]
+Description=Back up Thinking Pal persistent data
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/thinking-pal/backup.env
+ExecStart=/usr/local/sbin/thinking-pal-backup
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/thinking-pal /var/backups/thinking-pal
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

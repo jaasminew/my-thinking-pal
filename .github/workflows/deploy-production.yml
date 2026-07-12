@@ -1,0 +1,122 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Deploy main or roll back to an existing release
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+        required: true
+      release_sha:
+        description: Full commit SHA; required for rollback, optional for deploy
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.release_sha || github.sha }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      APP_DOMAIN: ${{ vars.APP_DOMAIN || 'mythinkingpal.xyz' }}
+      DEPLOY_ARCH: ${{ vars.DEPLOY_ARCH || 'amd64' }}
+    steps:
+      - name: Validate release input
+        run: |
+          [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "${{ inputs.operation }}" == "rollback" && -z "${{ inputs.release_sha }}" ]]; then
+            echo "release_sha is required for rollback" >&2
+            exit 1
+          fi
+
+      - name: Check out release
+        if: inputs.operation != 'rollback'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+
+      - name: Set up Node
+        if: inputs.operation != 'rollback'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Go
+        if: inputs.operation != 'rollback'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: server-go/go.mod
+          cache-dependency-path: server-go/go.sum
+
+      - name: Build immutable release
+        if: inputs.operation != 'rollback'
+        env:
+          VITE_API_URL: https://${{ env.APP_DOMAIN }}
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: ${{ env.DEPLOY_ARCH }}
+        run: |
+          npm ci
+          npm run build
+          npm run build:relay
+          mkdir -p release/web release/relay release/server
+          cp -a dist/. release/web/
+          cp dist-server/relay.cjs release/relay/
+          (cd server-go && go build -trimpath -ldflags="-s -w" -o ../release/server/thinking-pal-server ./cmd/server)
+          tar -C release -czf "thinking-pal-${RELEASE_SHA}.tar.gz" .
+          sha256sum "thinking-pal-${RELEASE_SHA}.tar.gz" >"thinking-pal-${RELEASE_SHA}.sha256"
+
+      - name: Configure pinned SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_SSH_KEY}" >"${HOME}/.ssh/deploy_key"
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" >"${HOME}/.ssh/known_hosts"
+          chmod 0600 "${HOME}/.ssh/deploy_key" "${HOME}/.ssh/known_hosts"
+
+      - name: Upload and activate release
+        if: inputs.operation != 'rollback'
+        run: |
+          archive="thinking-pal-${RELEASE_SHA}.tar.gz"
+          checksum="$(awk '{print $1}' "thinking-pal-${RELEASE_SHA}.sha256")"
+          ssh_opts=(-i "${HOME}/.ssh/deploy_key" -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          scp -i "${HOME}/.ssh/deploy_key" -P "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "${archive}" "${DEPLOY_USER}@${DEPLOY_HOST}:/var/tmp/thinking-pal-upload/${archive}"
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/local/sbin/thinking-pal-deploy '${RELEASE_SHA}' '/var/tmp/thinking-pal-upload/${archive}' '${checksum}'"
+
+      - name: Roll back existing release
+        if: inputs.operation == 'rollback'
+        run: |
+          ssh -i "${HOME}/.ssh/deploy_key" -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/local/sbin/thinking-pal-rollback '${RELEASE_SHA}'"
+
+      - name: Verify public production endpoint
+        run: |
+          curl --fail --show-error --silent --retry 10 --retry-delay 3 --retry-all-errors \
+            "https://${APP_DOMAIN}/healthz"

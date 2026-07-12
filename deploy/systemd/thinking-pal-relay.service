@@ -1,0 +1,32 @@
+[Unit]
+Description=Thinking Pal search and URL metadata relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thinkingpal
+Group=thinkingpal
+WorkingDirectory=/var/lib/thinking-pal
+EnvironmentFile=/etc/thinking-pal/relay.env
+ExecStart=/usr/bin/node /opt/thinking-pal/current/relay/relay.cjs
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
