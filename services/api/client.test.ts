@@ -75,6 +75,26 @@ describe('ApiClient token refresh', () => {
     expect(tokens.access).toBe('access-2')
   })
 
+  it('force-refreshes a valid access token before a WebSocket handshake', async () => {
+    let refreshCalls = 0
+    const { client, tokens } = makeClient(async (url) => {
+      if (url.endsWith('/auth/refresh')) {
+        refreshCalls++
+        return jsonResponse(200, { ...pair, accessToken: 'access-2', refreshToken: 'refresh-2' })
+      }
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    })
+    tokens.save(pair)
+    tokens.saveUser(pair.user)
+
+    const user = await client.refreshSession()
+
+    expect(user?.email).toBe('a@b.com')
+    expect(refreshCalls).toBe(1)
+    expect(tokens.access).toBe('access-2')
+    expect(tokens.refresh).toBe('refresh-2')
+  })
+
   it('clears tokens and throws when refresh fails', async () => {
     const { client, tokens } = makeClient(async (url) => {
       if (url.endsWith('/auth/refresh')) return jsonResponse(401, { error: 'nope' })

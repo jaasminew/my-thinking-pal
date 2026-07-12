@@ -25,7 +25,7 @@ export interface Backend {
   syncFor: (spaceId: string) => SyncParams | null
   /** Backend /stt WebSocket URL (with token), or null when not authed. */
   sttUrl: () => string | null
-  /** Refresh/validate auth before opening non-HTTP transports such as /stt. */
+  /** Force-refresh auth before opening non-HTTP transports such as /stt. */
   refreshAuth: () => Promise<boolean>
 
   /** The user's server documents (loaded when signed in). */
@@ -180,7 +180,7 @@ export function useBackend(): Backend {
 
   const refreshAuth = useCallback(async (): Promise<boolean> => {
     if (!client) return false
-    const me = await client.restoreSession()
+    const me = await client.refreshSession()
     setUser(me)
     return !!me
   }, [client])

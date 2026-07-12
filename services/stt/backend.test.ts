@@ -26,7 +26,11 @@ class FakeTransport implements SttTransport {
 class FakePcm implements PcmSource {
   onPcm: ((b: ArrayBuffer) => void) | null = null
   stopped = false
-  async start(onPcm: (b: ArrayBuffer) => void) { this.onPcm = onPcm }
+  starts = 0
+  async start(onPcm: (b: ArrayBuffer) => void) {
+    this.starts++
+    this.onPcm = onPcm
+  }
   stop() { this.stopped = true }
   emit(b: ArrayBuffer) { this.onPcm?.(b) }
 }
@@ -86,5 +90,48 @@ describe('BackendSTT', () => {
     transport.remoteClose()
     await stopping
     expect(transport.closed).toBe(true)
+  })
+
+  it('refreshes auth and reconnects without restarting the microphone', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = new FakeTransport()
+      const second = new FakeTransport()
+      const pcm = new FakePcm()
+      const urls: string[] = []
+      const transports = [first, second]
+      const reconnectUrl = vi.fn(async () => 'ws://x/stt?token=fresh')
+      const stt = new BackendSTT({
+        url: 'ws://x/stt?token=old',
+        pcm,
+        reconnectUrl,
+        transportFactory: (url) => {
+          urls.push(url)
+          return transports.shift()!
+        }
+      })
+
+      await stt.start({ lang: 'auto' })
+      first.open()
+      await Promise.resolve()
+      expect(pcm.starts).toBe(1)
+
+      first.remoteClose()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(reconnectUrl).toHaveBeenCalledOnce()
+      expect(urls).toEqual(['ws://x/stt?token=old', 'ws://x/stt?token=fresh'])
+
+      second.open()
+      const frame = new Uint8Array([5, 6]).buffer
+      pcm.emit(frame)
+      expect(pcm.starts).toBe(1)
+      expect(second.binaries).toEqual([frame])
+
+      const stopping = stt.stop()
+      second.remoteClose()
+      await stopping
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
