@@ -41,7 +41,15 @@ export function InlineCommandBubble({
       style={{ left, top }}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <span className="spark">✦</span>
+      <svg className="spark" viewBox="0 0 16 16" aria-hidden="true">
+        <defs>
+          <linearGradient id="cmd-spark-gradient" x1="0" y1="16" x2="16" y2="0" gradientUnits="userSpaceOnUse">
+            <stop stopColor="var(--muted)" />
+            <stop offset="1" stopColor="var(--ink-secondary)" />
+          </linearGradient>
+        </defs>
+        <path fill="url(#cmd-spark-gradient)" d="M8 0c.48 4.13 1.87 5.52 6 6-4.13.48-5.52 1.87-6 6-.48-4.13-1.87-5.52-6-6 4.13-.48 5.52-1.87 6-6Z" />
+      </svg>
       <input
         ref={inputRef}
         value={value}
