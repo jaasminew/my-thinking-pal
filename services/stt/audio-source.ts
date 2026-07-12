@@ -25,14 +25,22 @@ export async function getAudioStream(source: AudioSource): Promise<MediaStream> 
     return new MediaStream(disp.getAudioTracks())
   }
 
-  // both: mix mic + system(tab) into one stream via Web Audio.
+  // both: mix mic + system(tab) into one stream via Web Audio. Tab audio is a
+  // best-effort enhancement: some browsers/platforms throw low-level capture
+  // errors, and users often only need the mic. Keep recording instead of failing.
   const mic = await navigator.mediaDevices.getUserMedia({ audio: true })
-  const disp = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+  let disp: MediaStream
+  try {
+    disp = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+  } catch (e) {
+    console.warn('[audio-source] falling back to microphone-only capture', e)
+    return mic
+  }
   disp.getVideoTracks().forEach((t) => t.stop())
   if (disp.getAudioTracks().length === 0) {
-    mic.getTracks().forEach((t) => t.stop())
     disp.getTracks().forEach((t) => t.stop())
-    throw new Error('No tab audio captured — pick a tab and check "Share tab audio".')
+    console.warn('[audio-source] no tab audio captured; using microphone-only capture')
+    return mic
   }
   const ctx = new AudioContext()
   liveContexts.add(ctx)

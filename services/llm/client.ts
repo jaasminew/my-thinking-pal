@@ -14,6 +14,7 @@ import {
   type LlmProvider
 } from '../../packages/core/llm'
 import { resolveClientProvider } from './provider-config'
+import { isProviderUsable } from '../../packages/core/llm'
 
 // The transcript pipeline (cleanup / summary) now runs CLIENT-DIRECT: these
 // functions resolve the user's provider + key and call the OpenAI-compatible
@@ -40,6 +41,14 @@ export async function requestExtractSignals(
 ): Promise<ExtractSignalsResult> {
   try {
     const provider = await pickProvider(deps, req.provider, req.model)
+    if (!isProviderUsable(provider)) {
+      return {
+        signals: [],
+        skipped: true,
+        serverMs: 0,
+        error: `Listener model "${provider.id}" has no API key. Add one in Settings.`
+      }
+    }
     const out = await extractSignals(
       provider,
       { systemPrompt: req.systemPrompt, rawText: req.rawText, existingSignals: req.existingSignals },

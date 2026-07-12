@@ -119,7 +119,7 @@ export function Transcript({
   onHoverNote?: (noteId: string | null) => void
   /** STT provider factory. Defaults to browser-direct Soniox; when signed in the
    *  app injects a backend-proxied provider (docs module 07). */
-  makeStt?: () => STTProvider
+  makeStt?: () => STTProvider | Promise<STTProvider>
   /** Project Memory: the scope's transcriptionSummary instructions, appended to
    *  the extraction system prompt (knowledge excerpts are deliberately NOT
    *  injected here — bias/latency risk). */
@@ -248,7 +248,18 @@ export function Transcript({
         return
       }
 
-      const stt = makeStt ? makeStt() : new SonioxSTT()
+      let stt: STTProvider
+      try {
+        stt = makeStt ? await makeStt() : new SonioxSTT()
+      } catch (e: any) {
+        stream.getTracks().forEach((t) => t.stop())
+        if (!cancelled) setErr(`⚠ ${e.message}`)
+        return
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       sttRef.current = stt
       stt.onError((e) => setErr(`⚠ ${e.message}`))
       stt.onTranscript((ev) => {
@@ -260,15 +271,17 @@ export function Transcript({
       try {
         await stt.start({ lang: 'auto', stream })
       } catch (e: any) {
-        setErr(`⚠ ${e.message}`)
+        if (!cancelled) setErr(`⚠ ${e.message}`)
       }
     })()
 
     return () => {
       cancelled = true
-      sttRef.current?.stop()
+      const stopping = sttRef.current?.stop()
       sttRef.current = null
-      void engineRef.current?.stop() // final cleanup + closing segmentation pass
+      // Backend STT may receive a provider's final transcript only after its
+      // stop frame. Wait for that graceful close before extracting/organizing.
+      void Promise.resolve(stopping).finally(() => engineRef.current?.stop())
     }
   }, [recording])
 

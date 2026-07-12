@@ -63,7 +63,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer ws.CloseNow()
+	defer ws.Close(websocket.StatusNormalClosure, "")
 	ws.SetReadLimit(4 << 20)
 
 	ctx := r.Context()

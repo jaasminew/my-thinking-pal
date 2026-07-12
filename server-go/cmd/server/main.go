@@ -96,7 +96,7 @@ func websocketOrigins(corsOrigin string) []string {
 func buildUpstream(cfg config.Config) stt.Upstream {
 	switch cfg.STTProvider {
 	case "tencent":
-		return stt.NewTencent(cfg.TencentAppID, cfg.TencentSecretID, cfg.TencentSecretKey)
+		return stt.NewTencent(cfg.TencentAppID, cfg.TencentSecretID, cfg.TencentSecretKey, cfg.TencentEngineModel)
 	case "mock":
 		return &stt.MockUpstream{}
 	default:
