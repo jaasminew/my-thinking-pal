@@ -16,9 +16,12 @@ import (
 // (module 07.5) and delegates to a pluggable Upstream.
 type Handler struct {
 	upstream Upstream
+	origins  []string
 }
 
-func NewHandler(upstream Upstream) *Handler { return &Handler{upstream: upstream} }
+func NewHandler(upstream Upstream, origins ...string) *Handler {
+	return &Handler{upstream: upstream, origins: origins}
+}
 
 // Uplink client messages.
 type clientMsg struct {
@@ -55,7 +58,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols:   []string{"bearer"},
-		OriginPatterns: []string{"*"},
+		OriginPatterns: h.origins,
 	})
 	if err != nil {
 		return

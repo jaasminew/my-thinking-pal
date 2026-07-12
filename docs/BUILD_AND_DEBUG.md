@@ -99,7 +99,7 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `PORT` | `8080` | 监听端口 |
+| `HOST` / `PORT` | `127.0.0.1` / `8080` | 监听地址与端口 |
 | `ACCOUNT_STORE` | `memory` | `memory`\|`sqlite`(生产用 sqlite) |
 | `ACCOUNT_DSN` | `file:data/accounts.db?_journal=WAL` | sqlite 路径 |
 | `DOC_STORE` / `DOC_PATH` | `fs` / `data/docs` | CRDT 更新日志 + 快照目录 |
@@ -116,10 +116,15 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 
 ```bash
 npm run build           # 前端 → dist/
+npm run build:relay     # 生产搜索中继 → dist-server/relay.cjs
 npm run preview         # 本地预览 dist/
 cd server-go && make build   # → server-go/bin/server
 npm run build:desktop   # 桌面安装包 → apps/desktop/release/
 ```
+
+`mythinkingpal.xyz` 的单机生产环境使用 Nginx + systemd，并由 GitHub Actions
+在 `main` CI 成功后自动发布。首次服务器初始化、DNS/TLS、GitHub Environment、
+备份恢复和回滚步骤见 [`deploy/README.md`](../deploy/README.md)。
 
 ## 7. 调试技巧 & 常见坑
 
@@ -139,7 +144,7 @@ apps/web/          React renderer(Vite root 仍是仓库根,入口 apps/web/src/
 apps/desktop/      Electron 壳(main.cjs / preload.cjs / electron-builder.yml)
 packages/core/     共享:CRDT doc(schema/board)、LLM 解析、设置
 services/          浏览器客户端库:api(auth/documents)、sync(BoardSync)、stt、llm、dev-keys
-server/            dev-only Vite 中间件:/api/search + /api/url-meta
+server/            dev 中间件 + 可独立构建的生产搜索/URL 元数据中继
 server-go/         Go 后端:auth/JWT、documents、/sync 中继、/stt 转发(cmd + internal + Makefile)
 docs/              技术方案与模块文档(见 technical-plan.md)
 ```

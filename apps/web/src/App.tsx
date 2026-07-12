@@ -55,23 +55,26 @@ import type {
 } from '../../../packages/core/llm/observer-types'
 
 const OPEN_PROVIDER: CocreateProvider = 'open'
-const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = [
-  { id: 'groq-llama-3-3-70b', runtime: 'api', providerId: 'groq', model: 'llama-3.3-70b-versatile', label: 'Groq · Llama 3.3 70B' },
-  { id: 'groq-gpt-oss-120b', runtime: 'api', providerId: 'groq', model: 'openai/gpt-oss-120b', label: 'Groq · GPT-OSS 120B' },
-  { id: 'groq-qwen3-32b', runtime: 'api', providerId: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
-  { id: 'ollama-local', runtime: 'ollama', providerId: 'ollama', baseUrl: 'http://localhost:11434/v1', model: '', label: 'Ollama · local' }
-]
-// Both categories default to Groq gpt-oss-120b (DEFAULT_BASE_MODEL, contract §4).
+const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = []
+const LEGACY_PLACEHOLDER_MODEL_IDS = new Set([
+  'groq-llama-3-3-70b',
+  'groq-gpt-oss-120b',
+  'groq-qwen3-32b',
+  'ollama-local'
+])
 const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
-  listener: 'groq-gpt-oss-120b',
-  thinker: 'groq-gpt-oss-120b'
+  listener: '',
+  thinker: ''
 }
 
-function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModelConfig[] {
-  const byId = new Map(DEFAULT_MODEL_CONFIGS.map((c) => [c.id, c]))
+export function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModelConfig[] {
+  const byId = new Map<string, AiModelConfig>()
   if (Array.isArray(raw)) {
     for (const cfg of raw) {
       if (!cfg?.id || !cfg?.runtime) continue
+      // Older builds persisted four starter entries even though the user had
+      // never configured them. Remove those misleading placeholders once.
+      if (LEGACY_PLACEHOLDER_MODEL_IDS.has(cfg.id)) continue
       byId.set(cfg.id, {
         id: String(cfg.id),
         label: String(cfg.label || cfg.id),
@@ -87,17 +90,13 @@ function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModel
   return [...byId.values()]
 }
 
-function normalizeModelSelections(
+export function normalizeModelSelections(
   raw: Partial<ModelSelections> | Record<string, unknown> | null | undefined,
   configs: readonly AiModelConfig[]
 ): ModelSelections {
   const ids = new Set(configs.map((c) => c.id))
-  const legacyAt = (idx: number) => DEFAULT_MODEL_CONFIGS[idx]?.id
   const pick = (value: unknown, fallback: string) => {
     if (typeof value === 'string' && ids.has(value)) return value
-    if (typeof value === 'number') return legacyAt(value) ?? fallback
-    const n = Math.floor(Number(value))
-    if (Number.isFinite(n)) return legacyAt(n) ?? fallback
     return fallback
   }
   // Migrate legacy per-role selections (contract §5): transcriptionSummary →
@@ -110,7 +109,13 @@ function normalizeModelSelections(
 }
 
 const modelConfigAt = (configs: readonly AiModelConfig[], id: string) =>
-  configs.find((cfg) => cfg.id === id) ?? configs[0] ?? DEFAULT_MODEL_CONFIGS[0]
+  configs.find((cfg) => cfg.id === id) ??
+  configs[0] ?? {
+    id: '',
+    label: 'No model configured',
+    runtime: 'api' as const,
+    providerId: 'groq'
+  }
 const GearIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="3" />
@@ -497,7 +502,7 @@ function CanvasSpace({
 
   // AI co-creation mode: OFF suppresses ambient fires and cancels in-flight
   // ones. Tier-3 commands stay live — an explicit command is an invitation.
-  const [aiEnabled, setAiEnabled] = useState(true)
+  const [aiEnabled, setAiEnabled] = useState(modelConfigs.length > 0)
 
   // ---- Tier-3 command sessions: select text → bubble → side-panel chat ----
   // bubbleSel is the FROZEN SelectionSnapshot the bubble was opened from; the
@@ -530,7 +535,7 @@ function CanvasSpace({
   const selectedIdsRef = useRef(selectedIds)
   useEffect(() => { selectedIdsRef.current = selectedIds }, [selectedIds])
   const aiBufRef = useRef<Record<string, string>>({})
-  const aiEnabledRef = useRef(true)
+  const aiEnabledRef = useRef(modelConfigs.length > 0)
   useEffect(() => { aiEnabledRef.current = aiEnabled }, [aiEnabled])
   const isActiveRef = useRef(isActive)
   useEffect(() => { isActiveRef.current = isActive }, [isActive])
@@ -1105,6 +1110,7 @@ function CanvasSpace({
   // CURRENT word count, so writing done while off never triggers a burst of
   // stale suggestions. OFF cancels in-flight ambient fires (commands finish).
   const toggleAi = useCallback(() => {
+    if (modelConfigs.length === 0) return
     const next = !aiEnabledRef.current
     if (next) {
       setNotes((ns) => ns.map((n) => ({ ...n, lastFiredWords: humanWords(n) })))
@@ -1114,7 +1120,7 @@ function CanvasSpace({
       }
     }
     setAiEnabled(next)
-  }, [])
+  }, [modelConfigs.length])
 
   // ---- Tier-3: persistent context highlight --------------------------------
   // Painted from the frozen snapshot (bubble open or session running), rebuilt
@@ -1880,6 +1886,8 @@ function CanvasSpace({
               role="switch"
               aria-checked={aiEnabled}
               aria-label="AI co-creation mode"
+              title={modelConfigs.length === 0 ? 'Configure a model in Settings first' : undefined}
+              disabled={modelConfigs.length === 0}
               onClick={toggleAi}
             />
             <button

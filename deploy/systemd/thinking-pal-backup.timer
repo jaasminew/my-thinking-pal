@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Thinking Pal backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=thinking-pal-backup.service
+
+[Install]
+WantedBy=timers.target

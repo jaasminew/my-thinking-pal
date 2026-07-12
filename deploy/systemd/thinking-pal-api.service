@@ -1,0 +1,33 @@
+[Unit]
+Description=Thinking Pal Go API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thinkingpal
+Group=thinkingpal
+WorkingDirectory=/var/lib/thinking-pal
+EnvironmentFile=/etc/thinking-pal/api.env
+ExecStart=/opt/thinking-pal/current/server/thinking-pal-server
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/thinking-pal
+
+[Install]
+WantedBy=multi-user.target

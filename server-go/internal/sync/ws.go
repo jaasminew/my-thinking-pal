@@ -2,7 +2,6 @@ package sync
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,17 +16,18 @@ type Handler struct {
 	hub      *Hub
 	docs     storage.DocStore
 	accounts storage.AccountStore
+	origins  []string
 }
 
-func NewHandler(docs storage.DocStore, accounts storage.AccountStore) *Handler {
-	return &Handler{hub: NewHub(), docs: docs, accounts: accounts}
+func NewHandler(docs storage.DocStore, accounts storage.AccountStore, origins ...string) *Handler {
+	return &Handler{hub: NewHub(), docs: docs, accounts: accounts, origins: origins}
 }
 
 const sendQueue = 256
 
 // ServeHTTP handles GET /sync/{docId}. RequireAuth has already validated the
 // token and put the user id in ctx; here we additionally check document
-// ownership (unless the doc is not yet registered — see note below).
+// ownership.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	docID := r.PathValue("docId")
 	if docID == "" {
@@ -42,7 +42,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols:   []string{"bearer"},
-		OriginPatterns: []string{"*"},
+		OriginPatterns: h.origins,
 	})
 	if err != nil {
 		return
@@ -144,16 +144,10 @@ func (h *Handler) applySnapshot(ctx context.Context, docID string, snap []byte) 
 	}
 }
 
-// authorize allows the owner; a doc not yet registered in AccountStore is
-// permitted for any authenticated user (the frontend creates board docs before
-// documents CRUD is wired — tightened once that lands).
+// authorize only allows an account that can access a registered document.
 func (h *Handler) authorize(ctx context.Context, userID, docID string) bool {
 	if userID == "" {
 		return false
-	}
-	_, err := h.accounts.GetDocument(ctx, docID)
-	if errors.Is(err, storage.ErrNotFound) {
-		return true
 	}
 	ok, err := h.accounts.CanAccess(ctx, userID, docID)
 	return err == nil && ok

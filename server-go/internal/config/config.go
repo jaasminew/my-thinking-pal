@@ -8,6 +8,7 @@ import (
 )
 
 type Config struct {
+	Host              string
 	Port              string
 	AccountStore      string // memory | sqlite
 	AccountDSN        string
@@ -29,6 +30,7 @@ type Config struct {
 
 func Load() Config {
 	return Config{
+		Host:              env("HOST", "127.0.0.1"),
 		Port:              env("PORT", "8080"),
 		AccountStore:      env("ACCOUNT_STORE", "memory"),
 		AccountDSN:        env("ACCOUNT_DSN", "file:data/accounts.db?_journal=WAL"),
