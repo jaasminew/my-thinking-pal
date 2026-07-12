@@ -29,6 +29,10 @@ export interface BackendSTTOptions {
   url: string
   sampleRate?: number
   transport?: SttTransport
+  transportFactory?: (url: string) => SttTransport
+  /** Return a URL carrying a freshly rotated token after an unexpected close. */
+  reconnectUrl?: () => Promise<string>
+  maxReconnectAttempts?: number
   pcm?: PcmSource
 }
 
@@ -41,27 +45,54 @@ export class BackendSTT implements STTProvider {
   private readonly rate: number
   private closed?: Promise<void>
   private stopping = false
+  private pcmStarted = false
+  private startOpts?: STTStartOpts
+  private reconnectAttempts = 0
+  private reconnectTimer?: ReturnType<typeof setTimeout>
+  private lastSocketError?: Error
 
   constructor(private readonly opts: BackendSTTOptions) {
     this.rate = opts.sampleRate ?? 16000
   }
 
   async start(startOpts: STTStartOpts): Promise<void> {
-    const transport = this.opts.transport ?? websocketSttTransport(this.opts.url)
-    const pcm = this.opts.pcm ?? new PcmMicStream()
-    this.transport = transport
-    this.pcm = pcm
-    this.closed = new Promise((resolve) => transport.onClose(resolve))
+    this.startOpts = startOpts
+    this.pcm = this.opts.pcm ?? new PcmMicStream()
+    this.connect(this.opts.url, this.opts.transport)
+  }
 
+  private connect(url: string, injected?: SttTransport): void {
+    const transport = injected ?? this.opts.transportFactory?.(url) ?? websocketSttTransport(url)
+    this.transport = transport
+    this.closed = new Promise((resolve) => {
+      transport.onClose(() => {
+        resolve()
+        if (this.transport !== transport || this.stopping) return
+        void this.reconnect()
+      })
+    })
     transport.onOpen(() => {
+      if (this.transport !== transport || this.stopping) return
+      this.reconnectAttempts = 0
+      this.lastSocketError = undefined
       transport.sendText(
-        JSON.stringify({ type: 'config', language: startOpts.lang || 'auto', sampleRate: this.rate })
+        JSON.stringify({ type: 'config', language: this.startOpts?.lang || 'auto', sampleRate: this.rate })
       )
-      // Reuse the shared mic→PCM16 pipeline; forward every frame to the backend.
-      void pcm.start((buf) => transport.sendBinary(buf), { stream: startOpts.stream, targetRate: this.rate })
+      // Start the microphone once. Its callback follows this.transport, so audio
+      // automatically flows into a replacement socket after reconnection.
+      if (!this.pcmStarted) {
+        this.pcmStarted = true
+        void this.pcm
+          ?.start((buf) => this.transport?.sendBinary(buf), {
+            stream: this.startOpts?.stream,
+            targetRate: this.rate
+          })
+          .catch((e) => this.err?.(e instanceof Error ? e : new Error(String(e))))
+      }
     })
 
     transport.onMessage((text) => {
+      if (this.transport !== transport) return
       let msg: any
       try {
         msg = JSON.parse(text)
@@ -82,12 +113,39 @@ export class BackendSTT implements STTProvider {
     })
 
     transport.onError((e) => {
-      if (!this.stopping) this.err?.(e)
+      if (!this.stopping && this.transport === transport) this.lastSocketError = e
     })
+  }
+
+  private async reconnect(): Promise<void> {
+    if (this.stopping) return
+    if (!this.opts.reconnectUrl) {
+      this.err?.(this.lastSocketError ?? new Error('Backend STT connection closed unexpectedly'))
+      return
+    }
+    const maxAttempts = this.opts.maxReconnectAttempts ?? 3
+    if (this.reconnectAttempts >= maxAttempts) {
+      this.err?.(this.lastSocketError ?? new Error('Backend STT reconnect failed'))
+      return
+    }
+    const attempt = ++this.reconnectAttempts
+    await new Promise<void>((resolve) => {
+      this.reconnectTimer = setTimeout(resolve, Math.min(500 * 2 ** (attempt - 1), 4000))
+    })
+    if (this.stopping) return
+    try {
+      const url = await this.opts.reconnectUrl()
+      if (!url) throw new Error('Backend speech session is unavailable')
+      this.connect(url)
+    } catch (e) {
+      this.lastSocketError = e instanceof Error ? e : new Error(String(e))
+      void this.reconnect()
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     try {
       this.transport?.sendText(JSON.stringify({ type: 'stop' }))
     } catch {

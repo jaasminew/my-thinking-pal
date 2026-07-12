@@ -59,6 +59,17 @@ export class ApiClient {
     return restoreFlight
   }
 
+  /**
+   * Rotate the access token even when the current one is still valid.
+   * WebSocket handshakes cannot use authedFetch's 401 retry, so callers use
+   * this immediately before opening a long-lived authenticated connection.
+   */
+  async refreshSession(): Promise<User | null> {
+    if (!this.tokens.refresh) return null
+    if (!(await this.refreshTokens())) return null
+    return this.tokens.loadUser()
+  }
+
   // ---- auth ----
   async register(email: string, password: string): Promise<TokenPair> {
     return this.authenticate('/auth/register', email, password)
