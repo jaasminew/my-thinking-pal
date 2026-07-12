@@ -138,6 +138,47 @@ describe('ApiClient token refresh', () => {
     expect(user?.email).toBe('a@b.com')
     expect(tokens.access).toBe('access-2')
   })
+
+  it('restoreSession keeps cached user on transient /auth/me failure', async () => {
+    const { client, tokens } = makeClient(async (url) => {
+      if (url.endsWith('/auth/me')) return jsonResponse(503, { error: 'busy' })
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    })
+    tokens.save(pair)
+    tokens.saveUser(pair.user)
+    const user = await client.restoreSession()
+    expect(user?.email).toBe('a@b.com')
+    expect(tokens.access).toBe('access-1')
+    expect(tokens.refresh).toBe('refresh-1')
+  })
+
+  it('restoreSession keeps cached user when refresh has a transient failure', async () => {
+    const { client, tokens } = makeClient(async (url) => {
+      if (url.endsWith('/auth/me')) return jsonResponse(401, { error: 'expired' })
+      if (url.endsWith('/auth/refresh')) return jsonResponse(503, { error: 'busy' })
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    })
+    tokens.save(pair)
+    tokens.saveUser(pair.user)
+    const user = await client.restoreSession()
+    expect(user?.email).toBe('a@b.com')
+    expect(tokens.access).toBe('access-1')
+    expect(tokens.refresh).toBe('refresh-1')
+  })
+
+  it('restoreSession clears tokens on auth rejection', async () => {
+    const { client, tokens } = makeClient(async (url) => {
+      if (url.endsWith('/auth/me')) return jsonResponse(401, { error: 'expired' })
+      if (url.endsWith('/auth/refresh')) return jsonResponse(401, { error: 'nope' })
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    })
+    tokens.save(pair)
+    tokens.saveUser(pair.user)
+    const user = await client.restoreSession()
+    expect(user).toBeNull()
+    expect(tokens.access).toBeNull()
+    expect(tokens.refresh).toBeNull()
+  })
 })
 
 describe('ApiClient documents', () => {
