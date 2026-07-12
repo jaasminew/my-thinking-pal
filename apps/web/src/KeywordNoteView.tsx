@@ -695,7 +695,9 @@ export function KeywordNoteView({
       )}
       {/* keyword header — plain black text; fades to orange only while its
           transcript source phrase is hovered */}
-      <div className={`kw-header ${isObserver ? 'observer' : ''} ${hovered ? 'hovered' : ''}`}>
+      {/* Observer gray marks a note still awaiting judgment; once kept (✓) the
+          header settles to black together with the body text. */}
+      <div className={`kw-header ${isObserver && hasPending ? 'observer' : ''} ${hovered ? 'hovered' : ''}`}>
         {note.keywordEditing ? (
           <KeywordEditor value={note.keyword} onChange={onKeywordChange} onCommit={onKeywordCommit} />
         ) : (
