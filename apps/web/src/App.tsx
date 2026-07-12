@@ -1765,7 +1765,7 @@ function CanvasSpace({
       cancelled = true
       engine.stop()
     }
-  }, [isActive, recording, aiEnabled])
+  }, [isActive, recording, aiEnabled, modelConfigs, modelSelections.listener])
 
   // Which id(s) move when a pointer-drag starts on obj `id`: the whole selection
   // if `id` is part of a multi-select, else just `id` (which becomes the lone

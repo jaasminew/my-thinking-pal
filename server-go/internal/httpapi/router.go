@@ -41,6 +41,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /auth/logout", d.Auth.Logout)
 
 	// Authenticated
+	mux.Handle("GET /auth/me", d.Auth.RequireAuth(http.HandlerFunc(d.Auth.Me)))
 	mux.Handle("GET /me", d.Auth.RequireAuth(http.HandlerFunc(d.Auth.Me)))
 	mux.Handle("GET /documents", d.Auth.RequireAuth(http.HandlerFunc(d.Documents.List)))
 	mux.Handle("POST /documents", d.Auth.RequireAuth(http.HandlerFunc(d.Documents.Create)))
