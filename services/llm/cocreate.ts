@@ -5,6 +5,7 @@ import {
   SEARCH_INSTRUCTION,
   buildCocreateContext,
   buildCommandContext,
+  cocreateCompletion,
   cocreateStream,
   formatProjectInstructions,
   prependMemoryBlock,
@@ -100,25 +101,70 @@ export async function requestCocreate(
     }
   }
 
-  const outcome = isLocalRuntime
-    ? await runLocalCocreate(
-        { runtime: providerId as LocalRuntime, command: req.runtimeCommand, model: req.model, system, userText },
-        localHandlers,
-        doFetch as typeof fetch,
-        signal
-      )
-    : await cocreateStream(
-        provider!,
-        // Selected memory images ride as multimodal parts (local CLI runtimes
-        // can't take pixels — they get the text block only).
-        { system, userText, images: req.projectMemory?.images?.map((im) => im.dataUrl) },
-        localHandlers,
-        doFetch,
-        signal
-      )
+  const runPass = (systemPrompt: string) =>
+    isLocalRuntime
+      ? runLocalCocreate(
+          { runtime: providerId as LocalRuntime, command: req.runtimeCommand, model: req.model, system: systemPrompt, userText },
+          localHandlers,
+          doFetch as typeof fetch,
+          signal
+        )
+      : cocreateStream(
+          provider!,
+          // Selected memory images ride as multimodal parts (local CLI runtimes
+          // can't take pixels — they get the text block only).
+          { system: systemPrompt, userText, images: req.projectMemory?.images?.map((im) => im.dataUrl) },
+          localHandlers,
+          doFetch,
+          signal
+        )
+
+  let outcome = await runPass(system)
+  const needsContributionRetry = () =>
+    outcome.passed ||
+    (outcome.contentLines === 0 && outcome.error === 'Model completed without a displayable co-creation bullet')
+  if (needsContributionRetry() && !signal?.aborted) {
+    // Older/custom prompts may still choose the legacy PASS branch, while some
+    // reasoning streams can finish before emitting a visible line. Give either
+    // case one bounded second chance. The parser keeps PASS for backward
+    // compatibility; the product-facing contract now expects output.
+    outcome = await runPass(
+      system + '\n\nThis is a required co-creation retry. Return at least one useful bullet; do not answer PASS.'
+    )
+  }
+  if (
+    !isLocalRuntime &&
+    !signal?.aborted &&
+    outcome.contentLines === 0 &&
+    outcome.error === 'Model completed without a displayable co-creation bullet'
+  ) {
+    // The observer uses whole-response completions and may work even when a
+    // provider's streaming delta format yields no visible content. Reuse that
+    // reliable transport as a final fallback, then feed it through the same
+    // co-creation protocol filters and sequential reveal handlers.
+    outcome = await cocreateCompletion(
+      provider!,
+      {
+        system: system + '\n\nReturn at least one useful bullet; do not answer PASS.',
+        userText,
+        images: req.projectMemory?.images?.map((im) => im.dataUrl)
+      },
+      localHandlers,
+      doFetch,
+      signal
+    )
+  }
 
   if (signal?.aborted) return { aborted: true }
-  if (outcome.error) return { error: outcome.error, provider: req.provider, model: provider?.model ?? req.model }
+  if (outcome.error) {
+    return {
+      error: outcome.error,
+      passed: outcome.passed,
+      contentLines: outcome.contentLines,
+      provider: req.provider,
+      model: provider?.model ?? req.model
+    }
+  }
 
   // Emit cited-link cards (if any) first.
   if (collectedUrls.length) handlers.onUrls?.(collectedUrls.slice(0, 3))
@@ -153,5 +199,11 @@ export async function requestCocreate(
     }
   }
 
-  return { model: provider?.model ?? req.model, provider: req.provider, urls: collectedUrls }
+  return {
+    model: provider?.model ?? req.model,
+    provider: req.provider,
+    urls: collectedUrls,
+    passed: outcome.passed,
+    contentLines: outcome.contentLines
+  }
 }

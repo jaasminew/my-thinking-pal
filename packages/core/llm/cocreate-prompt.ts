@@ -51,8 +51,8 @@ export const COCREATE_SYSTEM =
   `Line 2: "ANCHOR: <n>" — the number of the user's bullet (from the numbered note list) that your ` +
   `contribution most directly builds on, so it can be placed right under that thought; or "ANCHOR: NONE" ` +
   `when it speaks to the note as a whole. Also machine-read, never shown. ` +
-  `Then EITHER the single word "PASS" on its own line (the note is doing fine on its own — a fully ` +
-  `legitimate answer; never force a contribution) OR 1-3 bullet lines starting with "- ", each ≤ 25 words. ` +
+  `Then write 1-3 bullet lines starting with "- ", each ≤ 25 words. A co-creation fire is a request ` +
+  `for a useful adjacent contribution: do not answer PASS or return only the machine-read lines. ` +
   `Use the SMALLEST number of bullets that serves the diagnosis — one sharp bullet usually beats three. ` +
   `Do NOT repeat or restate the user's words or anything already on the canvas; go somewhere NEW. ` +
   `Lean toward what the user KEPT; avoid the directions they REJECTED. ` +
@@ -75,4 +75,4 @@ export const SEARCH_INSTRUCTION =
   `diagram, a physical object — and one glance beats any words; the image renders inside ` +
   `your bullet, no jump. ` +
   `Add neither when your words alone carry it — pure reasoning, a question, a reframe. ` +
-  `Never add one on PASS. Put nothing after it.`
+  `Put nothing after it.`

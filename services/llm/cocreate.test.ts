@@ -63,7 +63,91 @@ describe('requestCocreate (client-direct)', () => {
       { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
     )
     expect(res.urls).toEqual([])
+    expect(res.passed).toBe(true)
+    expect(res.contentLines).toBe(0)
     expect(mock.calls.some((c) => c.url.includes('/api/search'))).toBe(false)
+  })
+
+  it('retries a legacy PASS once and emits the retry contribution', async () => {
+    let attempt = 0
+    const text: string[] = []
+    const mock = mockFetchRouter([
+      {
+        match: (u) => u.includes('/chat/completions'),
+        respond: () => {
+          attempt++
+          return attempt === 1
+            ? sseResponse(['DIAGNOSIS: fine\n', 'PASS\n'])
+            : sseResponse(['DIAGNOSIS: add a test\n', 'ANCHOR: NONE\n', '- Test the prototype with five creators\n'])
+        }
+      }
+    ])
+    const res = await requestCocreate(
+      { seedText: 'x', provider: 'open', openSub: 'groq', webSearch: false },
+      { onText: (chunk) => text.push(chunk) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(attempt).toBe(2)
+    expect(res.passed).toBe(false)
+    expect(res.contentLines).toBe(1)
+    expect(text.join('')).toContain('Test the prototype with five creators')
+  })
+
+  it('retries an empty non-PASS completion once', async () => {
+    let attempt = 0
+    const text: string[] = []
+    const mock = mockFetchRouter([
+      {
+        match: (u) => u.includes('/chat/completions'),
+        respond: () => {
+          attempt++
+          return attempt === 1
+            ? sseResponse(['DIAGNOSIS: add a test\n', 'ANCHOR: NONE\n'])
+            : sseResponse(['DIAGNOSIS: add a test\n', 'ANCHOR: NONE\n', '- Test the prototype with five creators\n'])
+        }
+      }
+    ])
+    const res = await requestCocreate(
+      { seedText: 'x', provider: 'open', openSub: 'groq', webSearch: false },
+      { onText: (chunk) => text.push(chunk) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(attempt).toBe(2)
+    expect(res.error).toBeUndefined()
+    expect(res.contentLines).toBe(1)
+    expect(text.join('')).toContain('Test the prototype with five creators')
+  })
+
+  it('falls back to a whole completion when both streams are empty', async () => {
+    let streamAttempts = 0
+    const text: string[] = []
+    const mock = mockFetchRouter([
+      {
+        match: (u) => u.includes('/chat/completions'),
+        respond: (_u, init) => {
+          const body = JSON.parse(String(init?.body))
+          if (body.stream === true) {
+            streamAttempts++
+            return sseResponse(['DIAGNOSIS: add a test\n', 'ANCHOR: NONE\n'])
+          }
+          return rawJsonResponse({
+            choices: [{ message: { content: 'DIAGNOSIS: add a test\nANCHOR: NONE\n- Test with five creators' } }]
+          })
+        }
+      }
+    ])
+    const res = await requestCocreate(
+      { seedText: 'x', provider: 'open', openSub: 'groq', webSearch: false },
+      { onText: (chunk) => text.push(chunk) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(streamAttempts).toBe(2)
+    expect(res.error).toBeUndefined()
+    expect(res.contentLines).toBe(1)
+    expect(text.join('')).toContain('Test with five creators')
   })
 
   it('resolves a SEARCH IMAGE intent to an inline image via url-meta', async () => {

@@ -40,6 +40,13 @@ export class ObserverEngine {
   // Public callbacks — the Lead assigns these to wire the engine into the app.
   onEmit: (e: ObserverEmission) => void = () => {}
   onLog: (r: ObserverLogRecord) => void = () => {}
+  /** Fires immediately before contribute() is called (never on evaluator-only
+   *  passes or gate skips). The AI cursor appears at the future note's spot. */
+  onContributeStart: () => void = () => {}
+  /** Fires exactly once per contribute call, after it settles. emitted=true
+   *  only when onEmit fired for this cycle (the success path). Every other
+   *  exit (throw, stale, null, error, dup-title) fires with emitted=false. */
+  onContributeSettled: (emitted: boolean) => void = () => {}
 
   private deps: ObserverEngineDeps
   private config: ObserverEngineConfig
@@ -185,6 +192,9 @@ export class ObserverEngine {
     signalTsRange: [number, number],
     gen: number
   ): Promise<void> {
+    // Declared outside the try so the finally block can read them (block scope).
+    let contribStarted = false
+    let emitted = false
     try {
       // --- Evaluator phase ---
       const ctx = this.deps.getContext()
@@ -235,6 +245,9 @@ export class ObserverEngine {
       if (!decision.emit) return
 
       // --- Contributor phase ---
+      // onContributeStart fires ONLY when contribute is reached (never on
+      // evaluator-only passes or gate skips). onContributeSettled fires once
+      // on every exit path after this point, via the finally block below.
       const contribInput: ObserverContributorInput = {
         decision,
         signals: lines,
@@ -242,6 +255,9 @@ export class ObserverEngine {
         canvasSummary: ctx.settledContent,
         ...(ctx.dominantLanguage ? { dominantLanguage: ctx.dominantLanguage } : {})
       }
+
+      this.onContributeStart()
+      contribStarted = true
 
       let result: ObserverContributionResult | null
       try {
@@ -296,6 +312,7 @@ export class ObserverEngine {
         result: dedupedResult,
         signalTsRange
       })
+      emitted = true
       this.state.lastEmittedAt = this.now()
       this.state.recentTopics.push(normalizedKeyword)
       while (this.state.recentTopics.length > this.config.maxRecentTopics) {
@@ -317,6 +334,12 @@ export class ObserverEngine {
       // Only clear the flag if this cycle still owns the current generation.
       if (gen === this.gen) {
         this.evaluating = false
+      }
+      // onContributeSettled fires exactly once on every exit path after
+      // contribute started — covers throw, stale, null, error, dup-title,
+      // and success. emitted is true only on the success path.
+      if (contribStarted) {
+        this.onContributeSettled(emitted)
       }
     }
   }
