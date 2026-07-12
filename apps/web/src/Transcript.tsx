@@ -132,8 +132,8 @@ export function Transcript({
   seedFromLocal?: boolean
 }) {
   const k = (key: string) => key + storageSuffix
-  // Restored from localStorage so the cleaned transcript survives refreshes;
-  // starting a NEW recording still resets it (existing semantics).
+  // Restored from localStorage so the cleaned transcript survives refreshes.
+  // New recording sessions append to this content instead of replacing it.
   const [frozen, setFrozen] = useState<Section[]>(() => loadJSON(k('transcript-frozen'), []))
   const [tail, setTail] = useState<Line[]>(() => loadJSON(k('transcript-tail'), []))
   const [status, setStatus] = useState<EngineStatus>('idle')
@@ -198,7 +198,7 @@ export function Transcript({
     engine.onError = (msg) => setErr(`⚠ ${msg}`)
     engine.onSignals = (lines) => onSignalsRef.current?.(lines)
     // Seed the engine with the restored transcript so editing a restored line
-    // or header still works. A new recording resets this, as before.
+    // or header still works and later recording sessions can append to it.
     engine.frozenSections = snapFrozen(frozen)
     engine.tail = snapTail(tail)
     engineRef.current = engine
@@ -229,11 +229,9 @@ export function Transcript({
     let cancelled = false
 
     void (async () => {
-      engineRef.current?.reset()
+      engineRef.current?.resetCapture()
       setEditing(null)
       setErr('')
-      setFrozen([])
-      setTail([])
       engineRef.current?.start()
 
       let stream: MediaStream

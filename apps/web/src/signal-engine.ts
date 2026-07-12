@@ -120,11 +120,18 @@ export class SignalEngine {
   }
 
   reset() {
+    this.resetCapture()
+    this.frozenSections = []
+    this.tail = []
+  }
+
+  /** Start a fresh audio-capture session without erasing highlights produced by
+   *  earlier sessions. This also invalidates any in-flight closing pass from
+   *  the previous session, so a late response cannot overwrite new speech. */
+  resetCapture() {
     clearInterval(this.extractTimer)
     clearInterval(this.organizeTimer)
     this.gen++
-    this.frozenSections = []
-    this.tail = []
     this.pendingRaw = ''
     this.pendingRawStartTs = undefined
     this.lastRawSpeaker = undefined
