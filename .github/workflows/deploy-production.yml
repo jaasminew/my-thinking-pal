@@ -116,7 +116,10 @@ jobs:
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "sudo /usr/local/sbin/thinking-pal-rollback '${RELEASE_SHA}'"
 
-      - name: Verify public production endpoint
+      - name: Verify production endpoint
         run: |
-          curl --fail --show-error --silent --retry 10 --retry-delay 3 --retry-all-errors \
-            "https://${APP_DOMAIN}/healthz"
+          ssh -i "${HOME}/.ssh/deploy_key" -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "curl --fail --show-error --silent --retry 10 --retry-delay 3 --retry-all-errors \
+              --resolve '${APP_DOMAIN}:443:127.0.0.1' \
+              'https://${APP_DOMAIN}/healthz'"
