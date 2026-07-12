@@ -109,7 +109,9 @@ export async function requestCocreate(
       )
     : await cocreateStream(
         provider!,
-        { system, userText },
+        // Selected memory images ride as multimodal parts (local CLI runtimes
+        // can't take pixels — they get the text block only).
+        { system, userText, images: req.projectMemory?.images?.map((im) => im.dataUrl) },
         localHandlers,
         doFetch,
         signal

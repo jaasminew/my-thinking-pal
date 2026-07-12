@@ -40,6 +40,19 @@ import { scopeDisplayName } from '../../../services/project-memory/scope'
 import type { MemoryBucket, MemoryScopeSection, ProjectMemoryScope } from '../../../services/project-memory/types'
 import { defaultStageACall } from '../../../services/project-memory/retrieve'
 import { runLocalPrompt, type LocalRuntime } from '../../../services/llm/local-runtime'
+import { ObserverEngine, DEFAULT_COOLDOWN_MS, DEFAULT_MAX_RECENT_TOPICS } from './observer-engine'
+import { makeObserverLog } from './observer-log'
+import { placeObserverNote, DEFAULT_NOTE_W, DEFAULT_NOTE_H, type PlacedRect } from './observer-placement'
+import { requestObserverEvaluate, requestObserverContribute } from '../../../services/llm/observer'
+import { resolveCategoryProvider, type CategoryAssignment } from '../../../services/llm/model-roles'
+import type {
+  ObserverCanvasContext,
+  ObserverEmission,
+  ObserverLogRecord,
+  ObserverOutcome,
+  ObserverSignal,
+  ObserverState
+} from '../../../packages/core/llm/observer-types'
 
 const OPEN_PROVIDER: CocreateProvider = 'open'
 const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = [
@@ -48,10 +61,10 @@ const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = [
   { id: 'groq-qwen3-32b', runtime: 'api', providerId: 'groq', model: 'qwen/qwen3-32b', label: 'Groq · Qwen3 32B' },
   { id: 'ollama-local', runtime: 'ollama', providerId: 'ollama', baseUrl: 'http://localhost:11434/v1', model: '', label: 'Ollama · local' }
 ]
+// Both categories default to Groq gpt-oss-120b (DEFAULT_BASE_MODEL, contract §4).
 const DEFAULT_MODEL_SELECTIONS: ModelSelections = {
-  transcriptionSummary: 'groq-gpt-oss-120b',
-  coCreation: 'groq-llama-3-3-70b',
-  aiCommand: 'groq-llama-3-3-70b'
+  listener: 'groq-gpt-oss-120b',
+  thinker: 'groq-gpt-oss-120b'
 }
 
 function normalizeModelConfigs(raw: AiModelConfig[] | null | undefined): AiModelConfig[] {
@@ -87,10 +100,12 @@ function normalizeModelSelections(
     if (Number.isFinite(n)) return legacyAt(n) ?? fallback
     return fallback
   }
+  // Migrate legacy per-role selections (contract §5): transcriptionSummary →
+  // listener, coCreation → thinker. A differing aiCommand is discarded.
+  const raw2 = raw as Record<string, unknown> | null | undefined
   return {
-    transcriptionSummary: pick(raw?.transcriptionSummary, DEFAULT_MODEL_SELECTIONS.transcriptionSummary),
-    coCreation: pick(raw?.coCreation, DEFAULT_MODEL_SELECTIONS.coCreation),
-    aiCommand: pick(raw?.aiCommand, DEFAULT_MODEL_SELECTIONS.aiCommand)
+    listener: pick(raw2?.listener ?? raw2?.transcriptionSummary, DEFAULT_MODEL_SELECTIONS.listener),
+    thinker: pick(raw2?.thinker ?? raw2?.coCreation, DEFAULT_MODEL_SELECTIONS.thinker)
   }
 }
 
@@ -519,6 +534,25 @@ function CanvasSpace({
   useEffect(() => { aiEnabledRef.current = aiEnabled }, [aiEnabled])
   const isActiveRef = useRef(isActive)
   useEffect(() => { isActiveRef.current = isActive }, [isActive])
+  // ---- Observer agent (ambient AI note creation from fresh signals) ----------
+  // The engine (deterministic scheduling/gating) lives in observer-engine.ts;
+  // this space wires it: pushSignals from onSignals, note conversion on emit,
+  // per-space persistence, keep/reject → recordOutcome. Constructed once in a
+  // mount effect below. `observerRef` is declared here so onSignals can fan out.
+  const observerRef = useRef<ObserverEngine | null>(null)
+  const observerLogRef = useRef(
+    makeObserverLog(
+      () => loadJSON<ObserverLogRecord[]>(k('observer-log'), []),
+      (recs) => saveJSON(k('observer-log'), recs)
+    )
+  )
+  // Category assignments (Listener/Thinker) read live inside the engine deps so a
+  // mid-session model switch takes effect — mirrors SignalEngine reading provider
+  // live. Updated by the effect below.
+  const listenerAssignRef = useRef<CategoryAssignment | undefined>(undefined)
+  const thinkerAssignRef = useRef<CategoryAssignment | undefined>(undefined)
+  // Visible notice when no Listener model can be resolved (observer stays off).
+  const [observerNotice, setObserverNotice] = useState<string | null>(null)
   // In-flight fires, so switching AI off can cancel ambient streams immediately.
   const firesRef = useRef(new Map<string, { controller: AbortController; isCommand: boolean }>())
   // Bullets rejected mid-stream, per fire (fireId → set of fireLine): the
@@ -546,6 +580,9 @@ function CanvasSpace({
   const onSignals = useCallback((lines: { text: string; type?: string; speaker?: string; ts: number }[]) => {
     for (const l of lines) signalLogRef.current.push({ text: l.text, type: l.type, speaker: l.speaker, ts: l.ts })
     saveJSON(k('signal-log'), signalLogRef.current)
+    // A fresh signal batch IS the observer's trigger (never a timer). The engine
+    // applies its own gates; this is fire-and-forget.
+    observerRef.current?.pushSignals(lines)
   }, [])
   const signalSlice = useCallback((from: number, to: number): string | undefined => {
     const parts = signalLogRef.current
@@ -725,18 +762,19 @@ function CanvasSpace({
       }
   }, [notes, patchNote])
 
-  const providerArgs = useCallback((role: 'coCreation' | 'aiCommand') => {
-    const cfg = modelConfigAt(modelConfigs, modelSelections[role])
+  // Co-creation and commands both run on the Thinker category (contract §5).
+  const providerArgs = useCallback(() => {
+    const cfg = modelConfigAt(modelConfigs, modelSelections.thinker)
     if (cfg.runtime === 'api' || cfg.runtime === 'ollama') {
       return { provider: OPEN_PROVIDER, openSub: cfg.providerId || 'groq', model: cfg.model || undefined, webSearch: true }
     }
     return { provider: cfg.runtime, model: cfg.model || undefined, runtimeCommand: cfg.command || undefined, webSearch: true }
-  }, [modelConfigs, modelSelections])
+  }, [modelConfigs, modelSelections.thinker])
 
-  // Memory selection is a first pass of the SAME role-configured model used
-  // for the final co-creation/command response. It sees catalog metadata only.
-  const memorySelectionCall = useCallback((role: 'coCreation' | 'aiCommand') => {
-    const cfg = modelConfigAt(modelConfigs, modelSelections[role])
+  // Project Memory Stage-A selection runs on the Listener category (contract §5):
+  // a fast catalog-metadata pass, decoupled from the Thinker that writes the note.
+  const memorySelectionCall = useCallback(() => {
+    const cfg = modelConfigAt(modelConfigs, modelSelections.listener)
     if (cfg.runtime === 'api' || cfg.runtime === 'ollama') {
       return defaultStageACall(cfg.providerId || (cfg.runtime === 'ollama' ? 'ollama' : 'groq'), cfg.model || undefined)
     }
@@ -748,15 +786,16 @@ function CanvasSpace({
         system,
         userText: user
       })
-  }, [modelConfigs, modelSelections])
+  }, [modelConfigs, modelSelections.listener])
 
+  // The SignalEngine (extract + organize) runs on the Listener category.
   const summaryModel = useMemo(() => {
-    const cfg = modelConfigAt(modelConfigs, modelSelections.transcriptionSummary)
+    const cfg = modelConfigAt(modelConfigs, modelSelections.listener)
     return {
       providerId: cfg.runtime === 'api' || cfg.runtime === 'ollama' ? cfg.providerId || 'groq' : cfg.runtime,
       model: cfg.model || undefined
     }
-  }, [modelConfigs, modelSelections.transcriptionSummary])
+  }, [modelConfigs, modelSelections.listener])
 
   // ---- Project Memory: per-scope instructions + uploaded-file retrieval.
   // The scope follows the tree (canvas inside a project reads the project's
@@ -905,7 +944,7 @@ function CanvasSpace({
         .filter(Boolean)
         .join('\n\n')
       const memory = await pm.buildMemoryContext(memoryTask, {
-        call: memorySelectionCall(isCommand ? 'aiCommand' : 'coCreation'),
+        call: memorySelectionCall(),
         allowWebSearch: isCommand
       })
 
@@ -924,7 +963,7 @@ function CanvasSpace({
           existingIdeas,
           transcriptWindow,
           signalWindow,
-          ...providerArgs('coCreation')
+          ...providerArgs()
         },
         {
           onDiagnosis: (d) => {
@@ -1161,7 +1200,7 @@ function CanvasSpace({
       history.length > 1 ? `Conversation:\n${history.map((m) => `${m.role}: ${m.text}`).join('\n')}` : ''
     ].filter(Boolean).join('\n\n')
     const memory = await pm.buildMemoryContext(memoryTask, {
-      call: memorySelectionCall('aiCommand'),
+      call: memorySelectionCall(),
       allowWebSearch: true
     })
 
@@ -1169,7 +1208,7 @@ function CanvasSpace({
       {
         projectInstructions: pm.instructions.aiCommand,
         projectMemory: memory ?? undefined,
-        ...providerArgs('aiCommand'),
+        ...providerArgs(),
         messages: history.map((m) => ({ role: m.role, text: m.text })),
         context: buildTurnContext(note, cur.source, transcriptWindow)
       },
@@ -1495,10 +1534,19 @@ function CanvasSpace({
       return { ...n, items: [...n.items.slice(0, idx + 1), fresh, ...n.items.slice(idx + 1)] }
     })
 
+  // Keep/reject on an observer-created note is clean feedback for the engine's
+  // rejection backoff (mid-session ignores deliberately do NOT count). No-op on
+  // ordinary human / reactive-co-creation notes.
+  const recordObserverOutcome = (id: string, outcome: ObserverOutcome) => {
+    if (!notesRef.current.find((n) => n.id === id)?.observerMeta) return
+    observerRef.current?.recordOutcome(outcome)
+    if (observerRef.current) saveJSON(k('observer-state'), observerRef.current.getState())
+  }
+
   // ---- accept / reject (records reaction signals that sharpen the next fire;
   // each entry carries the fire's diagnosis so the model learns which KINDS of
   // help this user wants) ----
-  const keepBullet = (id: string) => (bid: string) =>
+  const keepBullet = (id: string) => (bid: string) => {
     patchNote(id, (n) => {
       const b = n.items.find((x) => x.id === bid)
       return {
@@ -1507,6 +1555,8 @@ function CanvasSpace({
         kept: b && isBullet(b) ? [...n.kept, withDiag(b.text, b.diagnosis)] : n.kept
       }
     })
+    recordObserverOutcome(id, 'kept')
+  }
   const rejectBullet = (id: string) => (bid: string) => {
     // Remember the fire-line OUTSIDE the state updater (updaters must stay
     // pure), so a still-streaming fire can't recreate the rejected bullet.
@@ -1524,8 +1574,9 @@ function CanvasSpace({
         rejected: b && isBullet(b) ? [...n.rejected, withDiag(b.text, b.diagnosis)] : n.rejected
       }
     })
+    recordObserverOutcome(id, 'rejected')
   }
-  const keepCard = (id: string) => (cid: string) =>
+  const keepCard = (id: string) => (cid: string) => {
     patchNote(id, (n) => {
       const c = n.items.find((x) => x.id === cid)
       return {
@@ -1534,13 +1585,17 @@ function CanvasSpace({
         kept: c && isCard(c) ? [...n.kept, withDiag(c.title, c.diagnosis)] : n.kept
       }
     })
+    recordObserverOutcome(id, 'kept')
+  }
   // Removes an in-note image line (⌫ on a focused image, like removing a card).
   const removeImageItem = (id: string) => (imgId: string) =>
     patchNote(id, (n) => ({ ...n, items: n.items.filter((x) => x.id !== imgId) }))
 
   // Removes a card line. Rejecting a PENDING AI card records a reaction signal;
   // deleting a settled card (⌫ on a focused card) is just deletion.
-  const removeCard = (id: string) => (cid: string) =>
+  const removeCard = (id: string) => (cid: string) => {
+    const c0 = notesRef.current.find((n) => n.id === id)?.items.find((x) => x.id === cid)
+    const wasPending0 = c0 && isCard(c0) && c0.status === 'pending'
     patchNote(id, (n) => {
       const c = n.items.find((x) => x.id === cid)
       const wasPending = c && isCard(c) && c.status === 'pending'
@@ -1550,6 +1605,167 @@ function CanvasSpace({
         rejected: wasPending && isCard(c) ? [...n.rejected, withDiag(c.title, c.diagnosis)] : n.rejected
       }
     })
+    if (wasPending0) recordObserverOutcome(id, 'rejected')
+  }
+
+  // ---- Observer engine wiring -----------------------------------------------
+  // Keep the two category assignments current so a mid-session model switch is
+  // honored by the engine deps (which read these refs live).
+  useEffect(() => {
+    const toAssign = (id: string): CategoryAssignment => {
+      const cfg = modelConfigAt(modelConfigs, id)
+      return { runtime: cfg.runtime, providerId: cfg.providerId, model: cfg.model || undefined, command: cfg.command || undefined }
+    }
+    listenerAssignRef.current = toAssign(modelSelections.listener)
+    thinkerAssignRef.current = toAssign(modelSelections.thinker)
+  }, [modelConfigs, modelSelections])
+
+  // Dominant language of the last ~5 min of speech: CJK-vs-latin char ratio.
+  const observerDominantLanguage = useCallback((): string | undefined => {
+    const w = transcriptSlice(Date.now() - 300_000, Infinity)
+    if (!w) return undefined
+    const cjk = (w.match(/[一-鿿]/g) || []).length
+    const latin = (w.match(/[A-Za-z]/g) || []).length
+    if (cjk === 0 && latin === 0) return undefined
+    return cjk >= latin ? 'zh' : 'en'
+  }, [transcriptSlice])
+
+  // Canvas context the evaluator/contributor read (contract seam). Note titles +
+  // kept content, kept/rejected aggregates, existing card URLs, transcript window.
+  const getObserverContext = useCallback((): ObserverCanvasContext => {
+    const ns = notesRef.current
+    const noteTitles: string[] = []
+    const settledParts: string[] = []
+    const existingUrls: string[] = []
+    const kept: string[] = []
+    const rejected: string[] = []
+    for (const n of ns) {
+      if (n.keyword.trim()) noteTitles.push(n.keyword.trim())
+      const keptText = n.items.flatMap((it) => (isBullet(it) && it.status === 'kept' && it.text.trim() ? [it.text] : []))
+      if (n.keyword.trim() || keptText.length) {
+        settledParts.push([n.keyword.trim(), ...keptText.map((t) => `- ${t}`)].filter(Boolean).join('\n'))
+      }
+      for (const it of n.items) if (isCard(it) && it.url) existingUrls.push(it.url)
+      kept.push(...n.kept)
+      rejected.push(...n.rejected)
+    }
+    return {
+      noteTitles,
+      settledContent: settledParts.join('\n\n').slice(0, 4000),
+      kept,
+      rejected,
+      existingUrls,
+      transcriptWindow: transcriptSlice(Date.now() - 300_000, Infinity),
+      dominantLanguage: observerDominantLanguage()
+    }
+  }, [transcriptSlice, observerDominantLanguage])
+
+  // Approved contribution → a pending, AI-originated keyword note placed near the
+  // viewport center without overlapping existing notes. Human content is never
+  // touched (this only appends a new note).
+  const handleObserverEmit = useCallback((e: ObserverEmission) => {
+    const r = e.result
+    const bullets = r.bullets.map((text): BulletItem => ({ kind: 'bullet', id: uid('b'), origin: 'ai', text, status: 'pending' }))
+    const cards = r.sources.map((s): CardItem => ({ kind: 'card', id: uid('c'), origin: 'ai', status: 'pending', title: s.title, url: s.url, snippet: s.snippet, image: s.image }))
+    const rect = canvasRef.current?.getBoundingClientRect()
+    const anchor = rect ? toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2) : { x: 0, y: 0 }
+    const existing: PlacedRect[] = notesRef.current.map((n) => ({ x: n.x, y: n.y, w: DEFAULT_NOTE_W, h: DEFAULT_NOTE_H }))
+    const pos = placeObserverNote(existing, anchor)
+    const note: KeywordNote = {
+      id: uid('n'),
+      x: pos.x,
+      y: pos.y,
+      keyword: r.keyword,
+      keywordEditing: false,
+      items: [...bullets, ...cards],
+      aiRunning: false,
+      kept: [],
+      rejected: [],
+      lastFiredWords: 0,
+      observerMeta: { opportunityType: e.decision.opportunityType!, reason: e.decision.reason, confidence: e.decision.confidence }
+    }
+    setNotes((ns) => [...ns, note])
+    if (observerRef.current) saveJSON(k('observer-state'), observerRef.current.getState())
+  }, [toWorld])
+
+  // Latest emit/context closures held in refs so the once-constructed engine
+  // always calls the current versions (its deps read live — never stale).
+  const observerEmitRef = useRef(handleObserverEmit)
+  observerEmitRef.current = handleObserverEmit
+  const observerContextRef = useRef(getObserverContext)
+  observerContextRef.current = getObserverContext
+
+  // Construct the engine once per space; persist state + tear down on unmount.
+  useEffect(() => {
+    const engine = new ObserverEngine(
+      {
+        evaluate: (input) => requestObserverEvaluate(input, { listener: listenerAssignRef.current, relayAvailable: true }),
+        contribute: (input) => requestObserverContribute(input, { thinker: thinkerAssignRef.current, relayAvailable: true }),
+        getContext: () => observerContextRef.current(),
+        isCocreateStreaming: () => firesRef.current.size > 0
+      },
+      { cooldownMs: DEFAULT_COOLDOWN_MS, maxRecentTopics: DEFAULT_MAX_RECENT_TOPICS },
+      loadJSON<ObserverState | null>(k('observer-state'), null) || undefined
+    )
+    engine.onEmit = (e) => observerEmitRef.current(e)
+    engine.onLog = (rec) => observerLogRef.current.append(rec)
+    observerRef.current = engine
+    // DEV-only manual trigger for smoke-testing without waiting for live speech.
+    // In the browser console: __observer.fire([...signals]) — see the reply.
+    if (import.meta.env.DEV && isActive) {
+      ;(window as unknown as { __observer?: unknown }).__observer = {
+        engine,
+        fire(signals?: ObserverSignal[]) {
+          engine.setEnabled(true)
+          engine.start()
+          engine.pushSignals(
+            signals ?? [
+              { text: 'We decided to sync notes across devices with a local-first database.', type: 'decision', ts: Date.now() },
+              { text: 'But what happens when two people edit the same note offline?', type: 'objection', ts: Date.now() + 1 }
+            ]
+          )
+          return 'fired — watch the canvas (~a few sec for the LLM). Check __observer.log() for the decision.'
+        },
+        log: () => observerLogRef.current.all()
+      }
+    }
+    return () => {
+      engine.reset()
+      engine.stop()
+      saveJSON(k('observer-state'), engine.getState())
+      observerRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Lifecycle: enabled follows the AI switch; running follows active+recording,
+  // gated by a Listener pre-flight. No usable Listener → visible notice + a
+  // listener-unavailable log record, and the engine never starts (contract §3).
+  useEffect(() => {
+    const engine = observerRef.current
+    if (!engine) return
+    engine.setEnabled(aiEnabled)
+    if (!(isActive && recording && aiEnabled)) {
+      engine.reset()
+      engine.stop()
+      return
+    }
+    let cancelled = false
+    void resolveCategoryProvider('listener', listenerAssignRef.current).then((res) => {
+      if (cancelled) return
+      if (res.error) {
+        setObserverNotice(res.error)
+        observerLogRef.current.append({ ts: Date.now(), kind: 'skip', gate: 'listener-unavailable', error: res.error })
+        return
+      }
+      setObserverNotice(null)
+      engine.start()
+    })
+    return () => {
+      cancelled = true
+      engine.stop()
+    }
+  }, [isActive, recording, aiEnabled])
 
   // Which id(s) move when a pointer-drag starts on obj `id`: the whole selection
   // if `id` is part of a multi-select, else just `id` (which becomes the lone
@@ -1680,6 +1896,13 @@ function CanvasSpace({
               <span className="memory-btn-label">Memory</span>
             </button>
           </div>
+
+          {observerNotice && (
+            <div className="observer-notice" role="status" onPointerDown={(e) => e.stopPropagation()}>
+              <span>Observer off — {observerNotice}</span>
+              <button className="observer-notice-x" aria-label="Dismiss" onClick={() => setObserverNotice(null)}>×</button>
+            </div>
+          )}
 
           {notes.length === 0 && images.length === 0 && (
             <div className="canvas-hint">Select transcript text and drag here · click to start a note · drag the canvas to box-select</div>

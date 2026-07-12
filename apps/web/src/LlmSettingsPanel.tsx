@@ -1,9 +1,14 @@
 import { useMemo, useState } from 'react'
 import { checkLocalRuntime, setupLocalRuntime } from '../../../services/llm/local-runtime'
+import type { ModelCategory } from '../../../packages/core/llm/observer-types'
 
-export type ModelRole = 'transcriptionSummary' | 'coCreation' | 'aiCommand'
-
-export type ModelSelections = Record<ModelRole, string>
+/**
+ * Users make exactly two model choices (contract §5): Listener (speech-side,
+ * fast — signal extraction, organize, observer evaluator, Project Memory
+ * Stage-A) and Thinker (content-side, quality — co-creation, commands, observer
+ * contributor). CLI runtimes are offered for Thinker only.
+ */
+export type ModelSelections = Record<ModelCategory, string>
 
 export type ModelRuntime = 'api' | 'ollama' | 'codex' | 'claude-code' | 'cursor'
 
@@ -21,11 +26,13 @@ export type AiModelConfig = {
 type DraftConfig = Omit<AiModelConfig, 'id'>
 type ModelOption = { value: string; label: string }
 
-const ROLE_LABELS: Record<ModelRole, string> = {
-  transcriptionSummary: 'Transcription summary',
-  coCreation: 'Co-creation',
-  aiCommand: 'AI command'
+const CATEGORY_LABELS: Record<ModelCategory, string> = {
+  listener: 'Listener (speech, fast)',
+  thinker: 'Thinker (content, quality)'
 }
+
+const CLI_RUNTIMES: ModelRuntime[] = ['codex', 'claude-code', 'cursor']
+const isCliConfig = (cfg: Pick<AiModelConfig, 'runtime'>) => CLI_RUNTIMES.includes(cfg.runtime)
 
 const API_PROVIDERS = [
   { id: 'groq', label: 'Groq', baseUrl: '' },
@@ -166,7 +173,7 @@ export function LlmSettingsPanel({
 }) {
   const [draftSelections, setDraftSelections] = useState<ModelSelections>(selections)
   const [draftConfigs, setDraftConfigs] = useState<AiModelConfig[]>([...configs])
-  const [editingRole, setEditingRole] = useState<ModelRole | null>(null)
+  const [editingRole, setEditingRole] = useState<ModelCategory | null>(null)
   const [draftConfig, setDraftConfig] = useState<DraftConfig>(() => defaultDraft())
   const [setupError, setSetupError] = useState('')
   const [setupInfo, setSetupInfo] = useState('')
@@ -177,14 +184,14 @@ export function LlmSettingsPanel({
 
   const configIds = useMemo(() => new Set(draftConfigs.map((c) => c.id)), [draftConfigs])
 
-  const patchSelection = (key: ModelRole, value: string) =>
+  const patchSelection = (key: ModelCategory, value: string) =>
     setDraftSelections((d) => ({ ...d, [key]: value }))
 
   const patchConfig = <K extends keyof DraftConfig>(key: K, value: DraftConfig[K]) =>
     setDraftConfig((d) => ({ ...d, [key]: value }))
 
-  const beginNew = (role: ModelRole) => {
-    setEditingRole(role)
+  const beginNew = (category: ModelCategory) => {
+    setEditingRole(category)
     setDraftConfig(defaultDraft())
     setSetupError('')
     setSetupInfo('')
@@ -290,11 +297,15 @@ export function LlmSettingsPanel({
   }
 
   const save = () => {
-    const fallback = draftConfigs[0]?.id ?? ''
+    const byId = new Map(draftConfigs.map((c) => [c.id, c]))
+    const firstWeb = draftConfigs.find((c) => !isCliConfig(c))?.id ?? ''
+    const firstAny = draftConfigs[0]?.id ?? ''
+    // Listener must resolve to a web config (CLI runtimes are never offered
+    // there); Thinker accepts anything.
+    const listenerOk = (id: string) => byId.has(id) && !isCliConfig(byId.get(id)!)
     const nextSelections: ModelSelections = {
-      transcriptionSummary: configIds.has(draftSelections.transcriptionSummary) ? draftSelections.transcriptionSummary : fallback,
-      coCreation: configIds.has(draftSelections.coCreation) ? draftSelections.coCreation : fallback,
-      aiCommand: configIds.has(draftSelections.aiCommand) ? draftSelections.aiCommand : fallback
+      listener: listenerOk(draftSelections.listener) ? draftSelections.listener : firstWeb,
+      thinker: byId.has(draftSelections.thinker) ? draftSelections.thinker : firstAny
     }
     onSave(nextSelections, draftConfigs)
     onClose()
@@ -341,21 +352,26 @@ export function LlmSettingsPanel({
             <section className="llm-section">
               <h2>Model Selection</h2>
 
-              {(['transcriptionSummary', 'coCreation', 'aiCommand'] as ModelRole[]).map((role) => (
-                <div className="llm-model-row" key={role}>
-                  <label className="llm-field">
-                    <span>{ROLE_LABELS[role]}</span>
-                    <select value={draftSelections[role]} onChange={(e) => patchSelection(role, e.target.value)}>
-                      {draftConfigs.map((m) => (
-                        <option key={m.id} value={m.id}>{displayLabel(m)}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <button className="llm-add-model" onClick={() => beginNew(role)}>
-                    + New Model
-                  </button>
-                </div>
-              ))}
+              {(['listener', 'thinker'] as ModelCategory[]).map((category) => {
+                // CLI runtimes can't back the Listener (ambient evaluator can't
+                // afford CLI startup) — hide them from that dropdown only.
+                const options = category === 'listener' ? draftConfigs.filter((m) => !isCliConfig(m)) : draftConfigs
+                return (
+                  <div className="llm-model-row" key={category}>
+                    <label className="llm-field">
+                      <span>{CATEGORY_LABELS[category]}</span>
+                      <select value={draftSelections[category]} onChange={(e) => patchSelection(category, e.target.value)}>
+                        {options.map((m) => (
+                          <option key={m.id} value={m.id}>{displayLabel(m)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="llm-add-model" onClick={() => beginNew(category)}>
+                      + New Model
+                    </button>
+                  </div>
+                )
+              })}
             </section>
 
             <div className="llm-settings-actions">

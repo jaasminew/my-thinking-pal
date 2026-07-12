@@ -7,6 +7,8 @@ import type { FetchLike, LlmProvider, ReasoningParams } from './types'
 export interface ChatOptions {
   system: string
   userText: string
+  /** Data-URL images attached to the user message (vision-capable providers). */
+  images?: string[]
   fetchImpl?: FetchLike
   signal?: AbortSignal
   temperature?: number
@@ -37,7 +39,7 @@ export async function chatCompletion(provider: LlmProvider, opts: ChatOptions): 
       ...(opts.reasoning ?? {}),
       messages: [
         { role: 'system', content: opts.system },
-        { role: 'user', content: opts.userText }
+        { role: 'user', content: userContent(opts.userText, opts.images) }
       ]
     }),
     signal: opts.signal
@@ -66,4 +68,19 @@ export class ChatHttpError extends Error {
 
 function now(): number {
   return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
+}
+
+/**
+ * OpenAI-compatible user content: a plain string normally, a multimodal parts
+ * array when images ride along. Exported for stream.ts (same wire shape).
+ */
+export function userContent(
+  text: string,
+  images?: string[]
+): string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> {
+  if (!images?.length) return text
+  return [
+    { type: 'text', text },
+    ...images.map((url) => ({ type: 'image_url' as const, image_url: { url } }))
+  ]
 }

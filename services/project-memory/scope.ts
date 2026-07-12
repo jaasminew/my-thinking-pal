@@ -1,8 +1,9 @@
-// Scope resolution (M1): which memory bucket a canvas reads. The sidebar tree
+// Scope resolution (M1): which memory buckets a canvas reads. The sidebar tree
 // is client-owned JSON with no backend counterpart, so resolution is pure tree
-// walking — a canvas inside a project uses the project's bucket; a top-level
-// canvas uses its own. A canvas MOVED into/out of a project therefore changes
-// buckets by design (the modal shows the active scope name to make it visible).
+// walking. Two-level model (merged semantics): every canvas has its OWN bucket
+// (kind 'space'), and a canvas nested inside a project ALSO reads that
+// project's shared bucket (kind 'project'). Canvas files travel with the
+// canvas when it moves between projects; project files stay with the project.
 
 import type { ProjectMemoryScope } from './types'
 
@@ -12,6 +13,14 @@ export type ScopeTreeNode = {
   kind: 'project' | 'space'
   name: string
   children?: ScopeTreeNode[]
+}
+
+/** The two buckets a canvas reads: its own, plus its parent project's if nested. */
+export type ResolvedMemoryScopes = {
+  /** The parent project's shared bucket — undefined for a top-level canvas. */
+  project?: ProjectMemoryScope & { kind: 'project' }
+  /** The canvas's own bucket — always present. */
+  canvas: ProjectMemoryScope & { kind: 'space' }
 }
 
 /** The project node that directly contains `spaceId`, or undefined at root. */
@@ -26,13 +35,16 @@ export function findParentProject(tree: ScopeTreeNode[], spaceId: string): Scope
   return undefined
 }
 
-/** Resolved memory scope for a canvas: parent project's if nested, else its own. */
-export function memoryScopeForSpace(tree: ScopeTreeNode[], spaceId: string): ProjectMemoryScope {
+/** Both buckets for a canvas: its own space scope + the parent project's (when nested). */
+export function resolveMemoryScopes(tree: ScopeTreeNode[], spaceId: string): ResolvedMemoryScopes {
   const parent = findParentProject(tree, spaceId)
-  return parent ? { kind: 'project', projectId: parent.id } : { kind: 'space', spaceId }
+  return {
+    project: parent ? { kind: 'project', projectId: parent.id } : undefined,
+    canvas: { kind: 'space', spaceId }
+  }
 }
 
-/** Display name for the resolved scope (modal header). */
+/** Display name for a scope (modal header / toggle labels). */
 export function scopeDisplayName(tree: ScopeTreeNode[], scope: ProjectMemoryScope): string {
   const id = scope.kind === 'project' ? scope.projectId : scope.spaceId
   const node = findNode(tree, id)

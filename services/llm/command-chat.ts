@@ -1,4 +1,4 @@
-import type { CommandChatRequest, CommandChatResult, CommandChatAction } from './command-chat-types'
+import type { CommandChatRequest, CommandChatResult, CommandChatAction, CommandChatSource } from './command-chat-types'
 import {
   COMMAND_CHAT_SYSTEM,
   buildCommandChatPrompt,
@@ -10,7 +10,7 @@ import {
   type LlmProvider
 } from '../../packages/core/llm'
 import { resolveClientProvider } from './provider-config'
-import { resolveOgImage } from './web-search'
+import { resolveOgImage, searchWeb } from './web-search'
 import { runLocalCommandChat, type LocalRuntime } from './local-runtime'
 
 export interface CommandChatHandlers {
@@ -18,6 +18,8 @@ export interface CommandChatHandlers {
   onText: (text: string) => void
   /** A proposed canvas action — render as a button, never auto-apply. */
   onAction?: (action: CommandChatAction) => void
+  /** A validated uploaded-file or web-search source used by the response. */
+  onSource?: (source: CommandChatSource) => void
 }
 
 export interface CommandChatDeps {
@@ -50,14 +52,31 @@ export async function requestCommandChat(
   }
 
   const sourceNoteId = typeof req.context?.sourceNoteId === 'string' ? req.context.sourceNoteId : undefined
+  const webResults = req.webSearch && req.projectMemory?.webSearchQuery
+    ? await searchWeb(req.projectMemory.webSearchQuery, 3, doFetch)
+    : []
+  const knowledgeSources = [
+    ...(req.projectMemory?.files ?? []).map((f) => ({ id: f.id, title: f.title })),
+    ...(req.projectMemory?.images ?? []).map((f) => ({ id: f.id, title: f.title }))
+  ]
+  const sourceCatalog = [
+    ...(knowledgeSources.length
+      ? [`Selected knowledge sources (cite by id if used):\n${knowledgeSources.map((s) => `- id: ${s.id}\n  title: ${s.title}`).join('\n')}`]
+      : []),
+    ...(webResults.length
+      ? [`Web-search results (cite by exact URL if used):\n${webResults.map((s) => `- title: ${s.title}\n  url: ${s.url}${s.snippet ? `\n  snippet: ${s.snippet}` : ''}`).join('\n')}`]
+      : [])
+  ].join('\n\n')
   // Project Memory (M3): instructions after the base system; memory block atop
   // the prompt, before selected text / note / transcript.
   const system = COMMAND_CHAT_SYSTEM + formatProjectInstructions(req.projectInstructions)
-  const userText = prependMemoryBlock(buildCommandChatPrompt(req.messages, req.context), req.projectMemory?.block)
+  const prompt = [sourceCatalog, buildCommandChatPrompt(req.messages, req.context)].filter(Boolean).join('\n\n')
+  const userText = prependMemoryBlock(prompt, req.projectMemory?.block)
 
   let actionCount = 0
   // append-image actions defer until after the stream (need og:image resolved).
   const pendingImages: { caption: string; url: string; title?: string }[] = []
+  const emittedSourceKeys = new Set<string>()
 
   const handleActionJson = (raw: string) => {
     if (actionCount >= 6) return
@@ -104,7 +123,29 @@ export async function requestCommandChat(
     }
   }
 
-  const filter = makeCommandActionFilter((t) => handlers.onText(t), handleActionJson)
+  const handleSourceJson = (raw: string) => {
+    let source: any
+    try {
+      source = JSON.parse(raw)
+    } catch {
+      return
+    }
+    if (source?.kind === 'knowledge' && typeof source.id === 'string') {
+      const known = knowledgeSources.find((s) => s.id === source.id)
+      if (!known || emittedSourceKeys.has(`knowledge:${known.id}`)) return
+      emittedSourceKeys.add(`knowledge:${known.id}`)
+      handlers.onSource?.({ kind: 'knowledge', id: known.id, title: known.title })
+      return
+    }
+    if (source?.kind === 'web' && typeof source.url === 'string') {
+      const known = webResults.find((s) => s.url === source.url)
+      if (!known || emittedSourceKeys.has(`web:${known.url}`)) return
+      emittedSourceKeys.add(`web:${known.url}`)
+      handlers.onSource?.({ kind: 'web', title: known.title, url: known.url })
+    }
+  }
+
+  const filter = makeCommandActionFilter((t) => handlers.onText(t), handleActionJson, handleSourceJson)
 
   if (isLocalRuntime) {
     const local = await runLocalCommandChat(
@@ -115,7 +156,7 @@ export async function requestCommandChat(
         system,
         userText
       },
-      { onText: (t) => filter.push(t), onAction: handleActionJson },
+      { onText: (t) => filter.push(t), onAction: handleActionJson, onSource: handleSourceJson },
       doFetch as typeof fetch,
       signal
     )
@@ -126,7 +167,15 @@ export async function requestCommandChat(
     try {
       await streamOpenModel(
         provider!,
-        { system, userText, onText: (t) => filter.push(t), fetchImpl: doFetch, signal }
+        {
+          system,
+          userText,
+          // Selected memory images ride as multimodal parts.
+          images: req.projectMemory?.images?.map((im) => im.dataUrl),
+          onText: (t) => filter.push(t),
+          fetchImpl: doFetch,
+          signal
+        }
       )
       filter.flush()
     } catch (e: any) {
@@ -137,6 +186,20 @@ export async function requestCommandChat(
   }
 
   if (signal?.aborted) return { aborted: true }
+
+  // Some otherwise-capable models occasionally ignore the hidden SOURCE
+  // protocol. Never lose the provenance we actually supplied: when the model
+  // emitted no source lines, show the selected knowledge/search reference set.
+  if (!emittedSourceKeys.size) {
+    for (const source of knowledgeSources) {
+      emittedSourceKeys.add(`knowledge:${source.id}`)
+      handlers.onSource?.({ kind: 'knowledge', id: source.id, title: source.title })
+    }
+    for (const source of webResults) {
+      emittedSourceKeys.add(`web:${source.url}`)
+      handlers.onSource?.({ kind: 'web', title: source.title, url: source.url })
+    }
+  }
 
   // Resolve deferred images: og:image → append-image action; else a link card
   // (so the reference is never lost).

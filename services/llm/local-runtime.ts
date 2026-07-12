@@ -80,7 +80,7 @@ export async function runLocalCocreate(
   signal?: AbortSignal
 ): Promise<{ searchIntent?: SearchIntent; passed: boolean; contentLines: number; model?: string; error?: string }> {
   try {
-    const text = await runLocalText(req, fetchImpl, signal)
+    const text = await runLocalPrompt(req, fetchImpl, signal)
     const strip = makeLinkStripper(
       (t) => handlers.onText(t),
       (u) => handlers.onUrl?.(u),
@@ -111,13 +111,18 @@ export async function runLocalCommandChat(
   handlers: {
     onText: (text: string) => void
     onAction?: (raw: string) => void
+    onSource?: (raw: string) => void
   },
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal
 ): Promise<{ model?: string; error?: string; aborted?: boolean }> {
-  const filter = makeCommandActionFilter((t) => handlers.onText(t), (raw) => handlers.onAction?.(raw))
+  const filter = makeCommandActionFilter(
+    (t) => handlers.onText(t),
+    (raw) => handlers.onAction?.(raw),
+    (raw) => handlers.onSource?.(raw)
+  )
   try {
-    const text = await runLocalText(req, fetchImpl, signal)
+    const text = await runLocalPrompt(req, fetchImpl, signal)
     filter.push(text)
     filter.flush()
     return { model: req.model }
@@ -128,7 +133,8 @@ export async function runLocalCommandChat(
   }
 }
 
-async function runLocalText(
+/** One-shot local-runtime prompt used by auxiliary passes such as memory selection. */
+export async function runLocalPrompt(
   req: {
     runtime: LocalRuntime
     command?: string
@@ -136,7 +142,7 @@ async function runLocalText(
     system: string
     userText: string
   },
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal
 ): Promise<string> {
   const bridge = localBridge()

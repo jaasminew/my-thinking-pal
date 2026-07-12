@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findParentProject, memoryScopeForSpace, scopeDisplayName, type ScopeTreeNode } from './scope'
+import { findParentProject, resolveMemoryScopes, scopeDisplayName, type ScopeTreeNode } from './scope'
 
 const tree: ScopeTreeNode[] = [
   { id: 'top-space', kind: 'space', name: 'Loose Canvas' },
@@ -29,22 +29,31 @@ describe('findParentProject', () => {
   })
 })
 
-describe('memoryScopeForSpace', () => {
-  it('resolves to the parent project scope when nested', () => {
-    expect(memoryScopeForSpace(tree, 'a-1')).toEqual({ kind: 'project', projectId: 'proj-a' })
+describe('resolveMemoryScopes', () => {
+  it('nested canvas reads its own bucket AND the parent project bucket', () => {
+    expect(resolveMemoryScopes(tree, 'a-1')).toEqual({
+      project: { kind: 'project', projectId: 'proj-a' },
+      canvas: { kind: 'space', spaceId: 'a-1' }
+    })
   })
 
-  it('resolves to the space itself at top level', () => {
-    expect(memoryScopeForSpace(tree, 'top-space')).toEqual({ kind: 'space', spaceId: 'top-space' })
+  it('top-level canvas has only its own bucket', () => {
+    expect(resolveMemoryScopes(tree, 'top-space')).toEqual({
+      project: undefined,
+      canvas: { kind: 'space', spaceId: 'top-space' }
+    })
   })
 
-  it('moving a space between buckets changes its resolved scope', () => {
+  it('a canvas keeps its own bucket when moved out of a project', () => {
     const moved: ScopeTreeNode[] = [
       { id: 'top-space', kind: 'space', name: 'Loose Canvas' },
       { id: 'proj-a', kind: 'project', name: 'Project A', children: [{ id: 'a-2', kind: 'space', name: 'A Two' }] },
       { id: 'a-1', kind: 'space', name: 'A One' } // moved out to root
     ]
-    expect(memoryScopeForSpace(moved, 'a-1')).toEqual({ kind: 'space', spaceId: 'a-1' })
+    expect(resolveMemoryScopes(moved, 'a-1')).toEqual({
+      project: undefined,
+      canvas: { kind: 'space', spaceId: 'a-1' }
+    })
   })
 })
 

@@ -1,11 +1,12 @@
-// H2 — Browser text extraction (pure, no AI).
+// H2 — Browser text extraction (no AI).
 //
-// Turns a Blob into plain text for the simple formats the browser can handle
-// without a server: .txt, .md, .csv, .json. PDF/Office extraction is server-side
-// (H7); this module never attempts those. Format is decided by mimeType first,
-// then filename extension. Output is UTF-8 decoded, then capped at
+// Turns a Blob into plain text for the formats the browser can handle without
+// a server: .txt, .md, .csv, .json inline, and .pdf via a lazily-loaded
+// pdfjs-dist module (ingestion-pdf.ts) so the PDF engine never lands in the
+// initial bundle. Office extraction stays server-side (H7). Format is decided
+// by mimeType first, then filename extension. Output is capped at
 // PM_TEXT_CHAR_CAP with a `truncated` flag. Unsupported types return
-// { ok:false, reason:'unsupported' }; un-decodable UTF-8 returns
+// { ok:false, reason:'unsupported' }; unreadable input returns
 // { ok:false, reason:'decode-error' } — this function NEVER throws.
 
 import type { ExtractTextBrowser } from './types'
@@ -29,7 +30,17 @@ function isSupported(mimeType: string, name: string): boolean {
   return SUPPORTED_EXT.has(ext)
 }
 
+/** PDF is handled by the lazily-loaded pdfjs module, not the UTF-8 path. */
+export function isPdf(mimeType: string, name: string): boolean {
+  const mime = (mimeType || '').toLowerCase().split(';')[0].trim()
+  return mime === 'application/pdf' || /\.pdf$/i.test(name || '')
+}
+
 export const extractTextBrowser: ExtractTextBrowser = async (blob, name, mimeType) => {
+  if (isPdf(mimeType, name)) {
+    const { extractPdfText } = await import('./ingestion-pdf')
+    return extractPdfText(blob)
+  }
   if (!isSupported(mimeType, name)) {
     return { ok: false, reason: 'unsupported' }
   }
