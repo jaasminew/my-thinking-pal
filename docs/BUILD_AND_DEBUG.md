@@ -58,10 +58,14 @@ VITE_API_URL=http://127.0.0.1:8080 npm run dev
 
 ```bash
 npm run dev:desktop     # 起 Electron,加载 http://localhost:5173(需先跑 npm run dev)
-npm run build:desktop   # 先 vite build,再 electron-builder 打包(产物在 apps/desktop/release/)
+npm run build:desktop   # 默认连接 https://mythinkingpal.xyz 的桌面包
+npm run build:desktop:local # 本地-only 桌面包(未设置 VITE_API_URL)
+npm run build:desktop:prod  # 显式生产桌面包
 ```
 
 - 复用 `apps/web` 同一套 renderer(dev 读 Vite URL,打包读 `dist/index.html`)。
+- 默认桌面包设置 `VITE_API_URL=https://mythinkingpal.xyz`;需要本地-only 时用 `build:desktop:local`。
+- 桌面包是否连接后端由打包时的 `VITE_API_URL` 决定;未设置时保持本地-only。
 - key 经 `safeStorage`(OS keychain)加密落盘,通过 preload 的 `secureKeys` 暴露给渲染进程;`provider-config.ts` 会优先从 keychain 补全空 key。
 
 ---
@@ -119,12 +123,16 @@ npm run build           # 前端 → dist/
 npm run build:relay     # 生产搜索中继 → dist-server/relay.cjs
 npm run preview         # 本地预览 dist/
 cd server-go && make build   # → server-go/bin/server
-npm run build:desktop   # 桌面安装包 → apps/desktop/release/
+npm run build:desktop   # 生产桌面安装包 → apps/desktop/release/
 ```
 
 `mythinkingpal.xyz` 的单机生产环境使用 Nginx + systemd，并由 GitHub Actions
 在 `main` CI 成功后自动发布。首次服务器初始化、DNS/TLS、GitHub Environment、
 备份恢复和回滚步骤见 [`deploy/README.md`](../deploy/README.md)。
+
+桌面软件包不随服务器 CD 发布;创建 `v*` tag 时 `.github/workflows/desktop-release.yml`
+会在 macOS、Windows、Linux 上分别打包,上传 Actions artifacts,并把安装包附加到
+同名 GitHub Release。手动触发该 workflow 时必须指定已有 tag。
 
 ## 7. 调试技巧 & 常见坑
 

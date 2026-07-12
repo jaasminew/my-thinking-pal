@@ -15,7 +15,9 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "dev:desktop": "VITE_DEV_SERVER_URL=http://localhost:5173 electron apps/desktop/main.cjs",
-    "build:desktop": "npm run build && electron-builder --config apps/desktop/electron-builder.yml"
+    "build:desktop": "VITE_API_URL=${VITE_API_URL:-https://mythinkingpal.xyz} npm run build && electron-builder --config apps/desktop/electron-builder.yml",
+    "build:desktop:local": "npm run build && electron-builder --config apps/desktop/electron-builder.yml",
+    "build:desktop:prod": "VITE_API_URL=https://mythinkingpal.xyz npm run build && electron-builder --config apps/desktop/electron-builder.yml"
   },
   "devDependencies": {
     "@openai/codex": "^0.142.4",
