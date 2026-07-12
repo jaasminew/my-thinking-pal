@@ -480,6 +480,9 @@ body { background: var(--bg); color: var(--ink); }
   transition: color .35s ease;
 }
 .kw-header.hovered .kw-input { color: var(--accent); }
+/* Observer (AI-generated) note: gray keyword header to mark its AI origin,
+   matching the gray of pending AI bullets. Hover still fades it to accent. */
+.kw-header.observer:not(.hovered) .kw-text { color: var(--pending); }
 
 /* one ordered flow of items: bullet rows + inline url cards */
 .items {
@@ -607,6 +610,19 @@ body { background: var(--bg); color: var(--ink); }
   font-size: 19px; font-weight: 700; line-height: 1.2;
 }
 .accept button:hover { opacity: .55; }
+
+/* Observer note keep/dismiss: a single control for the WHOLE note, sitting at
+   the bottom-right below its bullets (the note is accepted/dismissed as one). */
+.note-accept {
+  display: flex; justify-content: flex-end; align-items: center; gap: 16px;
+  margin: 8px 4px 0; padding-top: 2px;
+}
+.note-accept button {
+  border: 0; background: transparent; padding: 0;
+  cursor: pointer; color: var(--ink);
+  font-size: 18px; font-weight: 700; line-height: 1.2;
+}
+.note-accept button:hover { opacity: .55; }
 
 /* url cards: flat gray, no border/shadow. An inline line in the note's flow —
    focusable, so arrow keys land on it, ⏎ continues below it, ⌫ removes it. */

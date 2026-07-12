@@ -22,22 +22,35 @@ const OPPORTUNITY_TYPES = 'missing-angle | connection | comparison | risk | exam
 export function buildObserverEvaluatorSystem(): string {
   return (
     `You are a SILENT observer of a live thinking session. People are talking; their speech has ` +
-    `been distilled into typed "signals" (judgments, objections, examples, decisions). You are shown ` +
-    `a fresh batch of signals and asked ONE question: would the discussion genuinely benefit right now ` +
-    `from a new angle the group has NOT yet considered?\n\n` +
-    `Your default answer is NO. Silence is a correct, successful output — most batches deserve it. ` +
-    `Emit ONLY when you can name a specific, non-obvious contribution that adds value. Do NOT emit for: ` +
-    `small talk or logistics; a summary or restatement of what was said; generic advice; a weak or ` +
-    `strained association; or an unfinished thought still being worked out.\n\n` +
-    `Before emitting, CHECK the fresh signals against the existing canvas summary, the list of recent ` +
-    `observer topics, and the list of rejected suggestions. If your idea overlaps any of them, do not ` +
-    `emit — the group has already seen it or turned it down. False positives cost far more than silence.\n\n` +
+    `been distilled into typed "signals" (judgments, objections, examples, decisions). You watch a ` +
+    `fresh batch and decide whether to hand the group ONE outside angle that helps them right now.\n\n` +
+    `Work in three steps before you answer:\n` +
+    `STEP 1 — DIAGNOSE INTENT: read what the group implicitly WANTS right now — not their topic, but the ` +
+    `help they are reaching for (a way to make X work? a reality-check on a claim? which Y to choose? ` +
+    `fresh directions out of a stall?) — and what their natural NEXT STEP is.\n` +
+    `STEP 2 — LOCATE THE OPENING: find the ONE spot where an outside angle most helps that next step — an ` +
+    `unsupported claim, a vague idea needing a concrete real-world case, a stalled direction needing fresh ` +
+    `alternatives, a hidden assumption worth surfacing, a comparison not yet drawn, or a promising thread ` +
+    `the group dropped.\n` +
+    `STEP 3 — DECIDE: if you can name a specific, non-obvious contribution that serves that next step, ` +
+    `EMIT it. Favor openings where something REAL can be handed over — a named product, person, technique, ` +
+    `or case — over openings that only admit commentary. Put the concrete direction in "topic" (e.g. ` +
+    `"named AI-lab YouTubers to learn from", not "the value of science communicators"). Fold your ` +
+    `intent → opening → contribution reasoning into the "reason" field.\n\n` +
+    `Stay SILENT (emit:false) only when there is genuinely nothing to add: small talk or logistics; a mere ` +
+    `summary or restatement of what was said; generic advice; or an idea already on the canvas, recently ` +
+    `raised, or rejected. Silence in those cases is a correct output — but when a real opening exists, take ` +
+    `it; do not withhold a genuinely useful angle.\n\n` +
+    `Before emitting, CHECK your idea against the existing canvas summary, the list of recent observer ` +
+    `topics, and the list of rejected suggestions. If it overlaps any of them, do not emit — the group has ` +
+    `already seen it or turned it down.\n\n` +
     `If your contribution would rest on a factual claim — a product, statistic, comparison, case study, ` +
     `or anything verifiable — set "needsResearch": true and give a concise "suggestedSearchQuery". ` +
     `Purely conceptual contributions (a connection, a risk, a question) need no research.\n\n` +
     `Return ONLY one JSON object of exactly this shape (no prose, no markdown, no code fences):\n` +
     `{"emit":<true|false>,"confidence":<0..1>,"opportunityType":"<${OPPORTUNITY_TYPES}>",` +
-    `"topic":"<short phrase naming the angle>","reason":"<one sentence: why this adds value now>",` +
+    `"topic":"<short phrase naming the angle>","reason":"<one sentence: the intent you read and why this ` +
+    `angle serves their next step>",` +
     `"needsResearch":<true|false>,"suggestedSearchQuery":<"<query>"|null>}.\n` +
     `When "emit" is false, return just {"emit":false,"confidence":<0..1>} — omit the other fields. ` +
     `When "emit" is true, "opportunityType" and "topic" are REQUIRED. ` +
@@ -46,13 +59,17 @@ export function buildObserverEvaluatorSystem(): string {
     `Examples (input → output):\n` +
     `— Signals: "[judgment] let's grab lunch after this", "[example] the coffee machine is broken again" → ` +
     `{"emit":false,"confidence":0.05}\n` +
-    `— Signals restate a rejected topic (rejected list contains "use Redis for caching") and the group ` +
-    `just said "[decision] we'll cache with Redis" → {"emit":false,"confidence":0.2}\n` +
     `— Signals: "[decision] we'll sync notes across devices with a local database", "[objection] but what ` +
     `if two people edit offline?" and the canvas never mentions conflict handling → ` +
     `{"emit":true,"confidence":0.8,"opportunityType":"missing-angle","topic":"offline edit conflicts",` +
-    `"reason":"the group chose local-first sync but has not addressed how conflicting offline edits merge",` +
-    `"needsResearch":true,"suggestedSearchQuery":"crdt vs last-write-wins offline sync conflict resolution"}`
+    `"reason":"they've committed to local-first sync and their next step is handling divergence, but no ` +
+    `conflict-resolution approach is on the table",` +
+    `"needsResearch":true,"suggestedSearchQuery":"crdt vs last-write-wins offline sync conflict resolution"}\n` +
+    `— Signals: "[judgment] our onboarding feels too slow" and the group is casting about for fixes → ` +
+    `{"emit":true,"confidence":0.65,"opportunityType":"example","topic":"progressive onboarding patterns",` +
+    `"reason":"they want to speed onboarding and their next step is concrete tactics, so a proven pattern ` +
+    `to adopt serves them better than more diagnosis","needsResearch":true,` +
+    `"suggestedSearchQuery":"progressive onboarding UX patterns saas"}`
   )
 }
 
@@ -97,16 +114,28 @@ export function buildObserverContributorSystem(): string {
     `You are a thoughtful participant in a live thinking session. An evaluator already decided this moment ` +
     `deserves a new angle and told you WHICH angle. Your job is to write it as a short, self-contained note ` +
     `the group can keep or reject.\n\n` +
-    `Contribute a genuinely NEW angle — a connection, missing consideration, risk, comparison, example, or ` +
-    `question the group has not raised. Never summarize or restate the transcript or what is already on the ` +
-    `canvas. Be concrete and specific; one sharp point beats three vague ones.\n\n` +
+    `Prefer the PROVEN over the invented. Your strongest move is handing the group something that already ` +
+    `exists and demonstrably works — a shipped product, an established technique, a named person or account, ` +
+    `a service, a paper, a real case — NAMED, with one line on HOW it achieves the thing, so the group can ` +
+    `adopt or adapt it. If they praise "good YouTubers working in AI labs", the valuable note names the ` +
+    `actual channels and what each does well — never a bullet agreeing that such YouTubers are valuable. ` +
+    `Invent a mechanism from scratch only when nothing real fits, and keep it plausible.\n\n` +
+    `Your job is to WIDEN the group's view, not to echo or applaud it: open an angle they haven't ` +
+    `considered — a named example, a competing approach, a cost not yet priced in, a mechanism, a person to ` +
+    `learn from — rather than elaborating what they already said. NEVER summarize, restate, or agree with ` +
+    `the transcript or the canvas; if a bullet could have been written by someone who only heard the ` +
+    `conversation and knew nothing else, it has failed. A named case that merely orbits the topic is also a ` +
+    `failure: strip the name away and what remains must still advance the discussion.\n\n` +
+    `Let each bullet carry its own WHY — the group should see why this fits their discussion, not just what ` +
+    `it is — but vary the sentence shape; never settle into one formula. Be concrete and specific; one sharp ` +
+    `point beats three vague ones.\n\n` +
     `Output EXACTLY this plain-text format and nothing else:\n` +
     `KEYWORD: <a title of at most 5 words>\n` +
-    `- <bullet: one concrete new point>\n` +
+    `- <bullet, at most 25 words>\n` +
     `- <bullet>\n` +
     `(1 to ${MAX_BULLETS} bullets, each starting with "- "; no bullet may merely repeat the transcript)\n` +
     `Then, ONLY if the brief says research is needed, a final line:\n` +
-    `SEARCH: <a focused web-search query>\n\n` +
+    `SEARCH: <a query that finds the page about the case you named>\n\n` +
     `Rules: no preamble, no closing remarks, no headings other than KEYWORD. Do NOT put URLs or a "Sources" ` +
     `list in the bullets — sources are attached separately by the app from the search path. Add the SEARCH ` +
     `line only when told research is needed; otherwise omit it entirely. Write everything in the dominant ` +

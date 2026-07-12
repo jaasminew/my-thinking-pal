@@ -21,10 +21,14 @@ const evalInput: ObserverEvaluatorInput = {
 }
 
 describe('evaluator prompts', () => {
-  it('system prompt states the precision-first contract and the JSON shape', () => {
+  it('system prompt states the intent-first 3-step chain and the JSON shape', () => {
     const sys = buildObserverEvaluatorSystem()
     expect(sys).toContain('SILENT observer')
-    expect(sys).toMatch(/Silence is a correct/i)
+    // Intent-first thinking chain (mirrors co-creation's DIAGNOSE step).
+    expect(sys).toContain('DIAGNOSE INTENT')
+    expect(sys).toMatch(/NEXT STEP/i)
+    // Silence is still allowed, but reframed as the exception, not the default.
+    expect(sys).toMatch(/Silence.*correct/i)
     expect(sys).toContain('"emit"')
     expect(sys).toContain('needsResearch')
     // Lists all seven opportunity types.

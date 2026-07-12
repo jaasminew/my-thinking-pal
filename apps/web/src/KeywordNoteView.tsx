@@ -266,6 +266,8 @@ export function KeywordNoteView({
   onDeleteRange,
   onKeepBullet,
   onRejectBullet,
+  onKeepNote,
+  onRejectNote,
   onKeepCard,
   onRemoveCard,
   onRemoveImage,
@@ -292,6 +294,10 @@ export function KeywordNoteView({
   onIndentBullet: (bulletId: string, delta: number) => void
   onKeepBullet: (bulletId: string) => void
   onRejectBullet: (bulletId: string) => void
+  /** Keep the whole observer note (all its pending items) as one unit. */
+  onKeepNote: () => void
+  /** Dismiss the whole observer note as one unit. */
+  onRejectNote: () => void
   onKeepCard: (cardId: string) => void
   onRemoveCard: (cardId: string) => void
   onRemoveImage: (imageId: string) => void
@@ -317,6 +323,13 @@ export function KeywordNoteView({
   // partial range (not the whole note) — kept separate so ⌫ knows to trim the
   // range rather than delete the note.
   const [dragSelOn, setDragSelOn] = useState(false)
+
+  // A purely AI-generated observer note is judged as ONE unit: gray header, no
+  // per-item ✓/✕, a single keep/dismiss control at the bottom-right. `hasPending`
+  // drives whether that control still shows (it vanishes once the note is kept).
+  const isObserver = !!note.observerMeta
+  // Bullets and cards carry a status; images never do (they're always settled).
+  const hasPending = note.items.some((x) => !isImage(x) && x.status === 'pending')
 
   // Map a DOM point in a selection to the bullet it lands in: which item (index
   // + id) and the character offset within that bullet's text. null for the
@@ -513,6 +526,9 @@ export function KeywordNoteView({
 
   const bulletRow = (b: BulletItem, i: number) => {
     const pendingAi = b.origin === 'ai' && b.status === 'pending'
+    // Observer notes are kept/dismissed as a whole, so their bullets show no
+    // per-line ✓/✕ and don't accept on click.
+    const itemAccept = pendingAi && !isObserver
     const indent = b.indent ?? 0
     const next = note.items[i + 1]
     const hasIndentedChild = next && isBullet(next) && (next.indent ?? 0) > indent
@@ -535,11 +551,11 @@ export function KeywordNoteView({
           <BulletText
             text={b.text}
             editing={b.editing}
-            title={pendingAi ? 'Click to accept & edit' : undefined}
+            title={itemAccept ? 'Click to accept & edit' : undefined}
             onInput={(t) => onBulletChange(b.id, t)}
             onEnter={() => onBulletEnter(b.id)}
             onBlur={() => onBulletBlur(b.id)}
-            onClick={pendingAi ? () => onKeepBullet(b.id) : undefined}
+            onClick={itemAccept ? () => onKeepBullet(b.id) : undefined}
             onNavigate={(dir) => focusIdx(dir === 'next' ? i + 1 : i - 1, dir === 'next' ? 'start' : 'end')}
             onEdgeDelete={(edge) => onEdgeDelete(i, edge)}
             onIndent={(delta) => onIndentBullet(b.id, delta)}
@@ -559,7 +575,7 @@ export function KeywordNoteView({
             />
           )}
         </div>
-        {pendingAi && (
+        {itemAccept && (
           <span className="accept">
             <button className="ok" title="Keep" onClick={() => onKeepBullet(b.id)}>✓</button>
             <button className="no" title="Reject" onClick={() => onRejectBullet(b.id)}>✕</button>
@@ -612,7 +628,7 @@ export function KeywordNoteView({
         <div className="t">{c.title}</div>
         <div className="d">{c.snippet || hostOf(c.url)}</div>
       </a>
-      {c.status === 'pending' && (
+      {c.status === 'pending' && !isObserver && (
         <div className="accept">
           <button className="ok" title="Keep" onClick={() => onKeepCard(c.id)}>✓</button>
           <button className="no" title="Reject" onClick={() => onRemoveCard(c.id)}>✕</button>
@@ -663,7 +679,7 @@ export function KeywordNoteView({
   return (
     <div
       ref={rootRef}
-      className={`knote ${selected ? 'selected' : ''} ${selectAllOn || dragSelOn ? 'select-all' : ''}`}
+      className={`knote ${isObserver ? 'observer' : ''} ${selected ? 'selected' : ''} ${selectAllOn || dragSelOn ? 'select-all' : ''}`}
       data-noteid={note.id}
       style={{ left: note.x, top: note.y }}
       onPointerDown={onPointerDownNote}
@@ -679,7 +695,7 @@ export function KeywordNoteView({
       )}
       {/* keyword header — plain black text; fades to orange only while its
           transcript source phrase is hovered */}
-      <div className={`kw-header ${hovered ? 'hovered' : ''}`}>
+      <div className={`kw-header ${isObserver ? 'observer' : ''} ${hovered ? 'hovered' : ''}`}>
         {note.keywordEditing ? (
           <KeywordEditor value={note.keyword} onChange={onKeywordChange} onCommit={onKeywordCommit} />
         ) : (
@@ -699,6 +715,15 @@ export function KeywordNoteView({
       >
         {note.items.map((item, i) => (isBullet(item) ? bulletRow(item, i) : isImage(item) ? imageRow(item, i) : cardRow(item, i)))}
       </div>
+
+      {/* Observer note: one keep/dismiss control for the whole note, bottom-right.
+          stopPropagation so a click doesn't start a note drag. */}
+      {isObserver && hasPending && (
+        <div className="note-accept" onPointerDown={(e) => e.stopPropagation()}>
+          <button className="ok" title="Keep this note" onClick={onKeepNote}>✓</button>
+          <button className="no" title="Dismiss this note" onClick={onRejectNote}>✕</button>
+        </div>
+      )}
     </div>
   )
 }
