@@ -10,7 +10,8 @@
   align-items: center;
   justify-content: center;
   background: #00000055;
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .pm-modal {
@@ -75,8 +76,8 @@
 }
 .pm-dropzone:hover,
 .pm-dropzone.drag-over {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--focus);
+  background: color-mix(in srgb, var(--focus) 6%, var(--paper));
 }
 .pm-dropzone svg {
   width: 22px;
@@ -154,8 +155,8 @@
 }
 .pm-status-extracting,
 .pm-status-queued {
-  background: #fff3e8;
-  color: var(--accent);
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
 }
 .pm-file-size {
   flex: none;
@@ -329,7 +330,7 @@
   outline: none;
 }
 .pm-textarea:focus {
-  border-color: var(--accent);
+  border-color: var(--focus);
   background: var(--paper);
 }
 
