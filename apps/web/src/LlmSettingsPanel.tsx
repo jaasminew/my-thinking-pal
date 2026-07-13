@@ -305,16 +305,33 @@ export function LlmSettingsPanel({
     setLocalSetupStarted(false)
   }
 
+  const removeConfig = (id: string) => {
+    setDraftConfigs((cs) => cs.filter((c) => c.id !== id))
+    setDraftSelections((s) => ({
+      listener: s.listener === id ? '' : s.listener,
+      thinker: s.thinker === id ? '' : s.thinker
+    }))
+  }
+
   const save = () => {
     const byId = new Map(draftConfigs.map((c) => [c.id, c]))
     const firstWeb = draftConfigs.find((c) => !isCliConfig(c))?.id ?? ''
     const firstAny = draftConfigs[0]?.id ?? ''
     // Listener must resolve to a web config (CLI runtimes are never offered
-    // there); Thinker accepts anything.
+    // there); Thinker accepts anything. Empty selection is intentional
+    // (hosted DeepSeek when signed in, or "no model" locally).
     const listenerOk = (id: string) => byId.has(id) && !isCliConfig(byId.get(id)!)
     const nextSelections: ModelSelections = {
-      listener: listenerOk(draftSelections.listener) ? draftSelections.listener : firstWeb,
-      thinker: byId.has(draftSelections.thinker) ? draftSelections.thinker : firstAny
+      listener: !draftSelections.listener
+        ? ''
+        : listenerOk(draftSelections.listener)
+          ? draftSelections.listener
+          : firstWeb,
+      thinker: !draftSelections.thinker
+        ? ''
+        : byId.has(draftSelections.thinker)
+          ? draftSelections.thinker
+          : firstAny
     }
     onSave(nextSelections, draftConfigs)
     onClose()
@@ -400,6 +417,28 @@ export function LlmSettingsPanel({
                 )
               })}
             </section>
+
+            {draftConfigs.length > 0 && (
+              <section className="llm-section">
+                <h2>{tr('Saved models', '已保存的模型')}</h2>
+                <ul className="llm-saved-list">
+                  {draftConfigs.map((m) => (
+                    <li className="llm-saved-row" key={m.id}>
+                      <span className="llm-saved-label" title={displayLabel(m)}>
+                        {displayLabel(m)}
+                      </span>
+                      <button
+                        type="button"
+                        className="llm-delete-model"
+                        onClick={() => removeConfig(m.id)}
+                      >
+                        {tr('Delete', '删除')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             <div className="llm-settings-actions">
               <button className="llm-save" onClick={save}>
