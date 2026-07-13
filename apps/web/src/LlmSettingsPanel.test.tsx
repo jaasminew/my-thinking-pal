@@ -79,4 +79,20 @@ describe('LlmSettingsPanel', () => {
       [sampleConfigs[1]]
     )
   })
+
+  it('keeps hosted presets selectable after personal models are added', () => {
+    render(
+      <LlmSettingsPanel
+        configs={sampleConfigs}
+        selections={{ listener: 'cfg-groq', thinker: 'cfg-ds' }}
+        hostedAvailable
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getByRole('option', { name: 'Hosted DeepSeek Flash' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Hosted DeepSeek Pro' })).toBeTruthy()
+    expect(screen.getAllByRole('option', { name: 'Groq · GPT-OSS 120B' }).length).toBeGreaterThan(0)
+  })
 })

@@ -402,9 +402,7 @@ export function LlmSettingsPanel({
                     <label className="llm-field">
                       <span>{category === 'listener' ? tr('Listener (speech, fast)', '聆听者（语音，快速）') : tr('Thinker (content, quality)', '思考者（内容，高质量）')}</span>
                       <select value={draftSelections[category]} onChange={(e) => patchSelection(category, e.target.value)}>
-                        {(options.length === 0 || !draftSelections[category]) && (
-                          <option value="">{emptyLabel}</option>
-                        )}
+                        <option value="">{emptyLabel}</option>
                         {options.map((m) => (
                           <option key={m.id} value={m.id}>{displayLabel(m)}</option>
                         ))}
