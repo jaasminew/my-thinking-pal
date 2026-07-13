@@ -7,6 +7,7 @@ import { formatProjectInstructions } from '../../../packages/core/llm'
 import { isImeEvent } from './ime'
 import type { Line, Section, EngineStatus } from './signal-engine'
 import { loadJSON, saveJSON } from './persist'
+import { useLocale } from './locale'
 
 // Extraction system prompt: distill a raw multi-speaker speech window into
 // MEETING HIGHLIGHTS. This is a strict quality FILTER, not a summarizer — the
@@ -172,6 +173,7 @@ export function Transcript({
   /** Backend mode is configured but the current account session is signed out. */
   sttBlocked?: boolean
 }) {
+  const { tr, chinese } = useLocale()
   const collapseKey = `transcript-collapsed${storageSuffix}`
   const [collapsed, setCollapsed] = useState(() => loadJSON(collapseKey, false))
 
@@ -743,7 +745,9 @@ export function Transcript({
   // Capture and signal processing are independent: audio remains live while
   // highlights are extracted/organized, so the Listening cue is rendered
   // separately and must not be replaced by the capture-state pill.
-  const caption = status === 'extracting' || status === 'organizing' ? STATUS_CAPTION[status] : ''
+  const caption = status === 'extracting' || status === 'organizing'
+    ? chinese ? (status === 'extracting' ? '提取中…' : '整理中…') : STATUS_CAPTION[status]
+    : ''
   const listening = recording && (captureState === 'live' || captureState === 'degraded')
 
   // After the closing organize pass settles (status back to idle) but the user
@@ -751,30 +755,30 @@ export function Transcript({
   // instead of going blank. Distinct from the pre-record placeholder.
   const stopped = everRecorded && !recording && status === 'idle'
   const doneMsg = !hasContent
-    ? 'Stopped — no speech was captured. Check your mic and try again.'
+    ? tr('Stopped — no speech was captured. Check your mic and try again.', '录音已停止——未捕捉到语音。请检查麦克风后重试。')
     : frozen.length > 0
-      ? `Recording stopped — ${frozen.length} section${frozen.length === 1 ? '' : 's'} saved.`
-      : 'Recording stopped — highlights saved.'
+      ? tr(`Recording stopped — ${frozen.length} section${frozen.length === 1 ? '' : 's'} saved.`, `录音已停止——已保存 ${frozen.length} 个分区。`)
+      : tr('Recording stopped — highlights saved.', '录音已停止——要点已保存。')
 
   const retryCapture = () => setCaptureAttempt((n) => n + 1)
   const captureNotice = (() => {
     switch (captureIssue) {
-      case 'permission': return { message: "Microphone access is blocked. Allow it in your browser's site settings.", action: 'Try again' }
-      case 'no-mic': return { message: 'No microphone found. Connect your mic (e.g. AirPods), then retry.', action: 'Retry' }
-      case 'mic-busy': return { message: 'Your microphone is in use by another app. Close it and retry.', action: 'Retry' }
-      case 'tab-cancelled': return { message: "Recording mic only — tab audio wasn't shared.", action: 'Share tab audio' }
-      case 'tab-missing': return { message: "Recording mic only — check 'Share tab audio' in the dialog.", action: 'Share tab audio' }
-      case 'tab-unsupported': return { message: 'Recording mic only — Safari does not support tab or screen audio capture. Use Chrome to record shared audio.' }
-      case 'tab-ended': return { message: 'Tab audio ended — still recording your mic.', action: 'Re-share' }
-      case 'mic-reconnecting': return { message: 'Microphone disconnected — reconnecting…' }
-      case 'connection-lost': return { message: 'Connection lost. Your transcript so far is saved.', action: 'Resume recording' }
-      case 'server-unreachable': return { message: "Can't reach the transcription server.", action: 'Retry' }
-      case 'transcription-error': return { message: `Transcription error${captureDetail ? `: ${captureDetail.replace(/^(Backend STT|Soniox[^:]*):?\s*/i, '')}` : ''}.`, action: 'Restart transcription' }
-      case 'stall': return { message: 'Transcription stalled.', action: 'Restart' }
-      case 'signed-out': return { message: 'Sign in to enable transcription.', action: onSignIn ? 'Sign in' : undefined }
-      case 'dev-key': return { message: 'Local transcription needs SONIOX_API_KEY in .env. Restart npm run dev after adding it.' }
-      case 'account': return { message: 'Transcription service unavailable (account issue).' }
-      case 'silence': return { message: 'Not hearing anything — is your mic muted?' }
+      case 'permission': return { message: tr("Microphone access is blocked. Allow it in your browser's site settings.", '麦克风访问被阻止。请在浏览器的网站设置中允许访问。'), action: tr('Try again', '重试') }
+      case 'no-mic': return { message: tr('No microphone found. Connect your mic (e.g. AirPods), then retry.', '未找到麦克风。请连接麦克风（如 AirPods）后重试。'), action: tr('Retry', '重试') }
+      case 'mic-busy': return { message: tr('Your microphone is in use by another app. Close it and retry.', '麦克风正被其他应用使用。请关闭后重试。'), action: tr('Retry', '重试') }
+      case 'tab-cancelled': return { message: tr("Recording mic only — tab audio wasn't shared.", '仅录制麦克风——未共享标签页音频。'), action: tr('Share tab audio', '共享标签页音频') }
+      case 'tab-missing': return { message: tr("Recording mic only — check 'Share tab audio' in the dialog.", '仅录制麦克风——请在对话框中勾选“共享标签页音频”。'), action: tr('Share tab audio', '共享标签页音频') }
+      case 'tab-unsupported': return { message: tr('Recording mic only — Safari does not support tab or screen audio capture. Use Chrome to record shared audio.', '仅录制麦克风——Safari 不支持标签页或屏幕音频采集。请使用 Chrome 录制共享音频。') }
+      case 'tab-ended': return { message: tr('Tab audio ended — still recording your mic.', '标签页音频已结束——仍在录制麦克风。'), action: tr('Re-share', '重新共享') }
+      case 'mic-reconnecting': return { message: tr('Microphone disconnected — reconnecting…', '麦克风已断开——正在重新连接…') }
+      case 'connection-lost': return { message: tr('Connection lost. Your transcript so far is saved.', '连接已中断。当前转写内容已保存。'), action: tr('Resume recording', '继续录音') }
+      case 'server-unreachable': return { message: tr("Can't reach the transcription server.", '无法连接转写服务器。'), action: tr('Retry', '重试') }
+      case 'transcription-error': return { message: tr(`Transcription error${captureDetail ? `: ${captureDetail.replace(/^(Backend STT|Soniox[^:]*):?\s*/i, '')}` : ''}.`, `转写错误${captureDetail ? `：${captureDetail.replace(/^(Backend STT|Soniox[^:]*):?\s*/i, '')}` : '。'}`), action: tr('Restart transcription', '重新开始转写') }
+      case 'stall': return { message: tr('Transcription stalled.', '转写已停止响应。'), action: tr('Restart', '重新开始') }
+      case 'signed-out': return { message: tr('Sign in to enable transcription.', '请登录以启用转写。'), action: onSignIn ? tr('Sign in', '登录') : undefined }
+      case 'dev-key': return { message: tr('Local transcription needs SONIOX_API_KEY in .env. Restart npm run dev after adding it.', '本地转写需要在 .env 中配置 SONIOX_API_KEY。添加后请重启 npm run dev。') }
+      case 'account': return { message: tr('Transcription service unavailable (account issue).', '转写服务不可用（账户问题）。') }
+      case 'silence': return { message: tr('Not hearing anything — is your mic muted?', '没有检测到声音——麦克风是否静音？') }
       default: return null
     }
   })()
@@ -812,12 +816,8 @@ export function Transcript({
   }
 
   const stateLabel: Record<CaptureState, string> = {
-    idle: 'Ready',
-    connecting: 'Connecting…',
-    live: 'Live',
-    degraded: 'Recording with an issue',
-    reconnecting: 'Reconnecting…',
-    error: 'Recording paused'
+    idle: tr('Ready', '准备就绪'), connecting: tr('Connecting…', '连接中…'), live: tr('Live', '录音中'),
+    degraded: tr('Recording with an issue', '录音异常'), reconnecting: tr('Reconnecting…', '重连中…'), error: tr('Recording paused', '录音已暂停')
   }
 
   const onRecordClick = () => {
@@ -834,8 +834,8 @@ export function Transcript({
       <button
         className="transcript-collapse"
         type="button"
-        aria-label={collapsed ? 'Expand transcription' : 'Collapse transcription'}
-        title={collapsed ? 'Expand transcription' : 'Collapse transcription'}
+        aria-label={collapsed ? tr('Expand transcription', '展开转写') : tr('Collapse transcription', '收起转写')}
+        title={collapsed ? tr('Expand transcription', '展开转写') : tr('Collapse transcription', '收起转写')}
         aria-expanded={!collapsed}
         onClick={() => setCollapsed((value) => !value)}
       >
@@ -844,7 +844,7 @@ export function Transcript({
       <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
         <div className="hint">
           {recording
-            ? 'Speak freely — key signals are distilled from the conversation and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a section to edit it.'
+            ? tr('Speak freely — key signals are distilled from the conversation and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a section to edit it.', '自由说出你的想法——关键内容会从对话中提炼出来并分区整理。选择任意文字并拖到画布上；双击分区即可编辑。')
             : ''}
         </div>
 
@@ -855,12 +855,12 @@ export function Transcript({
         {!hasContent && !stopped && (
           <div className="placeholder">
             {recording
-              ? 'Highlights appear every ~2 minutes as you talk.'
-              : 'Press ●, allow the mic, and start talking. Key signals — judgments, questions, decisions — appear here, organized into sections.'}
+              ? tr('Highlights appear every ~2 minutes as you talk.', '说话过程中，每约 2 分钟会出现一次要点。')
+              : tr('Press ●, allow the mic, and start talking. Key signals — judgments, questions, decisions — appear here, organized into sections.', '点击 ●，允许麦克风访问后开始说话。判断、问题和决定等关键内容会在这里按分区整理。')}
           </div>
         )}
 
-        {listening && <div className="status-caption ai-thinking">Listening…</div>}
+        {listening && <div className="status-caption ai-thinking">{tr('Listening…', '聆听中…')}</div>}
         {caption && <div className="status-caption ai-thinking">{caption}</div>}
         {stopped && <div className="status-caption done">{doneMsg}</div>}
         {err && <div className="placeholder err">{err}</div>}
@@ -878,10 +878,10 @@ export function Transcript({
       <div className="transcript-record-dock">
         {recording && (captureIssue === 'silence' ? (
           <div className="stt-state-pill silence" role="status">
-            <span>Not hearing anything — is your mic muted?</span>
+            <span>{tr('Not hearing anything — is your mic muted?', '没有检测到声音——麦克风是否静音？')}</span>
             <button
               type="button"
-              aria-label="Dismiss microphone silence hint"
+              aria-label={tr('Dismiss microphone silence hint', '关闭麦克风静音提示')}
               onClick={() => {
                 silenceDismissedRef.current = true
                 silenceShownRef.current = false
@@ -898,15 +898,15 @@ export function Transcript({
           className={`record ${captureState === 'live' || captureState === 'degraded' ? 'on' : ''} ${captureState}`}
           title={
             recording
-              ? `${stateLabel[captureState]} — stop recording`
+              ? `${stateLabel[captureState]} — ${tr('stop recording', '停止录音')}`
               : sttBlocked
-                ? 'Sign in to enable transcription'
-                : 'Start recording'
+                ? tr('Sign in to enable transcription', '请登录以启用转写')
+                : tr('Start recording', '开始录音')
           }
           onClick={onRecordClick}
           disabled={sttBlocked && !recording}
         >
-          {collapsed && <span className="record-label">Record</span>}
+          {collapsed && <span className="record-label">{tr('Record', '录音')}</span>}
           {captureState === 'live' || captureState === 'degraded'
             ? <span className="stop-sq" />
             : <span className="rec-dot" />}

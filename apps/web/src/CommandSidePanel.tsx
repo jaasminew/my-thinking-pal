@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { actionLabel, type CommandSession } from './command-session'
 import { isImeEvent } from './ime'
+import { useLocale } from './locale'
 
 const faviconUrl = (url: string) => {
   try {
@@ -38,6 +39,7 @@ export function CommandSidePanel({
   onApplyAction: (messageId: string, actionId: string) => void
   onClose: () => void
 }) {
+  const { tr } = useLocale()
   const [value, setValue] = useState('')
   const [width, setWidth] = useState(420)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -77,7 +79,7 @@ export function CommandSidePanel({
       <div className="cmd-panel-resize" role="separator" aria-orientation="vertical" onPointerDown={startResize} />
       <header className="cmd-panel-head">
         <span className="cmd-panel-title">{session.title}</span>
-        <button className="cmd-panel-close" title="Close conversation" onClick={onClose}>×</button>
+        <button className="cmd-panel-close" title={tr('Close conversation', '关闭对话')} onClick={onClose}>×</button>
       </header>
 
       {session.source?.selectedText && (
@@ -102,11 +104,11 @@ export function CommandSidePanel({
                 >
                   {m.text}
                 </ReactMarkdown>
-              ) : (m.pending ? <span className="cmd-thinking ai-thinking">Thinking…</span> : null)}
+              ) : (m.pending ? <span className="cmd-thinking ai-thinking">{tr('Thinking…', '思考中…')}</span> : null)}
             </div>
             {!!m.sources?.length && (
-              <div className="cmd-sources" aria-label="Sources">
-                <span className="cmd-sources-label">Sources:</span>
+              <div className="cmd-sources" aria-label={tr('Sources', '来源')}>
+                <span className="cmd-sources-label">{tr('Sources:', '来源：')}</span>
                 {m.sources.map((source) => source.kind === 'web' ? (
                   <a
                     key={`web:${source.url}`}
@@ -120,7 +122,7 @@ export function CommandSidePanel({
                     <span>{source.title}</span>
                   </a>
                 ) : (
-                  <span key={`knowledge:${source.id}`} className="cmd-source-link knowledge" title="Knowledge base">
+                  <span key={`knowledge:${source.id}`} className="cmd-source-link knowledge" title={tr('Knowledge base', '知识库')}>
                     <DocumentFavicon />
                     <span>{source.title}</span>
                   </span>
@@ -149,7 +151,7 @@ export function CommandSidePanel({
       <div className="cmd-panel-input">
         <textarea
           value={value}
-          placeholder="Reply…"
+          placeholder={tr('Reply…', '回复…')}
           rows={1}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
@@ -160,7 +162,7 @@ export function CommandSidePanel({
             }
           }}
         />
-        <button className="send" title="Send" disabled={streaming} onClick={submit}>↑</button>
+        <button className="send" title={tr('Send', '发送')} disabled={streaming} onClick={submit}>↑</button>
       </div>
     </aside>
   )

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { isBullet, isImage, type BulletItem, type CardItem, type ImageItem, type KeywordNote } from './canvas-types'
 import type { SelectionSnapshot, SelectionSegment } from './command-session'
 import { isImeEvent } from './ime'
+import { useLocale } from './locale'
 
 const hostOf = (u: string) => {
   try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u }
@@ -311,6 +312,7 @@ export function KeywordNoteView({
    */
   onTextSelection?: (sel: SelectionSnapshot) => void
 }) {
+  const { tr } = useLocale()
   const itemsRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -551,7 +553,7 @@ export function KeywordNoteView({
           <BulletText
             text={b.text}
             editing={b.editing}
-            title={itemAccept ? 'Click to accept & edit' : undefined}
+            title={itemAccept ? tr('Click to accept & edit', '点击接受并编辑') : undefined}
             onInput={(t) => onBulletChange(b.id, t)}
             onEnter={() => onBulletEnter(b.id)}
             onBlur={() => onBulletBlur(b.id)}
@@ -568,7 +570,7 @@ export function KeywordNoteView({
               className="bullet-img"
               src={b.image.src}
               alt=""
-              title="Click to expand"
+              title={tr('Click to expand', '点击展开')}
               draggable={false}
               onClick={(e) => onOpenImage({ ...b.image!, originRect: e.currentTarget.getBoundingClientRect() })}
               onError={(e) => { e.currentTarget.style.display = 'none' }}
@@ -577,8 +579,8 @@ export function KeywordNoteView({
         </div>
         {itemAccept && (
           <span className="accept">
-            <button className="ok" title="Keep" onClick={() => onKeepBullet(b.id)}>✓</button>
-            <button className="no" title="Reject" onClick={() => onRejectBullet(b.id)}>✕</button>
+            <button className="ok" title={tr('Keep', '保留')} onClick={() => onKeepBullet(b.id)}>✓</button>
+            <button className="no" title={tr('Reject', '拒绝')} onClick={() => onRejectBullet(b.id)}>✕</button>
           </span>
         )}
       </div>
@@ -630,8 +632,8 @@ export function KeywordNoteView({
       </a>
       {c.status === 'pending' && !isObserver && (
         <div className="accept">
-          <button className="ok" title="Keep" onClick={() => onKeepCard(c.id)}>✓</button>
-          <button className="no" title="Reject" onClick={() => onRemoveCard(c.id)}>✕</button>
+          <button className="ok" title={tr('Keep', '保留')} onClick={() => onKeepCard(c.id)}>✓</button>
+          <button className="no" title={tr('Reject', '拒绝')} onClick={() => onRemoveCard(c.id)}>✕</button>
         </div>
       )}
     </div>
@@ -668,7 +670,7 @@ export function KeywordNoteView({
         className="bullet-img"
         src={im.src}
         alt=""
-        title="Click to expand"
+        title={tr('Click to expand', '点击展开')}
         draggable={false}
         onClick={(e) => onOpenImage({ src: im.src, sourceUrl: im.sourceUrl, title: im.title, originRect: e.currentTarget.getBoundingClientRect() })}
         onError={(e) => { e.currentTarget.style.display = 'none' }}
@@ -701,7 +703,7 @@ export function KeywordNoteView({
         {note.keywordEditing ? (
           <KeywordEditor value={note.keyword} onChange={onKeywordChange} onCommit={onKeywordCommit} />
         ) : (
-          <span className="kw-text" title="Click to edit" onClick={onKeywordEdit}>
+          <span className="kw-text" title={tr('Click to edit', '点击编辑')} onClick={onKeywordEdit}>
             {note.keyword || 'untitled'}
           </span>
         )}
@@ -722,8 +724,8 @@ export function KeywordNoteView({
           stopPropagation so a click doesn't start a note drag. */}
       {isObserver && hasPending && (
         <div className="note-accept" onPointerDown={(e) => e.stopPropagation()}>
-          <button className="ok" title="Keep this note" onClick={onKeepNote}>✓</button>
-          <button className="no" title="Dismiss this note" onClick={onRejectNote}>✕</button>
+          <button className="ok" title={tr('Keep this note', '保留此笔记')} onClick={onKeepNote}>✓</button>
+          <button className="no" title={tr('Dismiss this note', '忽略此笔记')} onClick={onRejectNote}>✕</button>
         </div>
       )}
     </div>

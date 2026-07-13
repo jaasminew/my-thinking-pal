@@ -15,6 +15,7 @@ import type {
   ProjectMemoryModalProps
 } from '../../../services/project-memory/types'
 import './ProjectMemoryModal.css'
+import { useLocale } from './locale'
 
 // ---- stroke icons (mirror the light hand-drawn chrome of Sidebar.tsx) ----
 const icon = (paths: ReactNode) => (
@@ -106,6 +107,7 @@ function fieldsEqual(a: ProjectInstructions, b: ProjectInstructions): boolean {
  * section's callbacks. Draft state lives here so each scope keeps its own
  * unsaved edits while the user flips between scope tabs. */
 function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boolean }) {
+  const { tr, chinese } = useLocale()
   const [tab, setTab] = useState<InstructionField>('transcriptionSummary')
   const [draft, setDraft] = useState<ProjectInstructions>(section.instructions)
   const [dragOver, setDragOver] = useState(false)
@@ -121,8 +123,9 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
     !draft.transcriptionSummary.trim() &&
     !draft.coCreation.trim() &&
     !draft.aiCommand.trim()
-  const savedLabel = busy ? 'Saving…' : dirty ? 'Unsaved changes' : section.instructionsSaved ? 'Saved' : 'Draft'
-  const activeLabel = TABS.find((t) => t.field === tab)!.label
+  const tabs = TABS.map((t) => ({ ...t, label: t.field === 'transcriptionSummary' ? tr('Transcription summary', '转写摘要') : t.field === 'coCreation' ? tr('AI co-creation', 'AI 共创') : tr('AI command', 'AI 指令') }))
+  const activeLabel = tabs.find((t) => t.field === tab)!.label
+  const savedLabel = busy ? tr('Saving…', '保存中…') : dirty ? tr('Unsaved changes', '未保存的更改') : section.instructionsSaved ? tr('Saved', '已保存') : tr('Draft', '草稿')
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -140,7 +143,7 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
   return (
     <>
       <section className="pm-section">
-        <h3>Knowledge base</h3>
+        <h3>{tr('Knowledge base', '知识库')}</h3>
         <label
           className={`pm-dropzone${dragOver ? ' drag-over' : ''}`}
           onDragOver={(e) => {
@@ -155,10 +158,10 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
             multiple
             className="pm-file-input"
             onChange={handlePick}
-            aria-label="Upload files"
+            aria-label={tr('Upload files', '上传文件')}
           />
           {UploadIcon}
-          <span>Drop files here or click to upload</span>
+          <span>{tr('Drop files here or click to upload', '将文件拖到这里，或点击上传')}</span>
         </label>
 
         <ul className="pm-file-list">
@@ -169,14 +172,14 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
                 <span className="pm-file-title">{f.title}</span>
                 <span className="pm-file-desc">{f.description}</span>
               </span>
-              <span className={`pm-status pm-status-${f.status}`}>{STATUS_LABEL[f.status]}</span>
+              <span className={`pm-status pm-status-${f.status}`}>{chinese ? ({ queued: '排队中', extracting: '提取中…', indexed: '已索引', failed: '失败' } as const)[f.status] : STATUS_LABEL[f.status]}</span>
               <span className="pm-file-size">{formatSize(f.size)}</span>
               <span className="pm-file-actions">
                 {f.status === 'failed' && (
                   <button
                     className="pm-icon-btn"
                     onClick={() => section.onRetryFile(f.id)}
-                    aria-label={`Retry ${f.title}`}
+                    aria-label={tr(`Retry ${f.title}`, `重试 ${f.title}`)}
                     disabled={busy}
                   >
                     {RetryIcon}
@@ -185,7 +188,7 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
                 <button
                   className="pm-icon-btn"
                   onClick={() => section.onDeleteFile(f.id)}
-                  aria-label={`Delete ${f.title}`}
+                  aria-label={tr(`Delete ${f.title}`, `删除 ${f.title}`)}
                   disabled={busy}
                 >
                   {TrashIcon}
@@ -199,9 +202,9 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
       <div className="pm-separator" role="separator" aria-hidden="true" />
 
       <section className="pm-section">
-        <h3>Instructions</h3>
+        <h3>{tr('Instructions', '指令')}</h3>
         <div className="pm-tabs" role="tablist">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.field}
               role="tab"
@@ -218,7 +221,7 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
           aria-label={activeLabel}
           value={draft[tab]}
           onChange={(e) => setDraft({ ...draft, [tab]: e.target.value })}
-          placeholder={`Instructions for ${activeLabel.toLowerCase()}…`}
+          placeholder={tr(`Instructions for ${activeLabel.toLowerCase()}…`, `${activeLabel}指令…`)}
         />
         <div className="pm-instr-foot">
           <span className="pm-saved-indicator" data-testid="saved-indicator">
@@ -229,7 +232,7 @@ function ScopeBody({ section, busy }: { section: MemoryScopeSection; busy: boole
             onClick={() => section.onSaveInstructions(draft)}
             disabled={busy || draftEmpty}
           >
-            Save instructions
+            {tr('Save instructions', '保存指令')}
           </button>
         </div>
       </section>
@@ -245,6 +248,7 @@ export function ProjectMemoryModal({
   error,
   onClose
 }: ProjectMemoryModalProps) {
+  const { tr } = useLocale()
   const [scope, setScope] = useState<ScopeTab>(() => {
     if (initialScope === 'project' && project) return 'project'
     if (initialScope === 'canvas' && canvas) return 'canvas'
@@ -260,18 +264,18 @@ export function ProjectMemoryModal({
       className="pm-modal-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label={`Project memory — ${active.name}`}
+      aria-label={tr(`Project memory — ${active.name}`, `项目记忆 — ${active.name}`)}
     >
       <div className="pm-modal">
         <header className="pm-modal-head">
-          <h2>Memory — {active.name}</h2>
-          <button className="pm-icon-btn" onClick={onClose} aria-label="Close" disabled={busy}>
+          <h2>{tr(`Memory — ${active.name}`, `记忆 — ${active.name}`)}</h2>
+          <button className="pm-icon-btn" onClick={onClose} aria-label={tr('Close', '关闭')} disabled={busy}>
             {CloseIcon}
           </button>
         </header>
 
         {showToggle && (
-          <div className="pm-scope-toggle" role="tablist" aria-label="Memory scope">
+          <div className="pm-scope-toggle" role="tablist" aria-label={tr('Memory scope', '记忆范围')}>
             <button
               role="tab"
               aria-selected={scope === 'project'}
@@ -279,9 +283,9 @@ export function ProjectMemoryModal({
               onClick={() => setScope('project')}
             >
               {FolderIcon}
-              <span>Project — {project!.name}</span>
+              <span>{tr(`Project — ${project!.name}`, `项目 — ${project!.name}`)}</span>
               <span className="pm-scope-tooltip" aria-hidden="true" data-testid="project-scope-tooltip">
-                Knowledge base content is shared with all canvases in this project.
+                {tr('Knowledge base content is shared with all canvases in this project.', '知识库内容会共享给此项目中的所有画布。')}
               </span>
             </button>
             <button
@@ -291,9 +295,9 @@ export function ProjectMemoryModal({
               onClick={() => setScope('canvas')}
             >
               {CanvasIcon}
-              <span>This canvas — {canvas!.name}</span>
+              <span>{tr(`This canvas — ${canvas!.name}`, `此画布 — ${canvas!.name}`)}</span>
               <span className="pm-scope-tooltip" aria-hidden="true" data-testid="canvas-scope-tooltip">
-                Knowledge base content is visible only to this canvas.
+                {tr('Knowledge base content is visible only to this canvas.', '知识库内容仅对此画布可见。')}
               </span>
             </button>
           </div>

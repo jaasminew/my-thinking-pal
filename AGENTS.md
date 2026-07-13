@@ -91,3 +91,14 @@ Behavior:
 
 Do not claim the canvas uses tldraw in active code. The dependency is installed, but
 the current prototype uses a custom positioned-note canvas.
+
+## GitHub Publishing
+
+- Treat Git-over-SSH authentication and GitHub CLI authentication as separate.
+  An invalid `gh auth status` does not imply that `git push` is unavailable;
+  verify SSH access independently before reporting a push blocker.
+- Before opening a PR, inspect `git log origin/<base>..HEAD` and the full diff
+  against the intended base. Report or resolve pre-existing branch commits so
+  the PR scope is understood before publication.
+- Prefer the connected GitHub app for PR creation when SSH push works but the
+  local `gh` token is unavailable.

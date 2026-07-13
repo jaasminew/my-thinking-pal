@@ -384,23 +384,30 @@ body { background: var(--bg); color: var(--ink); }
   color: inherit; cursor: pointer; font: 15px/14px var(--font-sans);
 }
 .transcript-pane.collapsed .transcript-record-dock {
-  left: 0; right: auto; z-index: 4; width: auto; height: auto; padding: 0;
+  left: 0; right: auto; z-index: 4; width: max-content; height: auto; padding: 0;
   align-items: center; justify-content: center;
   background: var(--paper); border: 1px solid var(--line); border-bottom: 0; border-left: 0;
   border-radius: 0 var(--radius-md) 0 0;
   pointer-events: auto;
 }
 .transcript-pane.collapsed .transcript-record-dock .record {
-  width: auto; height: auto; padding: 10px; gap: 10px; transform: none;
+  width: max-content; min-width: max-content; height: auto; padding: 10px; gap: 10px; transform: none;
+  flex-direction: row; flex-wrap: nowrap;
   border: 0; border-radius: inherit; box-shadow: none;
   font: inherit; color: var(--ink);
 }
 .transcript-pane.collapsed .stt-state-pill { display: none; }
-.record-label { font-size: var(--font-size-sm); }
+.record-label {
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
+}
 .transcript-pane.collapsed .record .rec-dot {
-  width: 24px; height: 24px; border: 1px solid var(--no); background: transparent;
+  width: 24px; height: 24px; flex: 0 0 24px;
+  border: 1px solid var(--no); background: transparent;
   position: relative;
 }
+.transcript-pane.collapsed .record .stop-sq { flex: 0 0 13px; }
 .transcript-pane.collapsed .record .rec-dot::after {
   content: ''; position: absolute; inset: 7px; border-radius: 50%; background: var(--no);
 }
@@ -1003,6 +1010,9 @@ body :is(.llm-add-model, .doc-btn:not(.doc-btn-danger), .memory-btn, .cmd-action
 body :is(.side-btn, .side-control-row) {
   border: 1px solid transparent; background: transparent; color: var(--button-tertiary-text);
 }
+/* Match the root-level tree-row inset. The semantic button sizing above would
+   otherwise push the New Project / New Idea Space icons six pixels right. */
+body .side-btn { padding-left: 8px; padding-right: 8px; }
 body :is(.doc-btn-danger, .note-menu button.danger) {
   border: 1px solid var(--button-negative-border); background: var(--button-negative-bg); color: var(--button-negative-text);
 }

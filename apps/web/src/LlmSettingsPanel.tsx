@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { checkLocalRuntime, setupLocalRuntime } from '../../../services/llm/local-runtime'
 import type { ModelCategory } from '../../../packages/core/llm/observer-types'
+import { useLocale } from './locale'
 
 /**
  * Users make exactly two model choices (contract §5): Listener (speech-side,
@@ -171,6 +172,7 @@ export function LlmSettingsPanel({
   onSave: (nextSelections: ModelSelections, nextConfigs: AiModelConfig[]) => void
   onClose: () => void
 }) {
+  const { tr } = useLocale()
   const [draftSelections, setDraftSelections] = useState<ModelSelections>(selections)
   const [draftConfigs, setDraftConfigs] = useState<AiModelConfig[]>([...configs])
   const [editingRole, setEditingRole] = useState<ModelCategory | null>(null)
@@ -347,14 +349,14 @@ export function LlmSettingsPanel({
         {!editingRole ? (
           <>
             <div className="llm-settings-head">
-              <strong>Settings</strong>
-              <button className="llm-settings-x" onClick={onClose} title="Close">
+              <strong>{tr('Settings', '设置')}</strong>
+              <button className="llm-settings-x" onClick={onClose} title={tr('Close', '关闭')}>
                 ×
               </button>
             </div>
 
             <section className="llm-section">
-              <h2>Model Selection</h2>
+              <h2>{tr('Model Selection', '模型选择')}</h2>
 
               {(['listener', 'thinker'] as ModelCategory[]).map((category) => {
                 // CLI runtimes can't back the Listener (ambient evaluator can't
@@ -363,16 +365,16 @@ export function LlmSettingsPanel({
                 return (
                   <div className="llm-model-row" key={category}>
                     <label className="llm-field">
-                      <span>{CATEGORY_LABELS[category]}</span>
+                      <span>{category === 'listener' ? tr('Listener (speech, fast)', '聆听者（语音，快速）') : tr('Thinker (content, quality)', '思考者（内容，高质量）')}</span>
                       <select value={draftSelections[category]} onChange={(e) => patchSelection(category, e.target.value)}>
-                        {options.length === 0 && <option value="">No model configured</option>}
+                        {options.length === 0 && <option value="">{tr('No model configured', '尚未配置模型')}</option>}
                         {options.map((m) => (
                           <option key={m.id} value={m.id}>{displayLabel(m)}</option>
                         ))}
                       </select>
                     </label>
                     <button className="llm-add-model" onClick={() => beginNew(category)}>
-                      + New Model
+                      {tr('+ New Model', '+ 新建模型')}
                     </button>
                   </div>
                 )
@@ -381,7 +383,7 @@ export function LlmSettingsPanel({
 
             <div className="llm-settings-actions">
               <button className="llm-save" onClick={save}>
-                Save
+                {tr('Save', '保存')}
               </button>
             </div>
           </>
@@ -389,10 +391,10 @@ export function LlmSettingsPanel({
           <>
             <div className="llm-settings-head llm-settings-head-new">
               <button className="llm-back" onClick={() => setEditingRole(null)}>
-                Back
+                {tr('Back', '返回')}
               </button>
-              <strong>New Model</strong>
-              <button className="llm-settings-x" onClick={onClose} title="Close">
+              <strong>{tr('New Model', '新建模型')}</strong>
+              <button className="llm-settings-x" onClick={onClose} title={tr('Close', '关闭')}>
                 ×
               </button>
             </div>
@@ -400,7 +402,7 @@ export function LlmSettingsPanel({
             <section className="llm-section">
 
             <label className="llm-field">
-              <span>Type</span>
+              <span>{tr('Type', '类型')}</span>
               <select
                 value={runtime}
                 onChange={(e) => {
@@ -419,18 +421,18 @@ export function LlmSettingsPanel({
                   setLocalSetupStarted(false)
                 }}
               >
-                <option value="api">API model</option>
-                <option value="ollama">Ollama local</option>
-                <option value="codex">Codex local</option>
-                <option value="claude-code">Claude Code local</option>
-                <option value="cursor">Cursor local</option>
+                <option value="api">{tr('API model', 'API 模型')}</option>
+                <option value="ollama">{tr('Ollama local', '本地 Ollama')}</option>
+                <option value="codex">{tr('Codex local', '本地 Codex')}</option>
+                <option value="claude-code">{tr('Claude Code local', '本地 Claude Code')}</option>
+                <option value="cursor">{tr('Cursor local', '本地 Cursor')}</option>
               </select>
             </label>
 
             {runtime === 'api' && (
               <>
                 <label className="llm-field">
-                  <span>Provider</span>
+                  <span>{tr('Provider', '提供商')}</span>
                   <select
                     value={providerId}
                     onChange={(e) => {
@@ -450,7 +452,7 @@ export function LlmSettingsPanel({
                 </label>
 
                 <label className="llm-field">
-                  <span>Model</span>
+                  <span>{tr('Model', '模型')}</span>
                   <select value={draftConfig.model || ''} onChange={(e) => patchConfig('model', e.target.value)}>
                     {modelOptions.map((m) => (
                       <option key={m.value || 'default'} value={m.value}>{m.label}</option>
@@ -459,7 +461,7 @@ export function LlmSettingsPanel({
                 </label>
 
                 <label className="llm-field">
-                  <span>API key</span>
+                  <span>{tr('API key', 'API 密钥')}</span>
                   <input
                     value={draftConfig.apiKey}
                     onChange={(e) => patchConfig('apiKey', e.target.value)}
@@ -484,7 +486,7 @@ export function LlmSettingsPanel({
             {runtime === 'ollama' && (
               <>
                 <label className="llm-field">
-                  <span>Model</span>
+                  <span>{tr('Model', '模型')}</span>
                   <select value={draftConfig.model || ''} onChange={(e) => patchConfig('model', e.target.value)}>
                     {modelOptions.map((m) => (
                       <option key={m.value || 'default'} value={m.value}>{m.label}</option>
@@ -492,7 +494,7 @@ export function LlmSettingsPanel({
                   </select>
                 </label>
                 <label className="llm-field">
-                  <span>Base URL</span>
+                  <span>{tr('Base URL', '基础 URL')}</span>
                   <input
                     value={draftConfig.baseUrl}
                     onChange={(e) => patchConfig('baseUrl', e.target.value)}
@@ -505,7 +507,7 @@ export function LlmSettingsPanel({
             {(runtime === 'codex' || runtime === 'claude-code' || runtime === 'cursor') && (
               <>
                 <label className="llm-field">
-                  <span>Model</span>
+                  <span>{tr('Model', '模型')}</span>
                   <select value={draftConfig.model || ''} onChange={(e) => patchConfig('model', e.target.value)}>
                     {modelOptions.map((m) => (
                       <option key={m.value || 'default'} value={m.value}>{m.label}</option>
@@ -513,7 +515,7 @@ export function LlmSettingsPanel({
                   </select>
                 </label>
                 <label className="llm-field">
-                  <span>Command</span>
+                  <span>{tr('Command', '命令')}</span>
                   <input
                     value={draftConfig.command}
                     onChange={(e) => patchConfig('command', e.target.value)}
@@ -528,7 +530,7 @@ export function LlmSettingsPanel({
 
             <div className="llm-settings-actions">
               <button className="clear-saved" onClick={() => setEditingRole(null)}>
-                Cancel
+                {tr('Cancel', '取消')}
               </button>
               <button className="llm-save" onClick={primaryAction} disabled={primaryBusy}>
                 {primaryLabel}

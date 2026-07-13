@@ -57,6 +57,7 @@ import { reduceAiCursor } from './ai-cursor'
 import { createRevealScheduler } from './ai-reveal'
 import { initialAiCursorState, type AiCursorState, type BufferedFireEvent, type RevealScheduler, type WorldPoint } from './ai-cursor-types'
 import { AiCursorOverlay } from './AiCursorOverlay'
+import { useLocale } from './locale'
 
 // DEV-only pretty-printer for observer decisions — see engine.onLog wiring.
 // Every gate skip, evaluation, emission, and error prints one clear line so a
@@ -346,6 +347,7 @@ function CanvasSpace({
   onSignIn?: () => void
   sttBlocked?: boolean
 }) {
+  const { tr } = useLocale()
   const k = (key: string) => key + storageSuffix
   // Notes are restored from localStorage so testing data survives refreshes.
   // Transient flags (aiRunning, open editors) are reset — a restored note is
@@ -1685,11 +1687,6 @@ function CanvasSpace({
     setNoteMenu(null)
   }
 
-  const onRenameNote = (id: string) => {
-    patchNote(id, (n) => ({ ...n, keywordEditing: true }))
-    setNoteMenu(null)
-  }
-
   const onDeleteNoteFromMenu = (id: string) => {
     onDeleteNote(id)()
     setNoteMenu(null)
@@ -2152,13 +2149,13 @@ function CanvasSpace({
           }}
         >
           <div className="ai-switch" onPointerDown={(e) => e.stopPropagation()}>
-            <span className="ai-switch-label">AI co-creation mode</span>
+            <span className="ai-switch-label">{tr('AI co-creation mode', 'AI 共创模式')}</span>
             <button
               className={`switch ${aiEnabled ? 'on' : ''}`}
               role="switch"
               aria-checked={aiEnabled}
-              aria-label="AI co-creation mode"
-              title={modelConfigs.length === 0 ? 'Configure a model in Settings first' : undefined}
+              aria-label={tr('AI co-creation mode', 'AI 共创模式')}
+              title={modelConfigs.length === 0 ? tr('Configure a model in Settings first', '请先在设置中配置模型') : undefined}
               disabled={modelConfigs.length === 0}
               onClick={toggleAi}
             />
@@ -2166,26 +2163,26 @@ function CanvasSpace({
               className="memory-btn"
               title={
                 projectMemory.project
-                  ? `Memory — ${projectMemory.project.name} & this canvas`
-                  : `Memory — ${projectMemory.canvas?.name || 'this canvas'}`
+                  ? tr(`Memory — ${projectMemory.project.name} & this canvas`, `记忆 — ${projectMemory.project.name} 与此画布`)
+                  : tr(`Memory — ${projectMemory.canvas?.name || 'this canvas'}`, `记忆 — ${projectMemory.canvas?.name || '此画布'}`)
               }
-              aria-label="Project memory"
+              aria-label={tr('Project memory', '项目记忆')}
               onClick={onOpenMemory}
             >
               <span className="memory-btn-icon">{MemoryIcon}</span>
-              <span className="memory-btn-label">Memory</span>
+              <span className="memory-btn-label">{tr('Memory', '记忆')}</span>
             </button>
           </div>
 
           {observerNotice && (
             <div className="observer-notice" role="status" onPointerDown={(e) => e.stopPropagation()}>
-              <span>Observer off — {observerNotice}</span>
-              <button className="observer-notice-x" aria-label="Dismiss" onClick={() => setObserverNotice(null)}>×</button>
+              <span>{tr(`Observer off — ${observerNotice}`, `观察器已关闭 — ${observerNotice}`)}</span>
+              <button className="observer-notice-x" aria-label={tr('Dismiss', '关闭')} onClick={() => setObserverNotice(null)}>×</button>
             </div>
           )}
 
           {notes.length === 0 && images.length === 0 && (
-            <div className="canvas-hint">Select transcript text and drag here · click to start a note · drag the canvas to box-select</div>
+            <div className="canvas-hint">{tr('Click anywhere to sketch your ideas out', '点击任意一处开始记录')}</div>
           )}
 
           {marquee && (
@@ -2254,10 +2251,9 @@ function CanvasSpace({
           style={{ left: noteMenu.x, top: noteMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
-        >
-          <button onClick={() => onDuplicateNote(noteMenu.id)}>Duplicate</button>
-          <button onClick={() => onRenameNote(noteMenu.id)}>Rename</button>
-          <button className="danger" onClick={() => onDeleteNoteFromMenu(noteMenu.id)}>Delete</button>
+          >
+          <button onClick={() => onDuplicateNote(noteMenu.id)}>{tr('Duplicate', '复制')}</button>
+          <button className="danger" onClick={() => onDeleteNoteFromMenu(noteMenu.id)}>{tr('Delete', '删除')}</button>
         </div>
       )}
 
@@ -2403,6 +2399,7 @@ const MAX_OPEN = 2
 type OpenPanels = { ids: string[]; fracs: number[] } // fracs: width ÷ workspace width
 
 export function App() {
+  const { tr } = useLocale()
   const [collapsed, setCollapsed] = useState(() => loadJSON('sidebar-collapsed', false))
   const [tree, setTree] = useState<TreeNode[]>(() => loadJSON('workspace-tree', DEFAULT_TREE))
   // Open canvases (≤3), bottom→top of the paper stack (= open order).
@@ -2593,7 +2590,7 @@ export function App() {
   // straight into renaming it.
   const addProject = () => {
     const id = uid('p')
-    setTree((t) => [...t, { id, kind: 'project', name: 'New Project', children: [] }])
+    setTree((t) => [...t, { id, kind: 'project', name: tr('New Project', '新建项目'), children: [] }])
     setCollapsed(false)
     setSelectedId(id)
     setRenamingId(id)
@@ -2603,7 +2600,7 @@ export function App() {
   // right. Nested into the selected project (if any), else at the root.
   const addIdeaSpace = () => {
     const id = uid('s')
-    const node: TreeNode = { id, kind: 'space', name: 'A New Canvas' }
+    const node: TreeNode = { id, kind: 'space', name: tr('A New Canvas', '新建画布') }
     setTree((t) => {
       const sel = selectedId ? findNode(t, selectedId) : undefined
       if (sel && sel.kind === 'project') {
@@ -2795,10 +2792,10 @@ export function App() {
     document.addEventListener('pointerup', up)
   }
 
-  const profileLabel = backend.user ? backend.user.email.split('@')[0] || backend.user.email : 'Sign in'
+  const profileLabel = backend.user ? backend.user.email.split('@')[0] || backend.user.email : tr('Sign in', '登录')
   const profileTitle = backend.user
     ? `Signed in as ${backend.user.email} - sync + backend STT active`
-    : 'Sign in to sync boards across devices'
+    : tr('Sign in to sync boards across devices', '登录以在设备间同步画布')
 
   return (
     <div className="app-shell">
@@ -2820,9 +2817,9 @@ export function App() {
         onOpenCanvasMemory={(spaceId) => setMemoryTarget({ kind: 'canvas', spaceId })}
         footer={
           <div className="side-controls">
-            <button className="side-control-row" title="Settings" aria-label="Settings" onClick={() => setShowLlmSettings(true)}>
+            <button className="side-control-row" title={tr('Settings', '设置')} aria-label={tr('Settings', '设置')} onClick={() => setShowLlmSettings(true)}>
               <span className="side-control-icon">{GearIcon}</span>
-              {!collapsed && <span className="side-control-label">Setting</span>}
+              {!collapsed && <span className="side-control-label">{tr('Setting', '设置')}</span>}
             </button>
             {backend.enabled && (
               <button
@@ -2837,11 +2834,11 @@ export function App() {
             {backend.user && (
               <button
                 className="side-control-row"
-                title="Open a synced document on this canvas"
+                title={tr('Open a synced document on this canvas', '打开此画布的同步文档')}
                 onClick={() => setShowDocs(true)}
               >
                 <span className="side-control-icon">{BookIcon}</span>
-                {!collapsed && <span className="side-control-label">Documents</span>}
+                {!collapsed && <span className="side-control-label">{tr('Documents', '文档')}</span>}
               </button>
             )}
           </div>
@@ -2856,11 +2853,11 @@ export function App() {
             style={{ width: widths[i], zIndex: i + 1 }}
             onPointerDownCapture={() => setActiveId(id)}
           >
-            <div className="panel-spine spine-drag" onPointerDown={startPanelDrag(i)} title="Drag to slide / resize">
+            <div className="panel-spine spine-drag" onPointerDown={startPanelDrag(i)} title={tr('Drag to slide / resize', '拖动以滑动或调整大小')}>
               {open.ids.length > 1 && (
                 <button
                   className="panel-close"
-                  title="Close this canvas"
+                  title={tr('Close this canvas', '关闭此画布')}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => closeSpace(id)}
                 >
@@ -2868,7 +2865,7 @@ export function App() {
                 </button>
               )}
               <span className="spine-canvas-icon">{CanvasIcon}</span>
-              <span className="spine-title">{findNode(tree, id)?.name ?? 'A New Canvas'}</span>
+              <span className="spine-title">{findNode(tree, id)?.name ?? tr('A New Canvas', '新建画布')}</span>
             </div>
             <div className="panel-body">
               <CanvasSpace
@@ -2920,7 +2917,7 @@ export function App() {
         <DocumentsPanel
           backend={backend}
           activeSpaceId={activeId}
-          activeSpaceName={findNode(tree, activeId)?.name ?? 'canvas'}
+          activeSpaceName={findNode(tree, activeId)?.name ?? tr('canvas', '画布')}
           onClose={() => setShowDocs(false)}
         />
       )}
@@ -2935,9 +2932,9 @@ export function App() {
             onPointerDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
           >
-            <button onClick={() => onDuplicateSpace(spaceMenu.id)}>Duplicate</button>
-            <button onClick={() => onRenameSpace(spaceMenu.id)}>Rename</button>
-            <button className="danger" onClick={() => onDeleteSpace(spaceMenu.id, spaceMenu.name)}>Delete</button>
+            <button onClick={() => onDuplicateSpace(spaceMenu.id)}>{tr('Duplicate', '复制')}</button>
+            <button onClick={() => onRenameSpace(spaceMenu.id)}>{tr('Rename', '重命名')}</button>
+            <button className="danger" onClick={() => onDeleteSpace(spaceMenu.id, spaceMenu.name)}>{tr('Delete', '删除')}</button>
           </div>
         </>
       )}
@@ -2947,11 +2944,11 @@ export function App() {
         <div className="confirm-overlay" onClick={() => setDeleteConfirm(null)}>
           <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
             <p className="confirm-text">
-              Delete "{deleteConfirm.name}"? This canvas and all its content will be permanently removed.
+              {tr(`Delete "${deleteConfirm.name}"? This canvas and all its content will be permanently removed.`, `删除“${deleteConfirm.name}”？此画布和所有内容将被永久移除。`)}
             </p>
             <div className="confirm-actions">
-              <button className="confirm-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
-              <button className="confirm-delete" onClick={confirmDeleteSpace}>Delete</button>
+              <button className="confirm-cancel" onClick={() => setDeleteConfirm(null)}>{tr('Cancel', '取消')}</button>
+              <button className="confirm-delete" onClick={confirmDeleteSpace}>{tr('Delete', '删除')}</button>
             </div>
           </div>
         </div>
