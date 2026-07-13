@@ -59,7 +59,7 @@ if [[ -n "$(find "${staging}" -type l -print -quit)" ]]; then
   echo "Release archives may not contain symlinks." >&2
   exit 1
 fi
-for required in web/index.html relay/relay.cjs server/thinking-pal-server; do
+for required in web/index.html server/thinking-pal-server; do
   [[ -f "${staging}/${required}" ]] || { echo "Missing release file: ${required}" >&2; exit 1; }
 done
 chmod 0755 "${staging}/server/thinking-pal-server"
@@ -93,10 +93,10 @@ rollback() {
   echo "Deployment health check failed; rolling back." >&2
   if [[ -n "${previous}" && -d "${previous}" ]]; then
     activate "${previous}"
-    systemctl restart thinking-pal-api.service thinking-pal-relay.service
+    systemctl restart thinking-pal-api.service
   else
     rm -f "${CURRENT_LINK}" "${CURRENT_LINK}.next"
-    systemctl stop thinking-pal-api.service thinking-pal-relay.service || true
+    systemctl stop thinking-pal-api.service || true
   fi
   rm -rf "${target}"
 }
@@ -111,15 +111,15 @@ deployment_failed() {
 }
 trap deployment_failed ERR
 systemctl daemon-reload
-systemctl enable thinking-pal-api.service thinking-pal-relay.service
-systemctl restart thinking-pal-api.service thinking-pal-relay.service
+systemctl disable --now thinking-pal-relay.service 2>/dev/null || true
+systemctl enable thinking-pal-api.service
+systemctl restart thinking-pal-api.service
 nginx -t
 systemctl reload nginx
 
 healthy=false
 for _ in $(seq 1 30); do
-  if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null &&
-     curl --fail --silent http://127.0.0.1:3001/healthz >/dev/null; then
+  if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
     healthy=true
     break
   fi

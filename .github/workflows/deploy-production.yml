@@ -80,10 +80,8 @@ jobs:
         run: |
           npm ci
           npm run build
-          npm run build:relay
-          mkdir -p release/web release/relay release/server
+          mkdir -p release/web release/server
           cp -a dist/. release/web/
-          cp dist-server/relay.cjs release/relay/
           (cd server-go && go build -trimpath -ldflags="-s -w" -o ../release/server/thinking-pal-server ./cmd/server)
           tar -C release -czf "thinking-pal-${RELEASE_SHA}.tar.gz" .
           sha256sum "thinking-pal-${RELEASE_SHA}.tar.gz" >"thinking-pal-${RELEASE_SHA}.sha256"

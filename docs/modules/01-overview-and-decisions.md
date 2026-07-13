@@ -73,4 +73,4 @@ Thinking Pal 是实时思考工作台，不是会议纪要工具。核心约束�
 | 账号体系 | Go 后端 | — |
 | LLM 推理 / agent | 客户端 | 用户 |
 | STT 语音转写 | Go 后端转发 | 我方 |
-| Web 搜索 / og:image | 最小后端 relay（`/api/search`+`/api/url-meta`） | 我方（Tavily） |
+| Web 搜索 / og:image | 生产：Go `/search`+`/url-meta`（登录态）；本地-only：Vite `/api/*` | 我方（Tavily） |

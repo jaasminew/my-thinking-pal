@@ -16,6 +16,7 @@ import (
 	"mythinkingpal/server/internal/documents"
 	"mythinkingpal/server/internal/httpapi"
 	"mythinkingpal/server/internal/projectmemory"
+	"mythinkingpal/server/internal/search"
 	"mythinkingpal/server/internal/storage"
 	"mythinkingpal/server/internal/storage/fsdoc"
 	"mythinkingpal/server/internal/storage/memory"
@@ -55,8 +56,18 @@ func main() {
 	origins := websocketOrigins(cfg.CORSOrigin)
 	syncH := syncsvc.NewHandler(docStore, account, origins...)
 	sttH := stt.NewHandler(buildUpstream(cfg), origins...)
+	searchH := search.NewHandler(search.NewTavily(cfg.TavilyAPIKey), search.NewURLMetaClient())
 
-	handler := httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, Workspace: wsH, ProjectMemory: pmH, Sync: syncH, STT: sttH, CORSOrigin: cfg.CORSOrigin})
+	handler := httpapi.New(httpapi.Deps{
+		Auth:          authH,
+		Documents:     docsH,
+		Workspace:     wsH,
+		ProjectMemory: pmH,
+		Sync:          syncH,
+		STT:           sttH,
+		Search:        searchH,
+		CORSOrigin:    cfg.CORSOrigin,
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Host + ":" + cfg.Port,

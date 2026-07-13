@@ -33,3 +33,16 @@ export interface WorkspacePayload {
   tree: WorkspaceTreeNode[]
   updatedAt?: string
 }
+
+/** Inspiration-card search hit (mirrors Go /search + Node relay). */
+export interface SearchResult {
+  title: string
+  url: string
+  snippet?: string
+}
+
+/** Page og:description / og:image from Go /url-meta. */
+export interface UrlMeta {
+  description?: string
+  image?: string
+}

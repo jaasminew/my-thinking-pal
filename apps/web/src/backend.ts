@@ -3,6 +3,7 @@ import { ApiClient } from '../../../services/api/client'
 import { apiBaseUrl, apiEnabled, wsUrl } from '../../../services/api/config'
 import { sharedTokenStore } from '../../../services/api/tokens'
 import type { User, WorkspaceTreeNode } from '../../../services/api/types'
+import type { SearchResult, UrlMeta } from '../../../services/api/types'
 import { loadJSON, saveJSON } from './persist'
 
 export interface SyncParams {
@@ -49,6 +50,10 @@ export interface Backend {
   createDoc: (title: string) => Promise<{ id: string; title: string } | null>
   renameDoc: (docId: string, title: string) => Promise<void>
   deleteDoc: (docId: string) => Promise<void>
+  /** Auth-gated web search via Go /search (empty when logged out / local uses Vite). */
+  search: (query: string, n?: number) => Promise<SearchResult[]>
+  /** Auth-gated page metadata via Go /url-meta. */
+  urlMeta: (pageUrl: string) => Promise<UrlMeta>
 }
 
 const DOCMAP_KEY = 'tp.docmap' // spaceId -> server document id
@@ -298,6 +303,49 @@ export function useBackend(): Backend {
     [client, user]
   )
 
+  const search = useCallback(
+    async (query: string, n = 1): Promise<SearchResult[]> => {
+      if (!enabled) {
+        try {
+          const r = await fetch(`/api/search?q=${encodeURIComponent(query)}&n=${n}`)
+          if (!r.ok) return []
+          const data = (await r.json()) as { results?: SearchResult[] }
+          return Array.isArray(data?.results) ? data.results : []
+        } catch {
+          return []
+        }
+      }
+      if (!client || !user) return []
+      try {
+        return await client.search(query, n)
+      } catch {
+        return []
+      }
+    },
+    [enabled, client, user]
+  )
+
+  const urlMeta = useCallback(
+    async (pageUrl: string): Promise<UrlMeta> => {
+      if (!enabled) {
+        try {
+          const r = await fetch(`/api/url-meta?url=${encodeURIComponent(pageUrl)}`)
+          if (!r.ok) return {}
+          return ((await r.json()) as UrlMeta) || {}
+        } catch {
+          return {}
+        }
+      }
+      if (!client || !user) return {}
+      try {
+        return await client.urlMeta(pageUrl)
+      } catch {
+        return {}
+      }
+    },
+    [enabled, client, user]
+  )
+
   return useMemo(
     () => ({
       enabled,
@@ -321,7 +369,9 @@ export function useBackend(): Backend {
       isAdopted,
       createDoc,
       renameDoc,
-      deleteDoc
+      deleteDoc,
+      search,
+      urlMeta
     }),
     [
       enabled,
@@ -345,7 +395,9 @@ export function useBackend(): Backend {
       isAdopted,
       createDoc,
       renameDoc,
-      deleteDoc
+      deleteDoc,
+      search,
+      urlMeta
     ]
   )
 }

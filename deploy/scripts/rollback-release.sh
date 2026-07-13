@@ -31,19 +31,19 @@ restore_previous() {
   trap - ERR
   set +e
   activate "${previous}"
-  systemctl restart thinking-pal-api.service thinking-pal-relay.service
+  systemctl restart thinking-pal-api.service
   echo "Rollback failed; restored ${previous}." >&2
   exit "${code}"
 }
 
 trap restore_previous ERR
 activate "${target}"
-systemctl restart thinking-pal-api.service thinking-pal-relay.service
+systemctl disable --now thinking-pal-relay.service 2>/dev/null || true
+systemctl restart thinking-pal-api.service
 
 healthy=false
 for _ in $(seq 1 30); do
-  if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null &&
-     curl --fail --silent http://127.0.0.1:3001/healthz >/dev/null; then
+  if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
     healthy=true
     break
   fi

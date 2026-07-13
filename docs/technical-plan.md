@@ -49,7 +49,7 @@ apps/
 packages/
   core/         CRDT schema / 类型 / agent / LLM 客户端（Web 与 Electron 共享）✅
 services/       前端共享客户端库：api（auth/documents）、sync（BoardSync）、stt（BackendSTT/Soniox）、llm ✅
-server/         dev-only 最小 relay（search + og:image），挂在 Vite dev 中间件
+server/         本地-only Vite 中间件（search + og:image）；生产已迁入 Go `/search` + `/url-meta`
 server-go/      Go 后端 ✅
 docs/
   technical-plan.md   本索引

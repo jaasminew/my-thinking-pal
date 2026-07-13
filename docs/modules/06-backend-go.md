@@ -80,8 +80,9 @@ GET    /sync/:docId           (auth)
 # STT（模块 07，WebSocket）
 GET    /stt                   (auth)
 
-# 可选（后期）：带计费的搜索转发
-GET    /search?q=...          (auth)
+# 搜索 / URL 元数据转发（后端持 Tavily key；与 STT 同为登录态代理）
+GET    /search?q=&n=          (auth)     -> { results: [{ title, url, snippet? }] }
+GET    /url-meta?url=         (auth)     -> { description?, image? }
 ```
 
 ## 6.4 同步 Hub 骨架（示意）

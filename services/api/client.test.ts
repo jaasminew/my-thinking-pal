@@ -256,6 +256,31 @@ describe('ApiClient workspace', () => {
   })
 })
 
+describe('ApiClient search', () => {
+  it('searches with auth and clamps n', async () => {
+    const { client, tokens } = makeClient(async (url, init) => {
+      expect(url).toBe('http://api.test/search?q=thinking&n=5')
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer access-1')
+      return jsonResponse(200, { results: [{ title: 'T', url: 'https://t.example' }] })
+    })
+    tokens.save(pair)
+    const results = await client.search('thinking', 99)
+    expect(results).toEqual([{ title: 'T', url: 'https://t.example' }])
+  })
+
+  it('fetches url-meta with auth', async () => {
+    const { client, tokens } = makeClient(async (url) => {
+      expect(url).toBe('http://api.test/url-meta?url=https%3A%2F%2Fexample.com')
+      return jsonResponse(200, { description: 'About', image: 'https://example.com/i.png' })
+    })
+    tokens.save(pair)
+    expect(await client.urlMeta('https://example.com')).toEqual({
+      description: 'About',
+      image: 'https://example.com/i.png'
+    })
+  })
+})
+
 describe('wsUrl', () => {
   it('converts http->ws and appends token', () => {
     expect(wsUrl('https://api.test', '/sync/d1', 'tok en')).toBe('wss://api.test/sync/d1?token=tok%20en')

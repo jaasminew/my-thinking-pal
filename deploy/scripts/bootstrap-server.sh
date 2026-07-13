@@ -62,21 +62,21 @@ if [[ ! -f "${CONFIG_ROOT}/api.env" ]]; then
   chown root:"${APP_USER}" "${CONFIG_ROOT}/api.env"
   chmod 0640 "${CONFIG_ROOT}/api.env"
 fi
-if [[ ! -f "${CONFIG_ROOT}/relay.env" ]]; then
-  install -o root -g "${APP_USER}" -m 0640 "${DEPLOY_DIR}/env/relay.env.example" "${CONFIG_ROOT}/relay.env"
-fi
 if [[ ! -f "${CONFIG_ROOT}/backup.env" ]]; then
   install -o root -g root -m 0600 "${DEPLOY_DIR}/env/backup.env.example" "${CONFIG_ROOT}/backup.env"
 fi
 
 install -o root -g root -m 0644 "${DEPLOY_DIR}/systemd/thinking-pal-api.service" /etc/systemd/system/
-install -o root -g root -m 0644 "${DEPLOY_DIR}/systemd/thinking-pal-relay.service" /etc/systemd/system/
 install -o root -g root -m 0644 "${DEPLOY_DIR}/systemd/thinking-pal-backup.service" /etc/systemd/system/
 install -o root -g root -m 0644 "${DEPLOY_DIR}/systemd/thinking-pal-backup.timer" /etc/systemd/system/
 install -o root -g root -m 0755 "${DEPLOY_DIR}/scripts/deploy-release.sh" /usr/local/sbin/thinking-pal-deploy
 install -o root -g root -m 0755 "${DEPLOY_DIR}/scripts/rollback-release.sh" /usr/local/sbin/thinking-pal-rollback
 install -o root -g root -m 0755 "${DEPLOY_DIR}/scripts/backup.sh" /usr/local/sbin/thinking-pal-backup
 install -o root -g root -m 0755 "${DEPLOY_DIR}/scripts/restore.sh" /usr/local/sbin/thinking-pal-restore
+
+# Retire the former Node search relay if a previous bootstrap installed it.
+systemctl disable --now thinking-pal-relay.service 2>/dev/null || true
+rm -f /etc/systemd/system/thinking-pal-relay.service
 
 cat >/etc/sudoers.d/thinking-pal-deploy <<EOF
 ${DEPLOY_USER} ALL=(root) NOPASSWD: /usr/local/sbin/thinking-pal-deploy, /usr/local/sbin/thinking-pal-rollback
@@ -103,5 +103,5 @@ fi
 
 echo "Bootstrap complete."
 echo "1. Point the ${APP_DOMAIN} A record at this server and confirm ICP filing."
-echo "2. Fill ${CONFIG_ROOT}/api.env and relay.env provider keys."
+echo "2. Fill ${CONFIG_ROOT}/api.env provider keys (SONIOX_API_KEY, TAVILY_API_KEY)."
 echo "3. Run: sudo APP_DOMAIN=${APP_DOMAIN} ${DEPLOY_DIR}/scripts/enable-tls.sh"

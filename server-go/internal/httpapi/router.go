@@ -13,6 +13,7 @@ import (
 	"mythinkingpal/server/internal/auth"
 	"mythinkingpal/server/internal/documents"
 	"mythinkingpal/server/internal/projectmemory"
+	"mythinkingpal/server/internal/search"
 	"mythinkingpal/server/internal/stt"
 	syncsvc "mythinkingpal/server/internal/sync"
 	"mythinkingpal/server/internal/workspace"
@@ -25,6 +26,7 @@ type Deps struct {
 	ProjectMemory *projectmemory.Handler
 	Sync          *syncsvc.Handler
 	STT           *stt.Handler
+	Search        *search.Handler
 	CORSOrigin    string
 }
 
@@ -62,6 +64,12 @@ func New(d Deps) http.Handler {
 	// STT proxy (WebSocket) — backend holds the vendor key (module 07).
 	if d.STT != nil {
 		mux.Handle("GET /stt", d.Auth.RequireAuth(http.HandlerFunc(d.STT.ServeHTTP)))
+	}
+
+	// Search + URL metadata proxy — backend holds Tavily key (auth-gated).
+	if d.Search != nil {
+		mux.Handle("GET /search", d.Auth.RequireAuth(http.HandlerFunc(d.Search.Search)))
+		mux.Handle("GET /url-meta", d.Auth.RequireAuth(http.HandlerFunc(d.Search.URLMeta)))
 	}
 
 	// Project Memory — knowledge-base files + per-scope AI instructions.

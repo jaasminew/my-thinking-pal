@@ -36,14 +36,14 @@ npm run dev            # Vite 起在 http://127.0.0.1:5173
 - STT:浏览器直连 Soniox(需 `.env` 里的 `SONIOX_API_KEY`)。
 - Web 搜索 / og:image:走 Vite dev 中间件 `server/api-plugin.ts` 的 `/api/search`、`/api/url-meta`(需 `TAVILY_API_KEY`)。
 
-### B. 前端 + Go 后端(登录 / 跨设备同步 / 后端 STT)
+### B. 前端 + Go 后端(登录 / 跨设备同步 / 后端 STT / 搜索转发)
 
 开两个终端:
 
 ```bash
 # 终端 1:Go 后端(默认 :8080)
 cd server-go
-STT_PROVIDER=mock ACCOUNT_STORE=sqlite ACCOUNT_DSN="file:data/accounts.db" make run
+STT_PROVIDER=mock ACCOUNT_STORE=sqlite ACCOUNT_DSN="file:data/accounts.db" TAVILY_API_KEY=… make run
 
 # 终端 2:前端指向后端
 VITE_API_URL=http://127.0.0.1:8080 npm run dev
@@ -52,6 +52,7 @@ VITE_API_URL=http://127.0.0.1:8080 npm run dev
 - 侧边栏出现 **Sign in**;登录后自动同步整份 Workspace：左侧树（项目 / 灵感空间）+ 每个画布的内容（`BoardSync` → `/sync`）。
 - 第二台设备只需登录同一账号，侧栏树与画布内容会自动对齐；无需 Documents 面板或「Open here」。
 - 登录后 Transcript 自动改用 `BackendSTT` 经后端 `/stt` 转发(key 只在后端)。
+- 登录后 Web 搜索 / og:image 走 Go `GET /search`、`GET /url-meta`（`RequireAuth`，后端持 `TAVILY_API_KEY`）；未登录时搜索降级为空。
 - 真机 STT 用 `STT_PROVIDER=soniox` 并在后端设 `SONIOX_API_KEY`;`mock` 用于无 key 联调。
 
 ### C. 桌面壳(Electron)
@@ -93,7 +94,7 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 | `CEREBRAS_API_KEY` / `CEREBRAS_MODEL` | 可选 LLM provider |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | 本地 Ollama(无 key、无代理) |
 | `SONIOX_API_KEY` / `SONIOX_MODEL` | 浏览器直连 STT(本地模式) |
-| `TAVILY_API_KEY` | Web 搜索卡片(`/api/search`) |
+| `TAVILY_API_KEY` | 本地-only：Vite `/api/search`；生产 / 已登录：Go `/search` |
 | `HTTPS_PROXY` | 仅 hosted API(Groq/Cerebras/Tavily)在 CN 需要 |
 | `VITE_API_URL` | 指向 Go 后端以开启登录/同步/后端 STT;**留空 = 本地-only** |
 
@@ -112,6 +113,7 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 | `STT_PROVIDER` | `soniox` | `soniox`\|`tencent`\|`mock` |
 | `SONIOX_API_KEY` / `SONIOX_MODEL` | — / `stt-rt-v5` | Soniox 上游 |
 | `TENCENT_APPID` / `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY` | — | 腾讯云 ASR(占位) |
+| `TAVILY_API_KEY` | — | 登录态 `/search` Tavily 转发 |
 | `CORS_ORIGIN` | `*` | 允许的 Web 源 |
 
 ---
@@ -120,7 +122,6 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 
 ```bash
 npm run build           # 前端 → dist/
-npm run build:relay     # 生产搜索中继 → dist-server/relay.cjs
 npm run preview         # 本地预览 dist/
 cd server-go && make build   # → server-go/bin/server
 npm run build:desktop   # 生产桌面安装包 → apps/desktop/release/

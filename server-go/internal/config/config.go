@@ -26,6 +26,7 @@ type Config struct {
 	TencentSecretID    string
 	TencentSecretKey   string
 	TencentEngineModel string
+	TavilyAPIKey       string
 	CORSOrigin         string // allowed web origin ("*" reflects any)
 }
 
@@ -49,6 +50,7 @@ func Load() Config {
 		TencentSecretID:    envAny([]string{"TENCENT_SECRET_ID", "TENCENT_CLOUD_SECRET_ID"}, ""),
 		TencentSecretKey:   envAny([]string{"TENCENT_SECRET_KEY", "TENCENT_CLOUD_SECRET_KEY"}, ""),
 		TencentEngineModel: env("TENCENT_ENGINE_MODEL", "16k_zh"),
+		TavilyAPIKey:       env("TAVILY_API_KEY", ""),
 		CORSOrigin:         env("CORS_ORIGIN", "*"),
 	}
 }

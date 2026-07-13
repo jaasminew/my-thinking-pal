@@ -1,4 +1,4 @@
-import type { DocumentMeta, TokenPair, User, WorkspacePayload, WorkspaceTreeNode } from './types'
+import type { DocumentMeta, SearchResult, TokenPair, UrlMeta, User, WorkspacePayload, WorkspaceTreeNode } from './types'
 import { sharedTokenStore, TokenStore } from './tokens'
 
 // Deduped across ApiClient instances so React Strict Mode (double mount) or
@@ -139,6 +139,20 @@ export class ApiClient {
       body: JSON.stringify({ tree })
     })
     return this.json<WorkspacePayload>(res)
+  }
+
+  // ---- search / url-meta (auth-gated Go proxy; backend holds Tavily key) ----
+  async search(query: string, n = 1): Promise<SearchResult[]> {
+    const q = encodeURIComponent(query)
+    const count = Math.max(1, Math.min(5, n | 0 || 1))
+    const res = await this.authedFetch(`/search?q=${q}&n=${count}`, { method: 'GET' })
+    const data = await this.json<{ results?: SearchResult[] }>(res)
+    return Array.isArray(data?.results) ? data.results : []
+  }
+
+  async urlMeta(pageUrl: string): Promise<UrlMeta> {
+    const res = await this.authedFetch(`/url-meta?url=${encodeURIComponent(pageUrl)}`, { method: 'GET' })
+    return this.json<UrlMeta>(res)
   }
 
   // ---- internals ----

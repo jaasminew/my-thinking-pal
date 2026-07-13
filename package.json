@@ -6,8 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:relay": "esbuild server/relay-main.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist-server/relay.cjs",
-    "start:relay": "node dist-server/relay.cjs",
     "preview": "vite preview",
     "test": "vitest run",
     "sandbox": "vite-node sandbox/cocreate/run.ts --",

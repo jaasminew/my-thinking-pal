@@ -43,6 +43,7 @@ import { ObserverEngine, DEFAULT_COOLDOWN_MS, DEFAULT_MAX_RECENT_TOPICS } from '
 import { makeObserverLog } from './observer-log'
 import { placeObserverNote, DEFAULT_NOTE_W, DEFAULT_NOTE_H, type PlacedRect } from './observer-placement'
 import { requestObserverEvaluate, requestObserverContribute } from '../../../services/llm/observer'
+import { configureWebSearch, fetchUrlMeta } from '../../../services/llm/web-search'
 import { resolveCategoryProvider, type CategoryAssignment } from '../../../services/llm/model-roles'
 import type {
   ObserverCanvasContext,
@@ -317,7 +318,8 @@ function CanvasSpace({
   makeStt,
   seedFromLocal = true,
   onSignIn,
-  sttBlocked = false
+  sttBlocked = false,
+  relayAvailable = true
 }: {
   /** This canvas's tree-node id — resolves the Project Memory scope. */
   spaceId: string
@@ -345,6 +347,8 @@ function CanvasSpace({
   seedFromLocal?: boolean
   onSignIn?: () => void
   sttBlocked?: boolean
+  /** Whether web search relay is usable (local Vite or signed-in Go). */
+  relayAvailable?: boolean
 }) {
   const { tr } = useLocale()
   const k = (key: string) => key + storageSuffix
@@ -803,7 +807,7 @@ function CanvasSpace({
   }, [])
 
   // Cards from the CLI providers arrive as bare title+url — enrich them with the
-  // site's own short description (og:description) and thumbnail via /api/url-meta.
+  // site's own short description (og:description) and thumbnail via url-meta.
   // One attempt per card; missing fields just stay empty (the card renders
   // without an image area / falls back to the hostname as description).
   const metaTriedRef = useRef(new Set<string>())
@@ -813,9 +817,8 @@ function CanvasSpace({
         if (!isCard(it) || (it.snippet && it.image) || metaTriedRef.current.has(it.id)) continue
         metaTriedRef.current.add(it.id)
         const noteId = n.id
-        fetch(`/api/url-meta?url=${encodeURIComponent(it.url)}`)
-          .then((r) => (r.ok ? r.json() : {}))
-          .then((m: { description?: string; image?: string }) => {
+        void fetchUrlMeta(it.url)
+          .then((m) => {
             if (!m?.description && !m?.image) return
             patchNote(noteId, (nn) => ({
               ...nn,
@@ -1938,11 +1941,22 @@ function CanvasSpace({
   observerContextRef.current = getObserverContext
 
   // Construct the engine once per space; persist state + tear down on unmount.
+  // relayAvailable is read via a ref so auth changes don't rebuild the engine.
+  const relayAvailableRef = useRef(relayAvailable)
+  relayAvailableRef.current = relayAvailable
   useEffect(() => {
     const engine = new ObserverEngine(
       {
-        evaluate: (input) => requestObserverEvaluate(input, { listener: listenerAssignRef.current, relayAvailable: true }),
-        contribute: (input) => requestObserverContribute(input, { thinker: thinkerAssignRef.current, relayAvailable: true }),
+        evaluate: (input) =>
+          requestObserverEvaluate(input, {
+            listener: listenerAssignRef.current,
+            relayAvailable: relayAvailableRef.current
+          }),
+        contribute: (input) =>
+          requestObserverContribute(input, {
+            thinker: thinkerAssignRef.current,
+            relayAvailable: relayAvailableRef.current
+          }),
         getContext: () => observerContextRef.current(),
         isCocreateStreaming: () => firesRef.current.size > 0
       },
@@ -2434,6 +2448,25 @@ export function App() {
   const [showLlmSettings, setShowLlmSettings] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const backend = useBackend()
+
+  // Route web search / url-meta: local Vite relay, signed-in Go proxy, or none.
+  useEffect(() => {
+    if (!backend.enabled) {
+      configureWebSearch({ mode: 'local' })
+      return
+    }
+    if (!backend.user) {
+      configureWebSearch({ mode: 'none' })
+      return
+    }
+    configureWebSearch({
+      mode: 'auth',
+      search: (q, n) => backend.search(q, n),
+      urlMeta: (u) => backend.urlMeta(u)
+    })
+  }, [backend.enabled, backend.user, backend.search, backend.urlMeta])
+
+  const relayAvailable = !backend.enabled || !!backend.user
 
   // Project Memory seams, shared by every open canvas (M5): the helper's
   // IndexedDB store (H1) + browser extractor (H2) always; the backend client
@@ -3085,6 +3118,7 @@ export function App() {
                 seedFromLocal={!backend.isAdopted(id)}
                 onSignIn={() => setShowAuth(true)}
                 sttBlocked={backend.enabled && !backend.user}
+                relayAvailable={relayAvailable}
               />
             </div>
           </section>

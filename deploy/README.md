@@ -10,7 +10,7 @@ address is kept in deployment secrets and is not committed to the repository.
 2. The server is in Tencent Cloud Guangzhou. Complete the domain real-name and
    ICP filing requirements before exposing a public site from mainland China.
 3. In the Tencent security group allow inbound TCP 22, 80, and 443 only.
-   Ports 3001 and 8080 are loopback-only.
+   Port 8080 is loopback-only.
 4. Wait until a public resolver returns the expected address:
 
    ```bash
@@ -50,9 +50,9 @@ server does not use port 22. The bootstrap is idempotent and creates:
 - `/etc/thinking-pal`: root-owned runtime configuration.
 - `/var/backups/thinking-pal`: local backup generations.
 
-Review `/etc/thinking-pal/api.env` and `/etc/thinking-pal/relay.env`. Add the
-real `SONIOX_API_KEY` and `TAVILY_API_KEY`; the bootstrap generates independent
-JWT secrets automatically. Never copy these runtime secrets to GitHub.
+Review `/etc/thinking-pal/api.env`. Add the real `SONIOX_API_KEY` and
+`TAVILY_API_KEY`; the bootstrap generates independent JWT secrets automatically.
+Never copy these runtime secrets to GitHub.
 
 ## 3. Enable HTTPS
 
@@ -108,12 +108,11 @@ workflow with operation `rollback` and a full SHA still present on the server.
 
 ```bash
 # Current status and structured logs
-sudo systemctl status thinking-pal-api thinking-pal-relay
-sudo journalctl -u thinking-pal-api -u thinking-pal-relay --since today
+sudo systemctl status thinking-pal-api
+sudo journalctl -u thinking-pal-api --since today
 
 # Local health
 curl --fail http://127.0.0.1:8080/healthz
-curl --fail http://127.0.0.1:3001/healthz
 
 # Public health
 curl --fail https://mythinkingpal.xyz/healthz
@@ -152,7 +151,8 @@ the first deployment and at least quarterly.
 - Registration, login, refresh, and logout work.
 - A document synchronizes between two browsers over WSS.
 - Unknown documents and untrusted WebSocket Origins receive 403.
-- STT, Project Memory, Tavily search, and URL cards work.
-- Restarting both services preserves accounts and board state.
+- STT, Project Memory, authenticated Tavily search (`/search`), and URL cards
+  (`/url-meta`) work when signed in.
+- Restarting the API preserves accounts and board state.
 - A deliberately unhealthy release rolls back automatically.
 - A backup can be restored on a clean test directory/server.
