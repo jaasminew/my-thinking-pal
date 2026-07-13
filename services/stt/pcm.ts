@@ -25,18 +25,26 @@ export class PcmMicStream {
   }
 
   stop(): void {
+    const processor = this.processor
+    const source = this.source
+    const ctx = this.ctx
+    const stream = this.stream
+    this.processor = undefined
+    this.source = undefined
+    this.ctx = undefined
+    this.stream = undefined
     try {
-      this.processor?.disconnect()
-      this.source?.disconnect()
+      processor?.disconnect()
+      source?.disconnect()
     } catch {
       /* noop */
     }
-    try {
-      this.ctx?.close()
-    } catch {
-      /* noop */
+    if (ctx && ctx.state !== 'closed') {
+      void ctx.close().catch(() => {
+        /* another teardown may have closed it first */
+      })
     }
-    this.stream?.getTracks().forEach((t) => t.stop())
+    stream?.getTracks().forEach((t) => t.stop())
   }
 }
 
