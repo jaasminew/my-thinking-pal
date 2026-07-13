@@ -2483,17 +2483,18 @@ export function App() {
   // token before every WebSocket handshake because /stt cannot retry a 401
   // during the upgrade. Unexpected disconnects use the same path to reconnect
   // without stopping the microphone stream.
+  const makeBackendStt = useCallback(async (): Promise<STTProvider> => {
+    const freshUrl = async () => {
+      const ok = await backend.refreshAuth()
+      if (!ok) throw new Error('Sign in to use backend speech transcription.')
+      const url = backend.sttUrl()
+      if (!url) throw new Error('Backend speech session is unavailable. Please sign in again.')
+      return url
+    }
+    return new BackendSTT({ url: await freshUrl(), reconnectUrl: freshUrl })
+  }, [backend.refreshAuth, backend.sttUrl])
   const makeStt: (() => STTProvider | Promise<STTProvider>) | undefined = backend.enabled
-    ? async () => {
-        const freshUrl = async () => {
-          const ok = await backend.refreshAuth()
-          if (!ok) throw new Error('Sign in to use backend speech transcription.')
-          const url = backend.sttUrl()
-          if (!url) throw new Error('Backend speech session is unavailable. Please sign in again.')
-          return url
-        }
-        return new BackendSTT({ url: await freshUrl(), reconnectUrl: freshUrl })
-      }
+    ? makeBackendStt
     : undefined
 
   useEffect(() => saveJSON('sidebar-collapsed', collapsed), [collapsed])
