@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { chatCompletion, ChatHttpError } from './chat'
 import { TEST_PROVIDER, jsonResponse, mockFetchSequence } from './__mocks__/mock-provider'
 
@@ -12,10 +12,18 @@ describe('chatCompletion', () => {
   })
 
   it('throws ChatHttpError on non-ok status', async () => {
-    const mock = mockFetchSequence([jsonResponse('rate limited', { status: 429 })])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const mock = mockFetchSequence([jsonResponse('{"error":{"message":"invalid model"}}', { status: 400 })])
     await expect(
       chatCompletion(TEST_PROVIDER, { system: 's', userText: 'u', fetchImpl: mock.fetch })
     ).rejects.toBeInstanceOf(ChatHttpError)
+    expect(warn).toHaveBeenCalledWith('[llm] chat completion rejected', expect.objectContaining({
+      status: 400,
+      provider: TEST_PROVIDER.id,
+      model: TEST_PROVIDER.model,
+      response: { error: { message: 'invalid model' } }
+    }))
+    warn.mockRestore()
   })
 
   it('passes reasoning params through into the body', async () => {

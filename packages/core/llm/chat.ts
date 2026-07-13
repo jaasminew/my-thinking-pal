@@ -19,6 +19,9 @@ export interface ChatOptions {
 export interface ChatResult {
   content: string
   serverMs: number
+  /** Provider completion metadata retained for diagnosing empty/truncated replies. */
+  finishReason?: string
+  hasReasoningContent: boolean
 }
 
 // One request/response round-trip. Throws on transport/HTTP error so callers can
@@ -48,11 +51,37 @@ export async function chatCompletion(provider: LlmProvider, opts: ChatOptions): 
   const serverMs = Math.round(now() - t0)
   if (!r.ok) {
     const body = await r.text().catch(() => '')
+    // The browser's generic "400 (Bad Request)" line hides the useful provider
+    // response. Log only safe request identity + response details: never the
+    // Authorization header, prompt, or full request body.
+    console.warn('[llm] chat completion rejected', {
+      status: r.status,
+      provider: provider.id,
+      model: provider.model,
+      endpoint: `${provider.baseUrl}/chat/completions`,
+      response: readableErrorBody(body)
+    })
     throw new ChatHttpError(r.status, body.slice(0, 300), serverMs)
   }
   const data: any = await r.json()
-  const content = data?.choices?.[0]?.message?.content || ''
-  return { content, serverMs }
+  const choice = data?.choices?.[0]
+  const message = choice?.message
+  const content = message?.content || ''
+  return {
+    content,
+    serverMs,
+    ...(typeof choice?.finish_reason === 'string' ? { finishReason: choice.finish_reason } : {}),
+    hasReasoningContent:
+      typeof message?.reasoning_content === 'string' && message.reasoning_content.length > 0
+  }
+}
+
+function readableErrorBody(body: string): unknown {
+  try {
+    return JSON.parse(body)
+  } catch {
+    return body.slice(0, 300)
+  }
 }
 
 export class ChatHttpError extends Error {

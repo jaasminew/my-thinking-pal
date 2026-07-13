@@ -232,7 +232,13 @@ export class ObserverEngine {
         return
       }
 
-      // Evaluator null → error, no emission.
+      // A structured evaluator failure retains the service/pass reason.
+      if (decision && 'error' in decision) {
+        this.logError(signalTsRange, `evaluator: ${decision.error}`, decision.model)
+        return
+      }
+
+      // Legacy/null test seam → error, no emission.
       if (decision === null) {
         this.logError(signalTsRange, 'evaluator returned null')
         return
@@ -329,6 +335,7 @@ export class ObserverEngine {
         ts: this.now(),
         kind: 'emission',
         signalTsRange,
+        sourceCount: dedupedResult.sources.length,
         ...(result.searchPath ? { searchPath: result.searchPath } : {}),
         ...(result.model ? { model: result.model } : {})
       })

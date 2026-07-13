@@ -148,6 +148,10 @@ export interface ObserverLogRecord {
   model?: string
   latencyMs?: number
   searchPath?: SearchPath
+  /** Source cards actually attached to this emission (0 = search ran but found
+   *  nothing, or no query was issued). Distinguishes "relay called" from
+   *  "relay merely selected" — searchPath alone is misleading. */
+  sourceCount?: number
   outcome?: ObserverOutcome
   error?: string
 }
@@ -167,13 +171,20 @@ export interface ObserverCanvasContext {
 }
 
 export interface ObserverEngineDeps {
-  evaluate(input: ObserverEvaluatorInput): Promise<ObserverDecision | null>
+  evaluate(input: ObserverEvaluatorInput): Promise<ObserverDecision | ObserverEvaluationFailure | null>
   contribute(input: ObserverContributorInput): Promise<ObserverContributionResult | null>
   getContext(): ObserverCanvasContext
   /** True while a reactive co-creation fire is streaming (in-flight guard). */
   isCocreateStreaming(): boolean
   /** Test seam. Defaults to Date.now. */
   now?(): number
+}
+
+/** A failed evaluator round with the reason preserved for the engine log. */
+export interface ObserverEvaluationFailure {
+  decision: null
+  error: string
+  model?: string
 }
 
 export interface ObserverEmission {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { BackendSTT, type SttTransport, type PcmSource } from './backend'
-import type { TranscriptEvent } from './types'
+import type { SttStatusEvent, TranscriptEvent } from './types'
 
 class FakeTransport implements SttTransport {
   private openCb: (() => void) | null = null
@@ -41,16 +41,20 @@ function setup() {
   const stt = new BackendSTT({ url: 'ws://x/stt', transport, pcm, sampleRate: 16000 })
   const events: TranscriptEvent[] = []
   const errors: Error[] = []
+  const statuses: SttStatusEvent[] = []
   stt.onTranscript((e) => events.push(e))
   stt.onError((e) => errors.push(e))
-  return { transport, pcm, stt, events, errors }
+  stt.onStatus((e) => statuses.push(e))
+  return { transport, pcm, stt, events, errors, statuses }
 }
 
 describe('BackendSTT', () => {
   it('sends config and pumps audio on open', async () => {
-    const { transport, pcm, stt } = setup()
+    const { transport, pcm, stt, statuses } = setup()
     await stt.start({ lang: 'auto' })
+    expect(statuses).toEqual([{ state: 'connecting' }])
     transport.open()
+    expect(statuses.at(-1)).toEqual({ state: 'live' })
     expect(JSON.parse(transport.texts[0])).toEqual({ type: 'config', language: 'auto', sampleRate: 16000 })
 
     // Give the async pcm.start() a tick to register the callback.
@@ -110,6 +114,8 @@ describe('BackendSTT', () => {
           return transports.shift()!
         }
       })
+      const statuses: SttStatusEvent[] = []
+      stt.onStatus((status) => statuses.push(status))
 
       await stt.start({ lang: 'auto' })
       first.open()
@@ -117,11 +123,13 @@ describe('BackendSTT', () => {
       expect(pcm.starts).toBe(1)
 
       first.remoteClose()
+      expect(statuses.at(-1)).toEqual({ state: 'reconnecting' })
       await vi.advanceTimersByTimeAsync(500)
       expect(reconnectUrl).toHaveBeenCalledOnce()
       expect(urls).toEqual(['ws://x/stt?token=old', 'ws://x/stt?token=fresh'])
 
       second.open()
+      expect(statuses.at(-1)).toEqual({ state: 'live' })
       const frame = new Uint8Array([5, 6]).buffer
       pcm.emit(frame)
       expect(pcm.starts).toBe(1)

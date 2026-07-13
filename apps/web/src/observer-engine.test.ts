@@ -493,6 +493,27 @@ describe('error handling — null / error results', () => {
     expect(logs.at(-1)).toMatchObject({ kind: 'error' })
   })
 
+  it('structured evaluator failure → reason and model in error log', async () => {
+    const contribute = vi.fn(async () => makeResult())
+    const deps = makeDeps({
+      evaluate: async () => ({ decision: null, error: 'LLM 429: rate limited', model: 'deepseek-v4-flash' }),
+      contribute,
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    const { logs } = wire(engine)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(contribute).not.toHaveBeenCalled()
+    expect(logs.at(-1)).toMatchObject({
+      kind: 'error',
+      error: 'evaluator: LLM 429: rate limited',
+      model: 'deepseek-v4-flash'
+    })
+  })
+
   it('contributor returns error → error log, no emission', async () => {
     const deps = makeDeps({
       evaluate: async () => makeDecision({ topic: 'x' }),
@@ -507,6 +528,29 @@ describe('error handling — null / error results', () => {
 
     expect(emissions.length).toBe(0)
     expect(logs.at(-1)).toMatchObject({ kind: 'error', error: 'model overloaded' })
+  })
+
+  it('logs a threaded contributor parse reason and model', async () => {
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: async () => makeResult({
+        error: 'contributor: unparseable-response (finish_reason=length, reasoning_content=present)',
+        model: 'deepseek-v4-flash'
+      }),
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    const { logs, emissions } = wire(engine)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush()
+
+    expect(emissions).toHaveLength(0)
+    expect(logs.at(-1)).toMatchObject({
+      kind: 'error',
+      error: 'contributor: unparseable-response (finish_reason=length, reasoning_content=present)',
+      model: 'deepseek-v4-flash'
+    })
   })
 
   it('evaluator throws → error log, no emission, no throw', async () => {

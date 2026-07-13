@@ -16,6 +16,10 @@ describe('normalizeProviderId', () => {
     expect(normalizeProviderId('cerebras', settings)).toBe('cerebras')
   })
 
+  it('honors DeepSeek even before a base URL override is persisted', () => {
+    expect(normalizeProviderId('deepseek', settings)).toBe('deepseek')
+  })
+
   it('maps retired CLI / open aliases to the active provider', () => {
     expect(normalizeProviderId('codex', settings)).toBe('groq')
     expect(normalizeProviderId('claude-code', settings)).toBe('groq')

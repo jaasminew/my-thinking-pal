@@ -8,7 +8,7 @@ export class PcmMicStream {
 
   async start(
     onPcm: (pcm: ArrayBuffer) => void,
-    opts: { stream?: MediaStream; targetRate?: number } = {}
+    opts: { stream?: MediaStream; targetRate?: number; onLevel?: (level: number) => void } = {}
   ): Promise<void> {
     const targetRate = opts.targetRate ?? 16000
     this.stream = opts.stream ?? (await navigator.mediaDevices.getUserMedia({ audio: true }))
@@ -17,6 +17,7 @@ export class PcmMicStream {
     this.processor = this.ctx.createScriptProcessor(4096, 1, 1)
     this.processor.onaudioprocess = (e) => {
       const input = e.inputBuffer.getChannelData(0)
+      opts.onLevel?.(rms(input))
       onPcm(floatToPcm16(downsample(input, this.ctx!.sampleRate, targetRate)))
     }
     this.source.connect(this.processor)
@@ -37,6 +38,13 @@ export class PcmMicStream {
     }
     this.stream?.getTracks().forEach((t) => t.stop())
   }
+}
+
+function rms(input: Float32Array): number {
+  if (!input.length) return 0
+  let sum = 0
+  for (const sample of input) sum += sample * sample
+  return Math.sqrt(sum / input.length)
 }
 
 export function downsample(input: Float32Array, fromRate: number, toRate: number): Float32Array {

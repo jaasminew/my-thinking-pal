@@ -203,6 +203,20 @@ describe('parseObserverContribution', () => {
     expect(c?.bullets).toEqual(['bullet one', 'bullet two'])
   })
 
+  it('accepts bold KEYWORD and Unicode bullets from model formatting', () => {
+    const raw = ['**KEYWORD:** Structured formats', '• LLM.txt exposes agent guidance.', '• JSON-LD carries structured metadata.'].join('\n')
+    const c = parseObserverContribution(raw)
+    expect(c).toEqual({
+      keyword: 'Structured formats',
+      bullets: ['LLM.txt exposes agent guidance.', 'JSON-LD carries structured metadata.']
+    })
+  })
+
+  it('accepts a bold SEARCH label', () => {
+    const raw = ['KEYWORD: Topic', '- bullet', '**SEARCH:** llms.txt json-ld agents'].join('\n')
+    expect(parseObserverContribution(raw)?.searchQuery).toBe('llms.txt json-ld agents')
+  })
+
   it('handles mixed - and * bullets', () => {
     const raw = ['KEYWORD: Topic', '- dash bullet', '* star bullet'].join('\n')
     const c = parseObserverContribution(raw)

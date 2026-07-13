@@ -74,7 +74,7 @@ describe('contributor prompts', () => {
     expect(sys).toMatch(/do NOT put URLs/i)
   })
 
-  it('user text includes the brief and asks for a SEARCH line only when research is needed', () => {
+  it('user text includes the brief and frames research as a hint, not a veto', () => {
     const base: ObserverContributorInput = {
       decision: {
         emit: true,
@@ -92,13 +92,13 @@ describe('contributor prompts', () => {
     const needs = buildObserverContributorUserText(base)
     expect(needs).toContain('offline edit conflicts')
     expect(needs).toContain('missing-angle')
-    expect(needs).toMatch(/Research: NEEDED/)
+    expect(needs).toMatch(/Research: recommended/)
     expect(needs).toContain('zh')
 
     const noResearch = buildObserverContributorUserText({
       ...base,
       decision: { ...base.decision, needsResearch: false }
     })
-    expect(noResearch).toMatch(/Research: not needed/)
+    expect(noResearch).toMatch(/Research: likely optional/)
   })
 })

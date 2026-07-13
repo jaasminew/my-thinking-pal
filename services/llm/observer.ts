@@ -24,6 +24,7 @@ import type {
   ObserverContributionResult,
   ObserverContributorInput,
   ObserverDecision,
+  ObserverEvaluationFailure,
   ObserverEvaluatorInput
 } from '../../packages/core/llm/observer-types'
 import {
@@ -55,23 +56,29 @@ export interface ObserverServiceDeps {
 }
 
 /**
- * Resolve the Listener category and run the evaluator. Returns the decision, or
- * null when the Listener is unusable or the pass failed/could-not-parse — the
- * engine treats null as an error round (no emission, no state change beyond
- * lastEvaluatedSignalTs). Never throws.
+ * Resolve the Listener category and run the evaluator. Failures retain a
+ * machine-readable reason so the engine log identifies resolution, transport,
+ * and parse failures instead of collapsing all three to a bare null.
  */
 export async function requestObserverEvaluate(
   input: ObserverEvaluatorInput,
   deps: ObserverServiceDeps
-): Promise<ObserverDecision | null> {
+): Promise<ObserverDecision | ObserverEvaluationFailure> {
   const resolve = deps.resolveCategory ?? resolveCategoryProvider
   const res = await resolve('listener', deps.listener)
   // Listener is web-only; a resolution without a provider (or with an error)
   // cannot evaluate. Setup-time pre-flight already surfaced the notice.
-  if (res.error || !res.provider) return null
+  if (res.error || !res.provider) {
+    return { decision: null, error: `listener-unresolved: ${res.error || 'no provider returned'}` }
+  }
   const pass = deps.evaluatePass ?? observerEvaluate
   const out = await pass(res.provider, input, deps.fetchImpl)
-  return out.decision
+  if (out.decision) return out.decision
+  return {
+    decision: null,
+    error: out.error || 'unparseable-response',
+    ...(out.model ? { model: out.model } : {})
+  }
 }
 
 /**
@@ -87,14 +94,14 @@ export async function requestObserverContribute(
 ): Promise<ObserverContributionResult | null> {
   const resolve = deps.resolveCategory ?? resolveCategoryProvider
   const res = await resolve('thinker', deps.thinker)
-  if (res.error) return null
+  if (res.error) return contributionFailure(`thinker-unresolved: ${res.error}`)
 
   // ---- CLI runtime: run once via local-runtime, parse the collected output.
   if (res.runtime) {
     const text = await runCliContributor(res, input, deps)
-    if (text == null) return null
+    if (text == null) return contributionFailure('local-runtime-failed', res.model, 'cli-native')
     const contribution = parseObserverContribution(text)
-    if (!contribution) return null
+    if (!contribution) return contributionFailure('unparseable-response', res.model, 'cli-native')
     // The frozen contributor protocol (contract §1.2) carries no source URLs, so
     // a CLI-native contribution surfaces no cards in the MVP — its native search
     // informs the bullets but is not extracted (see contract §5 clarification).
@@ -108,13 +115,15 @@ export async function requestObserverContribute(
   }
 
   // ---- Web provider: run the pass, then relay the SEARCH: query if configured.
-  if (!res.provider) return null
+  if (!res.provider) return contributionFailure('thinker-unresolved: no provider returned')
   const pass = deps.contributePass ?? observerContribute
   const out = await pass(res.provider, input, deps.fetchImpl)
-  if (!out.contribution) return null
+  const searchPath = resolveSearchPath(res.provider.id, deps.relayAvailable ?? false)
+  if (!out.contribution) {
+    return contributionFailure(out.error || 'unparseable-response', out.model, searchPath)
+  }
   const contribution = out.contribution
 
-  const searchPath = resolveSearchPath(res.provider.id, deps.relayAvailable ?? false)
   // Prefer the contributor's own SEARCH: query, but fall back to the evaluator's
   // suggestedSearchQuery when the contributor omits it (it often does). The
   // evaluator already committed to needsResearch, so a missing contributor
@@ -140,6 +149,21 @@ export async function requestObserverContribute(
     sources,
     searchPath,
     model: out.model
+  }
+}
+
+function contributionFailure(
+  error: string,
+  model?: string,
+  searchPath: ObserverContributionResult['searchPath'] = 'none'
+): ObserverContributionResult {
+  return {
+    keyword: '',
+    bullets: [],
+    sources: [],
+    searchPath,
+    error: `contributor: ${error}`,
+    ...(model ? { model } : {})
   }
 }
 

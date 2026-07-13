@@ -1,4 +1,4 @@
-import type { STTProvider, STTStartOpts, TranscriptEvent } from './types'
+import type { STTProvider, STTStartOpts, SttStatusEvent, TranscriptEvent } from './types'
 import { PcmMicStream } from './pcm'
 
 // STT that routes audio through the Go backend /stt proxy (docs module 07): the
@@ -20,7 +20,7 @@ export interface SttTransport {
 }
 
 export interface PcmSource {
-  start(onPcm: (pcm: ArrayBuffer) => void, opts?: { stream?: MediaStream; targetRate?: number }): Promise<void>
+  start(onPcm: (pcm: ArrayBuffer) => void, opts?: { stream?: MediaStream; targetRate?: number; onLevel?: (level: number) => void }): Promise<void>
   stop(): void
 }
 
@@ -42,6 +42,8 @@ export class BackendSTT implements STTProvider {
   private pcm?: PcmSource
   private cb?: (e: TranscriptEvent) => void
   private err?: (e: Error) => void
+  private statusCb?: (status: SttStatusEvent) => void
+  private levelCb?: (level: number) => void
   private readonly rate: number
   private closed?: Promise<void>
   private stopping = false
@@ -58,23 +60,35 @@ export class BackendSTT implements STTProvider {
   async start(startOpts: STTStartOpts): Promise<void> {
     this.startOpts = startOpts
     this.pcm = this.opts.pcm ?? new PcmMicStream()
+    this.statusCb?.({ state: 'connecting' })
     this.connect(this.opts.url, this.opts.transport)
   }
 
   private connect(url: string, injected?: SttTransport): void {
     const transport = injected ?? this.opts.transportFactory?.(url) ?? websocketSttTransport(url)
+    let opened = false
+    const connectTimer = setTimeout(() => {
+      if (opened || this.stopping || this.transport !== transport) return
+      this.fail(new Error('Backend STT connection timed out'))
+      transport.close()
+    }, 10_000)
     this.transport = transport
     this.closed = new Promise((resolve) => {
       transport.onClose(() => {
+        clearTimeout(connectTimer)
         resolve()
         if (this.transport !== transport || this.stopping) return
+        this.statusCb?.({ state: 'reconnecting' })
         void this.reconnect()
       })
     })
     transport.onOpen(() => {
       if (this.transport !== transport || this.stopping) return
+      opened = true
+      clearTimeout(connectTimer)
       this.reconnectAttempts = 0
       this.lastSocketError = undefined
+      this.statusCb?.({ state: 'live' })
       transport.sendText(
         JSON.stringify({ type: 'config', language: this.startOpts?.lang || 'auto', sampleRate: this.rate })
       )
@@ -85,9 +99,10 @@ export class BackendSTT implements STTProvider {
         void this.pcm
           ?.start((buf) => this.transport?.sendBinary(buf), {
             stream: this.startOpts?.stream,
-            targetRate: this.rate
+            targetRate: this.rate,
+            onLevel: (level) => this.levelCb?.(level)
           })
-          .catch((e) => this.err?.(e instanceof Error ? e : new Error(String(e))))
+          .catch((e) => this.fail(e instanceof Error ? e : new Error(String(e))))
       }
     })
 
@@ -108,7 +123,7 @@ export class BackendSTT implements STTProvider {
           speaker: msg.speaker || undefined
         })
       } else if (msg?.type === 'error') {
-        this.err?.(new Error(`Backend STT: ${msg.error || 'unknown error'}`))
+        this.fail(new Error(`Backend STT: ${msg.error || 'unknown error'}`))
       }
     })
 
@@ -120,12 +135,12 @@ export class BackendSTT implements STTProvider {
   private async reconnect(): Promise<void> {
     if (this.stopping) return
     if (!this.opts.reconnectUrl) {
-      this.err?.(this.lastSocketError ?? new Error('Backend STT connection closed unexpectedly'))
+      this.fail(this.lastSocketError ?? new Error('Backend STT connection closed unexpectedly'))
       return
     }
     const maxAttempts = this.opts.maxReconnectAttempts ?? 3
     if (this.reconnectAttempts >= maxAttempts) {
-      this.err?.(this.lastSocketError ?? new Error('Backend STT reconnect failed'))
+      this.fail(this.lastSocketError ?? new Error('Backend STT reconnect failed'))
       return
     }
     const attempt = ++this.reconnectAttempts
@@ -166,6 +181,17 @@ export class BackendSTT implements STTProvider {
   }
   onError(cb: (err: Error) => void): void {
     this.err = cb
+  }
+  onStatus(cb: (status: SttStatusEvent) => void): void {
+    this.statusCb = cb
+  }
+  onAudioLevel(cb: (level: number) => void): void {
+    this.levelCb = cb
+  }
+
+  private fail(error: Error): void {
+    this.statusCb?.({ state: 'error', detail: error.message })
+    this.err?.(error)
   }
 }
 

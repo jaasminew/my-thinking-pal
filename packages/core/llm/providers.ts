@@ -36,6 +36,13 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     defaultModel: 'gpt-4o-mini',
     kind: 'openai-compatible'
   },
+  deepseek: {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-chat',
+    kind: 'openai-compatible'
+  },
   openrouter: {
     id: 'openrouter',
     label: 'OpenRouter',
