@@ -17,7 +17,7 @@ import {
   type CommandSession,
   type CommandMessage
 } from './command-session'
-import { Sidebar, BookIcon, CanvasIcon, MemoryIcon, type TreeNode } from './Sidebar'
+import { Sidebar, CanvasIcon, MemoryIcon, type TreeNode } from './Sidebar'
 import { openBoard, type Board } from '../../../packages/core/doc'
 import { indexeddbPersistence, hydrateNotes, boardDocId, copyBoard, deleteBoard } from './board-persistence'
 import { BoardSync } from '../../../services/sync/board-sync'
@@ -26,10 +26,9 @@ import { BackendSTT } from '../../../services/stt/backend'
 import type { STTProvider } from '../../../services/stt/types'
 import { apiBaseUrl, wsUrl } from '../../../services/api/config'
 import { sharedTokenStore } from '../../../services/api/tokens'
-import { useBackend, type SyncParams } from './backend'
+import { useBackend, type SyncParams, docMapFromTree, stampDocIds, listSpaces } from './backend'
 import { LlmSettingsPanel, type AiModelConfig, type ModelSelections } from './LlmSettingsPanel'
 import { AuthPanel } from './AuthPanel'
-import { DocumentsPanel } from './DocumentsPanel'
 import { setProviderConfig } from '../../../services/llm/provider-config'
 import { useMemoryBucket, useProjectMemory, type ProjectMemoryDeps } from './use-project-memory'
 import { ProjectMemoryModal } from './ProjectMemoryModal'
@@ -2434,7 +2433,6 @@ export function App() {
   )
   const [showLlmSettings, setShowLlmSettings] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
-  const [showDocs, setShowDocs] = useState(false)
   const backend = useBackend()
 
   // Project Memory seams, shared by every open canvas (M5): the helper's
@@ -2463,21 +2461,198 @@ export function App() {
   const workspaceRef = useRef<HTMLDivElement>(null)
   const [ww, setWw] = useState(1200)
 
-  // When signed in, back open spaces with a server document so BoardSync has a
-  // room to join — but ONLY auto-create for a brand-new account (zero documents).
-  // On a device that already has documents (e.g. a second device, fresh docMap),
-  // auto-creating would spawn duplicate empty docs; instead the user opens an
-  // existing one via the Documents panel ("Open here"). ensureDoc is idempotent.
-  const { user: backendUser, docsLoaded, ensureDoc } = backend
-  const hasDocs = backend.documents.length > 0
+  // When signed in, pull the account workspace (tree + embedded space.docId) and
+  // wire BoardSync. Empty server → bootstrap from this device's local tree.
+  // Non-empty → apply server tree (adopt CRDT content). Local-only spaces that
+  // aren't on the server are appended once so nothing is silently dropped.
+  const {
+    user: backendUser,
+    workspaceReady,
+    getWorkspace,
+    putWorkspace,
+    ensureDoc,
+    replaceDocMap,
+    bindDoc,
+    markWorkspaceReady
+  } = backend
+  const bootstrappingRef = useRef(false)
+  const treePushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** ISO updatedAt from the last successful GET/PUT — used to detect remote tree changes. */
+  const workspaceUpdatedAtRef = useRef('')
+  /** True while local tree edits are waiting to be PUT (skip clobbering with stale remote). */
+  const localTreeDirtyRef = useRef(false)
+  const treeRef = useRef(tree)
+  treeRef.current = tree
+  const workspaceReadyRef = useRef(workspaceReady)
+  workspaceReadyRef.current = workspaceReady
+  const putWorkspaceRef = useRef(putWorkspace)
+  putWorkspaceRef.current = putWorkspace
+  const getWorkspaceRef = useRef(getWorkspace)
+  getWorkspaceRef.current = getWorkspace
+
+  /** Push a concrete tree snapshot to the server (debounced). */
+  const scheduleTreePush = useCallback((snapshot: TreeNode[]) => {
+    if (!backendUser || !workspaceReadyRef.current) return
+    localTreeDirtyRef.current = true
+    if (treePushTimer.current) clearTimeout(treePushTimer.current)
+    treePushTimer.current = setTimeout(() => {
+      treePushTimer.current = null
+      void (async () => {
+        try {
+          const put = await putWorkspaceRef.current(snapshot)
+          // Only clear dirty if nothing newer has been queued.
+          if (JSON.stringify(treeRef.current) === JSON.stringify(snapshot)) {
+            localTreeDirtyRef.current = false
+            if (put.updatedAt) workspaceUpdatedAtRef.current = put.updatedAt
+          }
+        } catch {
+          /* keep dirty — next edit or the catch-up push will retry */
+        }
+      })()
+    }, 250)
+  }, [backendUser])
+
+  /** setTree + push in one step so the PUT uses the new tree, not a stale closure. */
+  const commitTree = useCallback(
+    (updater: TreeNode[] | ((prev: TreeNode[]) => TreeNode[])) => {
+      const prev = treeRef.current
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      treeRef.current = next
+      setTree(next)
+      scheduleTreePush(next)
+    },
+    [scheduleTreePush]
+  )
+
+  const applyRemoteTree = useCallback(
+    (remote: TreeNode[], updatedAt: string) => {
+      const prev = treeRef.current
+      if (JSON.stringify(prev) === JSON.stringify(remote)) {
+        if (updatedAt) workspaceUpdatedAtRef.current = updatedAt
+        return
+      }
+      const prevMap = docMapFromTree(prev)
+      const nextMap = docMapFromTree(remote)
+      replaceDocMap(nextMap, false)
+      for (const [spaceId, docId] of Object.entries(nextMap)) {
+        if (!prevMap[spaceId]) bindDoc(spaceId, docId, true)
+      }
+      localTreeDirtyRef.current = false
+      if (updatedAt) workspaceUpdatedAtRef.current = updatedAt
+      treeRef.current = remote
+      setTree(remote)
+      setOpen((o) => {
+        const ids = o.ids.filter((id) => findNode(remote, id)?.kind === 'space')
+        if (ids.length) return { ids, fracs: o.fracs.slice(0, ids.length) }
+        const first = listSpaces(remote)[0]
+        return first ? { ids: [first.id], fracs: [1] } : { ids: [], fracs: [] }
+      })
+      setActiveId((cur) => (findNode(remote, cur)?.kind === 'space' ? cur : listSpaces(remote)[0]?.id ?? cur))
+    },
+    [replaceDocMap, bindDoc]
+  )
+
   useEffect(() => {
-    if (!backendUser || !docsLoaded || hasDocs) return
-    for (const id of open.ids) {
-      void ensureDoc(id, findNode(tree, id)?.name ?? 'Untitled')
+    if (!backendUser || workspaceReady || bootstrappingRef.current) return
+    bootstrappingRef.current = true
+    let cancelled = false
+    void (async () => {
+      try {
+        const { tree: remote, updatedAt } = await getWorkspaceRef.current()
+        if (cancelled) return
+        if (remote.length === 0) {
+          const localSpaces = listSpaces(treeRef.current)
+          const map: Record<string, string> = {}
+          for (const s of localSpaces) {
+            const docId = await ensureDoc(s.id, s.name || 'Untitled')
+            if (docId) map[s.id] = docId
+          }
+          if (cancelled) return
+          const stamped = stampDocIds(treeRef.current, map)
+          replaceDocMap(map, false)
+          treeRef.current = stamped
+          setTree(stamped)
+          const put = await putWorkspaceRef.current(stamped)
+          workspaceUpdatedAtRef.current = put.updatedAt || updatedAt
+          localTreeDirtyRef.current = false
+        } else {
+          const remoteIds = new Set(listSpaces(remote).map((s) => s.id))
+          const localOnly = listSpaces(treeRef.current).filter((s) => !remoteIds.has(s.id) && !s.docId)
+          let merged = remote
+          const extraMap: Record<string, string> = {}
+          for (const s of localOnly) {
+            const docId = await ensureDoc(s.id, s.name || 'Untitled')
+            if (!docId) continue
+            extraMap[s.id] = docId
+            merged = [...merged, { ...s, docId }]
+          }
+          if (cancelled) return
+          const map = { ...docMapFromTree(merged), ...extraMap }
+          replaceDocMap(map, true)
+          treeRef.current = merged
+          setTree(merged)
+          if (localOnly.length) {
+            const put = await putWorkspaceRef.current(merged)
+            workspaceUpdatedAtRef.current = put.updatedAt
+          } else {
+            workspaceUpdatedAtRef.current = updatedAt
+          }
+          localTreeDirtyRef.current = false
+          setOpen((o) => {
+            const ids = o.ids.filter((id) => findNode(merged, id)?.kind === 'space')
+            if (ids.length) return { ids, fracs: o.fracs.slice(0, ids.length) }
+            const first = listSpaces(merged)[0]
+            return first ? { ids: [first.id], fracs: [1] } : { ids: [], fracs: [] }
+          })
+          setActiveId((cur) => (findNode(merged, cur)?.kind === 'space' ? cur : listSpaces(merged)[0]?.id ?? cur))
+        }
+      } catch {
+        /* leave local tree; user can retry on next login */
+      } finally {
+        if (!cancelled) markWorkspaceReady()
+        bootstrappingRef.current = false
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-    // Depend on stable/primitive values, NOT the whole `backend` object (a fresh
-    // reference every render would re-run this constantly).
-  }, [backendUser, docsLoaded, hasDocs, ensureDoc, open.ids, tree])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backendUser, workspaceReady])
+
+  // Live pull: every 1.5s + on focus. Apply when remote tree JSON differs.
+  useEffect(() => {
+    if (!backendUser || !workspaceReady) return
+    let cancelled = false
+    const pull = async () => {
+      if (cancelled || bootstrappingRef.current) return
+      try {
+        const { tree: remote, updatedAt } = await getWorkspaceRef.current()
+        if (cancelled) return
+        if (!Array.isArray(remote) || remote.length === 0) return
+        if (JSON.stringify(remote) === JSON.stringify(treeRef.current)) {
+          if (updatedAt) workspaceUpdatedAtRef.current = updatedAt
+          return
+        }
+        const remoteMs = Date.parse(updatedAt || '') || 0
+        const knownMs = Date.parse(workspaceUpdatedAtRef.current || '') || 0
+        // If we have unpushed local edits, only accept a strictly newer remote
+        // (another device wrote after our last successful PUT).
+        if (localTreeDirtyRef.current && remoteMs <= knownMs) return
+        applyRemoteTree(remote, updatedAt)
+      } catch {
+        /* transient */
+      }
+    }
+    const id = window.setInterval(() => void pull(), 1500)
+    const onFocus = () => void pull()
+    window.addEventListener('focus', onFocus)
+    void pull()
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [backendUser, workspaceReady, applyRemoteTree])
 
   // A backend-proxied STT factory (docs module 07). Force-rotate the access
   // token before every WebSocket handshake because /stt cannot retry a 401
@@ -2591,7 +2766,7 @@ export function App() {
   // straight into renaming it.
   const addProject = () => {
     const id = uid('p')
-    setTree((t) => [...t, { id, kind: 'project', name: tr('New Project', '新建项目'), children: [] }])
+    commitTree((t) => [...t, { id, kind: 'project', name: tr('New Project', '新建项目'), children: [] }])
     setCollapsed(false)
     setSelectedId(id)
     setRenamingId(id)
@@ -2599,10 +2774,12 @@ export function App() {
 
   // New Idea Space: a fresh canvas (= idea space) that slides in from the
   // right. Nested into the selected project (if any), else at the root.
+  // When signed in, create an internal sync-room doc and stamp docId on the node.
   const addIdeaSpace = () => {
     const id = uid('s')
-    const node: TreeNode = { id, kind: 'space', name: tr('A New Canvas', '新建画布') }
-    setTree((t) => {
+    const name = tr('A New Canvas', '新建画布')
+    const node: TreeNode = { id, kind: 'space', name }
+    commitTree((t) => {
       const sel = selectedId ? findNode(t, selectedId) : undefined
       if (sel && sel.kind === 'project') {
         return mapNodes(t, (n) => (n.id === sel.id ? { ...n, children: [...(n.children || []), node] } : n))
@@ -2610,6 +2787,13 @@ export function App() {
       return [...t, node]
     })
     openSpace(id)
+    if (backendUser) {
+      void (async () => {
+        const docId = await ensureDoc(id, name)
+        if (!docId) return
+        commitTree((t) => stampDocIds(t, { [id]: docId }))
+      })()
+    }
   }
 
   const onSelect = (node: TreeNode) => {
@@ -2621,7 +2805,7 @@ export function App() {
   // the sidebar's root drop zone to pull it back out to the top level.
   const onMoveNode = (id: string, targetProjectId: string | null) => {
     if (id === targetProjectId) return
-    setTree((t) => {
+    commitTree((t) => {
       const { nodes, found } = removeNode(t, id)
       if (!found) return t
       if (!targetProjectId) return [...nodes, found]
@@ -2633,7 +2817,14 @@ export function App() {
 
   const onRename = (id: string, name: string) => {
     const clean = name.trim()
-    if (clean) setTree((t) => mapNodes(t, (n) => (n.id === id ? { ...n, name: clean } : n)))
+    if (clean) {
+      const node = findNode(treeRef.current, id)
+      commitTree((t) => mapNodes(t, (n) => (n.id === id ? { ...n, name: clean } : n)))
+      if (backendUser && node?.kind === 'space') {
+        const docId = node.docId ?? backend.docIdFor(id)
+        if (docId) void backend.renameDoc(docId, clean)
+      }
+    }
     setRenamingId(null)
   }
 
@@ -2677,10 +2868,9 @@ export function App() {
     }
 
     // 3. Add the new node to the tree next to the source (same parent or root).
-    setTree((t) => {
+    commitTree((t) => {
       const src = findNode(t, id)
       const newNode: TreeNode = { id: newId, kind: 'space', name: `${src?.name ?? 'Canvas'} (copy)` }
-      // If source is inside a project, insert the copy right after it in the same project.
       if (src) {
         const parent = findParent(t, id)
         if (parent) {
@@ -2691,13 +2881,19 @@ export function App() {
           )
         }
       }
-      // Source is at root level — insert after it.
       return insertAfter(t, id, newNode)
     })
 
-    // 4. Open the duplicated canvas.
+    // 4. Open the duplicated canvas; when signed in, mint a fresh sync room.
     openSpace(newId)
-  }, [open, openSpace, activeId, recordingId])
+    if (backend.user) {
+      const src = findNode(treeRef.current, id)
+      void (async () => {
+        const docId = await backend.ensureDoc(newId, `${src?.name ?? 'Canvas'} (copy)`)
+        if (docId) commitTree((t) => stampDocIds(t, { [newId]: docId }))
+      })()
+    }
+  }, [open, openSpace, activeId, recordingId, backend, commitTree])
 
   // Rename: trigger the inline rename input in the sidebar.
   const onRenameSpace = (id: string) => {
@@ -2746,8 +2942,20 @@ export function App() {
       }
     }
 
-    // Remove from tree.
-    setTree((t) => removeNode(t, id).nodes)
+    // Remove from tree; when signed in, delete the internal sync-room docs too.
+    const docsToDelete: string[] = []
+    if (node?.kind === 'space') {
+      const docId = node.docId ?? backend.docIdFor(id)
+      if (docId) docsToDelete.push(docId)
+    } else if (node?.kind === 'project') {
+      for (const c of node.children ?? []) {
+        if (c.kind !== 'space') continue
+        const docId = c.docId ?? backend.docIdFor(c.id)
+        if (docId) docsToDelete.push(docId)
+      }
+    }
+    commitTree((t) => removeNode(t, id).nodes)
+    for (const docId of docsToDelete) void backend.deleteDoc(docId).catch(() => {})
 
     // Clean up IndexedDB board (skip the 'default' space — its key is 'default').
     const suffix = id === 'default' ? '' : `.${id}`
@@ -2769,7 +2977,7 @@ export function App() {
     } catch {
       // storage disabled — nothing to clean
     }
-  }, [deleteConfirm, open.ids, closeSpace, tree, memoryLocalStore, memoryClient])
+  }, [deleteConfirm, open.ids, closeSpace, tree, memoryLocalStore, memoryClient, backend, commitTree])
 
   // Drag a sheet's handle: only THIS sheet's left edge moves (right edge is
   // pinned), clamped so the sheet below keeps its handle visible and this
@@ -2830,16 +3038,6 @@ export function App() {
               >
                 <span className="profile-avatar">{ProfileIcon}</span>
                 {!collapsed && <span className="side-control-label">{profileLabel}</span>}
-              </button>
-            )}
-            {backend.user && (
-              <button
-                className="side-control-row"
-                title={tr('Open a synced document on this canvas', '打开此画布的同步文档')}
-                onClick={() => setShowDocs(true)}
-              >
-                <span className="side-control-icon">{BookIcon}</span>
-                {!collapsed && <span className="side-control-label">{tr('Documents', '文档')}</span>}
               </button>
             )}
           </div>
@@ -2914,14 +3112,6 @@ export function App() {
         />
       )}
       {showAuth && backend.enabled && <AuthPanel backend={backend} onClose={() => setShowAuth(false)} />}
-      {showDocs && backend.user && (
-        <DocumentsPanel
-          backend={backend}
-          activeSpaceId={activeId}
-          activeSpaceName={findNode(tree, activeId)?.name ?? tr('canvas', '画布')}
-          onClose={() => setShowDocs(false)}
-        />
-      )}
 
       {/* Right-click context menu on a sidebar tree node */}
       {spaceMenu && (

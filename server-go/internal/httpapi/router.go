@@ -15,11 +15,13 @@ import (
 	"mythinkingpal/server/internal/projectmemory"
 	"mythinkingpal/server/internal/stt"
 	syncsvc "mythinkingpal/server/internal/sync"
+	"mythinkingpal/server/internal/workspace"
 )
 
 type Deps struct {
 	Auth          *auth.Handler
 	Documents     *documents.Handler
+	Workspace     *workspace.Handler
 	ProjectMemory *projectmemory.Handler
 	Sync          *syncsvc.Handler
 	STT           *stt.Handler
@@ -47,6 +49,11 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /documents", d.Auth.RequireAuth(http.HandlerFunc(d.Documents.Create)))
 	mux.Handle("PATCH /documents/{id}", d.Auth.RequireAuth(http.HandlerFunc(d.Documents.Patch)))
 	mux.Handle("DELETE /documents/{id}", d.Auth.RequireAuth(http.HandlerFunc(d.Documents.Delete)))
+
+	if d.Workspace != nil {
+		mux.Handle("GET /workspace", d.Auth.RequireAuth(http.HandlerFunc(d.Workspace.Get)))
+		mux.Handle("PUT /workspace", d.Auth.RequireAuth(http.HandlerFunc(d.Workspace.Put)))
+	}
 
 	// Sync relay (WebSocket) — token via subprotocol/query (module 03.4).
 	if d.Sync != nil {
@@ -86,7 +93,7 @@ func cors(origin string, next http.Handler) http.Handler {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", allow)
 		h.Set("Vary", "Origin")
-		h.Set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

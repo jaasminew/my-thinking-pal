@@ -7,6 +7,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -40,6 +41,12 @@ CREATE TABLE IF NOT EXISTS documents (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  owner_id   TEXT PRIMARY KEY,
+  tree       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS project_memory_files (
   id          TEXT PRIMARY KEY,
@@ -246,6 +253,39 @@ func (s *Store) CanAccess(ctx context.Context, userID, docID string) (bool, erro
 		return false, err
 	}
 	return d.OwnerID == userID, nil
+}
+
+func (s *Store) GetWorkspace(ctx context.Context, ownerID string) (storage.Workspace, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT tree, updated_at FROM workspaces WHERE owner_id = ?`, ownerID)
+	var (
+		treeRaw string
+		updRaw  string
+	)
+	if err := row.Scan(&treeRaw, &updRaw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return storage.Workspace{}, storage.ErrNotFound
+		}
+		return storage.Workspace{}, err
+	}
+	upd, _ := time.Parse(time.RFC3339Nano, updRaw)
+	return storage.Workspace{Tree: json.RawMessage(treeRaw), UpdatedAt: upd}, nil
+}
+
+func (s *Store) PutWorkspace(ctx context.Context, ownerID string, tree json.RawMessage) (storage.Workspace, error) {
+	if len(tree) == 0 {
+		tree = json.RawMessage("[]")
+	}
+	now := time.Now().UTC()
+	ws := storage.Workspace{Tree: tree, UpdatedAt: now}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO workspaces (owner_id, tree, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(owner_id) DO UPDATE SET tree=excluded.tree, updated_at=excluded.updated_at`,
+		ownerID, string(tree), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return storage.Workspace{}, err
+	}
+	return ws, nil
 }
 
 // --- Project Memory ---

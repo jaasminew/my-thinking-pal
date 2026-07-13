@@ -37,7 +37,7 @@ export function AuthPanel({ backend, onClose }: { backend: Backend; onClose: () 
         {backend.user ? (
           <>
             <p className="llm-note">
-              {tr(`Signed in as ${backend.user.email}. Boards sync across your devices and speech goes through the backend STT proxy.`, `已登录：${backend.user.email}。画布会在你的设备间同步，语音通过后端 STT 代理处理。`)}
+              {tr(`Signed in as ${backend.user.email}. Your workspace (sidebar + canvases) syncs across devices; speech goes through the backend STT proxy.`, `已登录：${backend.user.email}。Workspace（侧栏与画布内容）会在设备间同步，语音通过后端 STT 代理处理。`)}
             </p>
             <div className="llm-settings-actions">
               <button

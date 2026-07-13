@@ -4,6 +4,7 @@ package storagetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -122,6 +123,43 @@ func RunAccountStoreContract(t *testing.T, factory func(t *testing.T) storage.Ac
 		}
 		if err := s.UpdateDocumentTitle(ctx, "ghost", "x"); !errors.Is(err, storage.ErrNotFound) {
 			t.Fatalf("rename missing: want ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("workspace", func(t *testing.T) {
+		s := factory(t)
+		if _, err := s.GetWorkspace(ctx, "owner1"); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("empty workspace: want ErrNotFound, got %v", err)
+		}
+
+		tree1 := json.RawMessage(`[{"id":"s1","kind":"space","name":"A","docId":"d1"}]`)
+		ws, err := s.PutWorkspace(ctx, "owner1", tree1)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		if ws.UpdatedAt.IsZero() || string(ws.Tree) != string(tree1) {
+			t.Fatalf("put result: %+v", ws)
+		}
+
+		got, err := s.GetWorkspace(ctx, "owner1")
+		if err != nil || string(got.Tree) != string(tree1) {
+			t.Fatalf("get: %+v %v", got, err)
+		}
+
+		// LWW replace
+		tree2 := json.RawMessage(`[{"id":"s2","kind":"space","name":"B","docId":"d2"}]`)
+		ws2, err := s.PutWorkspace(ctx, "owner1", tree2)
+		if err != nil || string(ws2.Tree) != string(tree2) {
+			t.Fatalf("replace: %+v %v", ws2, err)
+		}
+		got, _ = s.GetWorkspace(ctx, "owner1")
+		if string(got.Tree) != string(tree2) {
+			t.Fatalf("after replace: %s", got.Tree)
+		}
+
+		// Other owner is isolated
+		if _, err := s.GetWorkspace(ctx, "owner2"); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("other owner: want ErrNotFound, got %v", err)
 		}
 	})
 

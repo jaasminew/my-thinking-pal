@@ -13,6 +13,7 @@ import (
 	"mythinkingpal/server/internal/documents"
 	"mythinkingpal/server/internal/httpapi"
 	"mythinkingpal/server/internal/storage/memory"
+	"mythinkingpal/server/internal/workspace"
 )
 
 type tokenPair struct {
@@ -33,7 +34,8 @@ func newServer() *httptest.Server {
 	store := memory.New()
 	authH := auth.NewHandler(store, []byte("access"), []byte("refresh"), 15*time.Minute, 720*time.Hour)
 	docsH := documents.NewHandler(store)
-	return httptest.NewServer(httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, CORSOrigin: "*"}))
+	wsH := workspace.NewHandler(store)
+	return httptest.NewServer(httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, Workspace: wsH, CORSOrigin: "*"}))
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path, token string, body any) (*http.Response, []byte) {
@@ -168,5 +170,61 @@ func TestDocumentsOwnership(t *testing.T) {
 	_ = json.Unmarshal(data, &list)
 	if len(list) != 0 {
 		t.Fatalf("doc should be gone, got %s", data)
+	}
+}
+
+func TestWorkspaceRoundTrip(t *testing.T) {
+	srv := newServer()
+	defer srv.Close()
+	alice := register(t, srv, "ws-a@x.com")
+	bob := register(t, srv, "ws-b@x.com")
+
+	// Empty workspace → [] tree.
+	resp, data := do(t, srv, "GET", "/workspace", alice.AccessToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get empty status %d: %s", resp.StatusCode, data)
+	}
+	var empty struct {
+		Tree []any `json:"tree"`
+	}
+	_ = json.Unmarshal(data, &empty)
+	if len(empty.Tree) != 0 {
+		t.Fatalf("want empty tree, got %s", data)
+	}
+
+	tree := []map[string]any{
+		{"id": "s1", "kind": "space", "name": "Canvas", "docId": "doc1"},
+	}
+	resp, data = do(t, srv, "PUT", "/workspace", alice.AccessToken, map[string]any{"tree": tree})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("put status %d: %s", resp.StatusCode, data)
+	}
+
+	resp, data = do(t, srv, "GET", "/workspace", alice.AccessToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get after put status %d: %s", resp.StatusCode, data)
+	}
+	var got struct {
+		Tree []struct {
+			ID    string `json:"id"`
+			DocID string `json:"docId"`
+			Name  string `json:"name"`
+		} `json:"tree"`
+	}
+	_ = json.Unmarshal(data, &got)
+	if len(got.Tree) != 1 || got.Tree[0].ID != "s1" || got.Tree[0].DocID != "doc1" {
+		t.Fatalf("unexpected workspace: %s", data)
+	}
+
+	// Bob cannot see Alice's tree.
+	_, data = do(t, srv, "GET", "/workspace", bob.AccessToken, nil)
+	_ = json.Unmarshal(data, &empty)
+	if len(empty.Tree) != 0 {
+		t.Fatalf("bob should see empty workspace, got %s", data)
+	}
+
+	// Bad body → 400.
+	if resp, _ := do(t, srv, "PUT", "/workspace", alice.AccessToken, map[string]any{"tree": map[string]string{"nope": "1"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-array tree should be 400, got %d", resp.StatusCode)
 	}
 }

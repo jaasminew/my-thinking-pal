@@ -1,4 +1,4 @@
-import type { DocumentMeta, TokenPair, User } from './types'
+import type { DocumentMeta, TokenPair, User, WorkspacePayload, WorkspaceTreeNode } from './types'
 import { sharedTokenStore, TokenStore } from './tokens'
 
 // Deduped across ApiClient instances so React Strict Mode (double mount) or
@@ -124,6 +124,21 @@ export class ApiClient {
 
   async deleteDocument(id: string): Promise<void> {
     await this.authedFetch(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  // ---- workspace (sidebar tree) ----
+  async getWorkspace(): Promise<WorkspacePayload> {
+    const res = await this.authedFetch('/workspace', { method: 'GET' })
+    return this.json<WorkspacePayload>(res)
+  }
+
+  async putWorkspace(tree: WorkspaceTreeNode[]): Promise<WorkspacePayload> {
+    const res = await this.authedFetch('/workspace', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tree })
+    })
+    return this.json<WorkspacePayload>(res)
   }
 
   // ---- internals ----
