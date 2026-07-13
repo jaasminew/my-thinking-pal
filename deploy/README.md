@@ -50,9 +50,15 @@ server does not use port 22. The bootstrap is idempotent and creates:
 - `/etc/thinking-pal`: root-owned runtime configuration.
 - `/var/backups/thinking-pal`: local backup generations.
 
-Review `/etc/thinking-pal/api.env`. Add the real `SONIOX_API_KEY` and
-`TAVILY_API_KEY`; the bootstrap generates independent JWT secrets automatically.
-Never copy these runtime secrets to GitHub.
+Review `/etc/thinking-pal/api.env`. Add the real `SONIOX_API_KEY`,
+`TAVILY_API_KEY`, and `DEEPSEEK_API_KEY`; the bootstrap generates independent
+JWT secrets automatically. Never copy these runtime secrets to GitHub.
+
+Nginx site config lives under `deploy/nginx/` and is installed by bootstrap /
+`enable-tls.sh`. **Release CD does not rewrite nginx** — when a PR adds routes
+(for example `/llm/`), apply the updated `thinking-pal.conf` on the server
+(and under `/root/thinking-pal-deploy/nginx/`) before or right after merge so
+the new Go handlers are reachable.
 
 ## 3. Enable HTTPS
 
