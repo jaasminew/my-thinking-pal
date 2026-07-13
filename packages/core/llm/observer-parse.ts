@@ -136,8 +136,13 @@ export function parseObserverContribution(content: string): ObserverContribution
   let keywordIdx = -1
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim()
-    if (/^keyword:/i.test(trimmed)) {
-      keyword = trimmed.slice('keyword:'.length).trim()
+    // Tolerate harmless Markdown emphasis even though the prompt requests
+    // plain text. Several OpenAI-compatible models emit **KEYWORD:**.
+    const match = trimmed.match(
+      /^(?:\*\*|__)?keyword(?:(?:\*\*|__)\s*:|\s*:\s*(?:\*\*|__)?)\s*(.*)$/i
+    )
+    if (match) {
+      keyword = match[1].trim()
       keywordIdx = i
       break
     }
@@ -152,15 +157,19 @@ export function parseObserverContribution(content: string): ObserverContribution
     const trimmed = lines[i].trim()
 
     // SEARCH: line — first occurrence wins; empty query is ignored (not stored).
-    if (!searchFound && /^search:/i.test(trimmed)) {
+    const searchMatch = trimmed.match(
+      /^(?:\*\*|__)?search(?:(?:\*\*|__)\s*:|\s*:\s*(?:\*\*|__)?)\s*(.*)$/i
+    )
+    if (!searchFound && searchMatch) {
       searchFound = true
-      const q = trimmed.slice('search:'.length).trim()
+      const q = searchMatch[1].trim()
       if (q) searchQuery = q
       continue
     }
 
-    // Bullets: lines starting with '-' or '*'. Cap at 3 (keep first, drop rest).
-    if (/^[-*]/.test(trimmed)) {
+    // Accept the requested '-' plus common model variants '*' and Unicode '•'.
+    // Cap at 3 (keep first, drop rest).
+    if (/^[-*•]/.test(trimmed)) {
       if (bullets.length < 3) {
         bullets.push(trimmed.slice(1).trim())
       }

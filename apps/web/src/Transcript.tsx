@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { SonioxSTT } from '../../../services/stt/soniox'
-import { getAudioStream } from '../../../services/stt/audio-source'
+import { getAudioStream, stopAudioStream } from '../../../services/stt/audio-source'
 import type { STTProvider } from '../../../services/stt/types'
 import { SignalEngine } from './signal-engine'
 import { formatProjectInstructions } from '../../../packages/core/llm'
@@ -70,6 +70,41 @@ const snapFrozen = (f: Section[]): Section[] => f.map((s) => ({ ...s, lines: s.l
 const snapTail = (t: Line[]): Line[] => t.map((l) => ({ ...l }))
 
 type EditTarget = { kind: 'section'; sid: string } | { kind: 'tail' } | null
+type CaptureState = 'idle' | 'connecting' | 'live' | 'degraded' | 'reconnecting' | 'error'
+type CaptureIssue =
+  | 'permission'
+  | 'no-mic'
+  | 'mic-busy'
+  | 'tab-cancelled'
+  | 'tab-missing'
+  | 'tab-unsupported'
+  | 'tab-ended'
+  | 'mic-reconnecting'
+  | 'connection-lost'
+  | 'server-unreachable'
+  | 'transcription-error'
+  | 'stall'
+  | 'signed-out'
+  | 'dev-key'
+  | 'account'
+  | 'silence'
+
+function mediaFailure(error: unknown): CaptureIssue {
+  const name = error instanceof DOMException ? error.name : (error as { name?: string } | null)?.name
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'permission'
+  if (name === 'NotFoundError') return 'no-mic'
+  if (name === 'NotReadableError' || name === 'OverconstrainedError') return 'mic-busy'
+  return 'server-unreachable'
+}
+
+function providerFailure(error: Error): CaptureIssue {
+  const msg = error.message
+  if (/sign in/i.test(msg)) return 'signed-out'
+  if (/No Soniox key/i.test(msg)) return 'dev-key'
+  if (/auth|api.?key|quota|billing|credit|account|payment/i.test(msg)) return 'account'
+  if (/socket|connect|closed|network|reach/i.test(msg)) return 'connection-lost'
+  return 'transcription-error'
+}
 
 /** A dragged-out phrase to faintly mark in the transcript, linked to its note. */
 export type Highlight = { noteId: string; ts: number; text: string }
@@ -97,7 +132,9 @@ export function Transcript({
   makeStt,
   projectInstructions,
   transcriptSync,
-  seedFromLocal = true
+  seedFromLocal = true,
+  onSignIn,
+  sttBlocked = false
 }: {
   recording: boolean
   onToggleRecord: () => void
@@ -130,6 +167,10 @@ export function Transcript({
   /** Adopting an existing server doc (false) means the doc — not this device's
    *  local transcript — is the source of truth: an empty remote clears local. */
   seedFromLocal?: boolean
+  /** Opens the app's authentication panel for a signed-out backend session. */
+  onSignIn?: () => void
+  /** Backend mode is configured but the current account session is signed out. */
+  sttBlocked?: boolean
 }) {
   const collapseKey = `transcript-collapsed${storageSuffix}`
   const [collapsed, setCollapsed] = useState(() => loadJSON(collapseKey, false))
@@ -141,7 +182,17 @@ export function Transcript({
   const [frozen, setFrozen] = useState<Section[]>(() => loadJSON(k('transcript-frozen'), []))
   const [tail, setTail] = useState<Line[]>(() => loadJSON(k('transcript-tail'), []))
   const [status, setStatus] = useState<EngineStatus>('idle')
+  // True once THIS space has recorded at least once. Gates the post-stop "done"
+  // line so a freshly-opened doc with restored highlights doesn't claim a
+  // recording just ended. Per-space because <CanvasSpace> is keyed by id.
+  const [everRecorded, setEverRecorded] = useState(false)
   const [err, setErr] = useState('')
+  const [captureState, setCaptureState] = useState<CaptureState>('idle')
+  const [captureIssue, setCaptureIssue] = useState<CaptureIssue | null>(null)
+  const [captureDetail, setCaptureDetail] = useState('')
+  const [captureAttempt, setCaptureAttempt] = useState(0)
+  const captureIssueRef = useRef<CaptureIssue | null>(captureIssue)
+  captureIssueRef.current = captureIssue
   const [editing, setEditing] = useState<EditTarget>(null)
   // Bumped when an edit ends so the section remounts and React re-owns the DOM
   // the browser mutated while it was contentEditable.
@@ -178,6 +229,32 @@ export function Transcript({
   // Set right before we apply a peer's transcript so the autosave below mirrors
   // it to localStorage but does NOT echo it back to the board (ping-pong guard).
   const remoteTranscriptRef = useRef(false)
+  const micReconnectDeadlineRef = useRef<number | null>(null)
+  const lastTranscriptAtRef = useRef(Date.now())
+  const lastAudibleAtRef = useRef(Date.now())
+  const deviceChangedAtRef = useRef<number | null>(null)
+  const micReconnectRef = useRef<() => void>(() => {})
+  const suppressAudioEventsRef = useRef(false)
+  const activeStreamRef = useRef<MediaStream | null>(null)
+  const sharedDisplayRef = useRef<MediaStream | null>(null)
+  const silenceDismissedRef = useRef(false)
+  const silenceShownRef = useRef(false)
+  // Survives capture retries (mic reconnect / stall restart) so a prior
+  // tab-audio degradation is not wiped when the provider is rebuilt.
+  const tabDegradedRef = useRef<CaptureIssue | null>(null)
+  // Capture cleanup publishes its STT stop promise here so the recording-session
+  // cleanup can await the final flush before SignalEngine.stop().
+  const sttStoppingRef = useRef<Promise<void> | null>(null)
+
+  useEffect(() => {
+    if (sttBlocked) {
+      setCaptureState('error')
+      setCaptureIssue('signed-out')
+    } else if (!recording) {
+      setCaptureState('idle')
+      setCaptureIssue((issue) => issue === 'signed-out' ? null : issue)
+    }
+  }, [sttBlocked, recording])
 
   // One engine for the component's life. Extraction (2min) distills raw speech
   // into typed pending signals appended to the tail; the organize pass (5min +
@@ -227,65 +304,253 @@ export function Transcript({
     engineRef.current.config.systemPrompt = EXTRACT_PROMPT + formatProjectInstructions(projectInstructions)
   }, [projectInstructions])
 
-  // Start/stop live capture from Unit 2's existing record button (App.recording).
+  // The transcript engine follows the user's overall recording session. Capture
+  // retries below replace only the provider/stream, preserving engine content.
+  // sttBlocked is intentionally NOT a dependency: signing out mid-session must
+  // leave the engine running until the user can press stop (button stays enabled
+  // while recording). Capture below bails out when blocked.
   useEffect(() => {
     if (!recording) return
+    setEverRecorded(true)
+    silenceDismissedRef.current = false
+    silenceShownRef.current = false
+    tabDegradedRef.current = null
+    engineRef.current?.resetCapture()
+    setEditing(null)
+    setErr('')
+    engineRef.current?.start()
+    return () => {
+      const pendingStt = sttStoppingRef.current
+      void (async () => {
+        if (pendingStt) {
+          try { await pendingStt } catch { /* provider already failed */ }
+        }
+        await engineRef.current?.stop()
+      })()
+      setCaptureState('idle')
+      setCaptureIssue(null)
+      tabDegradedRef.current = null
+      micReconnectDeadlineRef.current = null
+    }
+  }, [recording])
+
+  // Provider + browser audio supervisor. Bumping captureAttempt is a retry: it
+  // tears down only this capture pass, never the transcript accumulated so far.
+  useEffect(() => {
+    if (!recording || sttBlocked) return
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let stream: MediaStream | undefined
+    let wasLive = false
+    const sharedDisplay = sharedDisplayRef.current
+    sharedDisplayRef.current = null
+    // A fresh tab-share attempt clears prior degradation; automatic retries
+    // (mic reconnect / stall) keep the last tab issue so Live doesn't lie.
+    if (sharedDisplay) tabDegradedRef.current = null
+    let degradedIssue: CaptureIssue | null = tabDegradedRef.current
+    suppressAudioEventsRef.current = false
+    silenceShownRef.current = false
+    setCaptureState(degradedIssue ? 'degraded' : 'connecting')
+    if (degradedIssue) setCaptureIssue(degradedIssue)
+    else setCaptureIssue(null)
+    setCaptureDetail('')
+    lastTranscriptAtRef.current = Date.now()
+    lastAudibleAtRef.current = Date.now()
+
+    const rememberTabDegraded = (issue: CaptureIssue) => {
+      degradedIssue = issue
+      tabDegradedRef.current = issue
+      setCaptureState('degraded')
+      setCaptureIssue(issue)
+    }
 
     void (async () => {
-      engineRef.current?.resetCapture()
-      setEditing(null)
-      setErr('')
-      engineRef.current?.start()
-
-      let stream: MediaStream
       try {
-        stream = await getAudioStream('both')
-      } catch (e: any) {
-        setErr(`⚠ ${e.message}`)
+        stream = await getAudioStream('both', {
+          displayStream: sharedDisplay ?? undefined,
+          onEvent: (event) => {
+            if (cancelled || suppressAudioEventsRef.current) return
+            if (event.type === 'mic-ended') micReconnectRef.current()
+            if (event.type === 'tab-ended') rememberTabDegraded('tab-ended')
+            if (event.type === 'degraded') {
+              rememberTabDegraded(
+                event.reason === 'tab-cancelled'
+                  ? 'tab-cancelled'
+                  : event.reason === 'tab-audio-unsupported'
+                    ? 'tab-unsupported'
+                    : 'tab-missing'
+              )
+            }
+          }
+        })
+        activeStreamRef.current = stream
+      } catch (e) {
+        sharedDisplay?.getTracks().forEach((track) => track.stop())
+        if (cancelled) return
+        const issue = mediaFailure(e)
+        if (issue === 'no-mic' && micReconnectDeadlineRef.current) {
+          if (Date.now() < micReconnectDeadlineRef.current) {
+            setCaptureState('reconnecting')
+            setCaptureIssue('mic-reconnecting')
+            retryTimer = setTimeout(() => setCaptureAttempt((n) => n + 1), 1000)
+          } else {
+            micReconnectDeadlineRef.current = null
+            setCaptureState('error')
+            setCaptureIssue('connection-lost')
+          }
+        } else {
+          setCaptureState('error')
+          setCaptureIssue(issue)
+        }
         return
       }
       if (cancelled) {
-        stream.getTracks().forEach((t) => t.stop())
+        stopAudioStream(stream)
         return
       }
+      const captureStream = stream
 
       let stt: STTProvider
       try {
         stt = makeStt ? await makeStt() : new SonioxSTT()
-      } catch (e: any) {
-        stream.getTracks().forEach((t) => t.stop())
-        if (!cancelled) setErr(`⚠ ${e.message}`)
+      } catch (e) {
+        stopAudioStream(captureStream)
+        if (!cancelled) {
+          const error = e instanceof Error ? e : new Error(String(e))
+          setCaptureState('error')
+          setCaptureIssue(providerFailure(error))
+          setCaptureDetail(error.message)
+        }
         return
       }
       if (cancelled) {
-        stream.getTracks().forEach((t) => t.stop())
+        stopAudioStream(captureStream)
         return
       }
       sttRef.current = stt
-      stt.onError((e) => setErr(`⚠ ${e.message}`))
+      stt.onStatus((next) => {
+        if (cancelled) return
+        if (next.state === 'live') {
+          wasLive = true
+          micReconnectDeadlineRef.current = null
+          setCaptureState(degradedIssue ? 'degraded' : 'live')
+          if (degradedIssue) setCaptureIssue(degradedIssue)
+        } else setCaptureState(next.state)
+      })
+      stt.onAudioLevel?.((level) => {
+        if (level > 0.008) {
+          lastAudibleAtRef.current = Date.now()
+          silenceDismissedRef.current = false
+          if (silenceShownRef.current) {
+            silenceShownRef.current = false
+            setCaptureIssue((issue) => issue === 'silence' ? null : issue)
+          }
+        }
+      })
+      stt.onError((e) => {
+        if (cancelled) return
+        setCaptureState('error')
+        const issue = providerFailure(e)
+        setCaptureIssue(issue === 'connection-lost' && !wasLive ? 'server-unreachable' : issue)
+        setCaptureDetail(e.message)
+        suppressAudioEventsRef.current = true
+        void stt.stop()
+        stopAudioStream(captureStream)
+      })
       stt.onTranscript((ev) => {
+        lastTranscriptAtRef.current = Date.now()
+        setCaptureIssue((current) => {
+          if (current === 'stall') return degradedIssue
+          return current
+        })
         if (ev.isFinal) {
           engineRef.current?.pushFinal(ev.text, ev.speaker)
           if (ev.text.trim()) onRawFinalRef.current?.(ev.text.trim(), Date.now())
         } else engineRef.current?.pushInterim(ev.text)
       })
       try {
-        await stt.start({ lang: 'auto', stream })
-      } catch (e: any) {
-        if (!cancelled) setErr(`⚠ ${e.message}`)
+        await stt.start({ lang: 'auto', stream: captureStream })
+      } catch (e) {
+        if (!cancelled) {
+          const error = e instanceof Error ? e : new Error(String(e))
+          setCaptureState('error')
+          const issue = providerFailure(error)
+          setCaptureIssue(issue === 'connection-lost' && !wasLive ? 'server-unreachable' : issue)
+          setCaptureDetail(error.message)
+          suppressAudioEventsRef.current = true
+          void stt.stop()
+          stopAudioStream(captureStream)
+        }
       }
     })()
 
+    micReconnectRef.current = () => {
+      if (cancelled) return
+      micReconnectDeadlineRef.current = Date.now() + 15_000
+      setCaptureState('reconnecting')
+      setCaptureIssue('mic-reconnecting')
+      suppressAudioEventsRef.current = true
+      void sttRef.current?.stop()
+      if (activeStreamRef.current) stopAudioStream(activeStreamRef.current)
+      retryTimer = setTimeout(() => setCaptureAttempt((n) => n + 1), 500)
+    }
+
     return () => {
       cancelled = true
-      const stopping = sttRef.current?.stop()
-      sttRef.current = null
-      // Backend STT may receive a provider's final transcript only after its
-      // stop frame. Wait for that graceful close before extracting/organizing.
-      void Promise.resolve(stopping).finally(() => engineRef.current?.stop())
+      if (retryTimer) clearTimeout(retryTimer)
+      const active = sttRef.current
+      const stopping = Promise.resolve(active?.stop()).then(() => undefined)
+      sttStoppingRef.current = stopping
+      if (stream) stopAudioStream(stream)
+      if (activeStreamRef.current === stream) activeStreamRef.current = null
+      if (sttRef.current === active) sttRef.current = null
+      void stopping.finally(() => {
+        if (sttStoppingRef.current === stopping) sttStoppingRef.current = null
+      })
     }
-  }, [recording])
+  }, [recording, captureAttempt, makeStt, sttBlocked])
+
+  // A device change can precede a track's ended event. If it is followed by a
+  // silent input, reacquire the default input; otherwise leave a healthy stream.
+  useEffect(() => {
+    if (!recording || !navigator.mediaDevices?.addEventListener) return
+    const changed = () => {
+      deviceChangedAtRef.current = Date.now()
+      if (captureIssue === 'no-mic') setCaptureAttempt((n) => n + 1)
+    }
+    navigator.mediaDevices.addEventListener('devicechange', changed)
+    return () => navigator.mediaDevices.removeEventListener('devicechange', changed)
+  }, [recording, captureIssue])
+
+  // Silence and provider-stall watchdogs run above both adapters. Silence is a
+  // warning; a sustained audible stream with no transcript is restartable error.
+  useEffect(() => {
+    if (!recording) return
+    const timer = setInterval(() => {
+      if (captureState !== 'live' && captureState !== 'degraded') return
+      const now = Date.now()
+      if (deviceChangedAtRef.current && now - deviceChangedAtRef.current > 3000 &&
+          now - lastAudibleAtRef.current > 3000) {
+        deviceChangedAtRef.current = null
+        micReconnectRef.current()
+        return
+      }
+      if (now - lastAudibleAtRef.current > 10_000) {
+        if (!captureIssueRef.current && !silenceDismissedRef.current && !silenceShownRef.current) {
+          silenceShownRef.current = true
+          setCaptureIssue('silence')
+        }
+      }
+      if (now - lastTranscriptAtRef.current > 20_000 && now - lastAudibleAtRef.current < 2000) {
+        setCaptureState('error')
+        setCaptureIssue('stall')
+        suppressAudioEventsRef.current = true
+        void sttRef.current?.stop()
+        if (activeStreamRef.current) stopAudioStream(activeStreamRef.current)
+      }
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [recording, captureState])
 
   // Autosave the cleaned transcript (debounced — it re-renders per STT chunk).
   // localStorage stays the local mirror; when this space is synced, the same
@@ -475,7 +740,85 @@ export function Transcript({
   }
 
   const hasContent = frozen.length > 0 || tail.length > 0
-  const caption = STATUS_CAPTION[status]
+  // Capture and signal processing are independent: audio remains live while
+  // highlights are extracted/organized, so the Listening cue is rendered
+  // separately and must not be replaced by the capture-state pill.
+  const caption = status === 'extracting' || status === 'organizing' ? STATUS_CAPTION[status] : ''
+  const listening = recording && (captureState === 'live' || captureState === 'degraded')
+
+  // After the closing organize pass settles (status back to idle) but the user
+  // has stopped, acknowledge the stop with a static, non-shimmering line
+  // instead of going blank. Distinct from the pre-record placeholder.
+  const stopped = everRecorded && !recording && status === 'idle'
+  const doneMsg = !hasContent
+    ? 'Stopped — no speech was captured. Check your mic and try again.'
+    : frozen.length > 0
+      ? `Recording stopped — ${frozen.length} section${frozen.length === 1 ? '' : 's'} saved.`
+      : 'Recording stopped — highlights saved.'
+
+  const retryCapture = () => setCaptureAttempt((n) => n + 1)
+  const captureNotice = (() => {
+    switch (captureIssue) {
+      case 'permission': return { message: "Microphone access is blocked. Allow it in your browser's site settings.", action: 'Try again' }
+      case 'no-mic': return { message: 'No microphone found. Connect your mic (e.g. AirPods), then retry.', action: 'Retry' }
+      case 'mic-busy': return { message: 'Your microphone is in use by another app. Close it and retry.', action: 'Retry' }
+      case 'tab-cancelled': return { message: "Recording mic only — tab audio wasn't shared.", action: 'Share tab audio' }
+      case 'tab-missing': return { message: "Recording mic only — check 'Share tab audio' in the dialog.", action: 'Share tab audio' }
+      case 'tab-unsupported': return { message: 'Recording mic only — Safari does not support tab or screen audio capture. Use Chrome to record shared audio.' }
+      case 'tab-ended': return { message: 'Tab audio ended — still recording your mic.', action: 'Re-share' }
+      case 'mic-reconnecting': return { message: 'Microphone disconnected — reconnecting…' }
+      case 'connection-lost': return { message: 'Connection lost. Your transcript so far is saved.', action: 'Resume recording' }
+      case 'server-unreachable': return { message: "Can't reach the transcription server.", action: 'Retry' }
+      case 'transcription-error': return { message: `Transcription error${captureDetail ? `: ${captureDetail.replace(/^(Backend STT|Soniox[^:]*):?\s*/i, '')}` : ''}.`, action: 'Restart transcription' }
+      case 'stall': return { message: 'Transcription stalled.', action: 'Restart' }
+      case 'signed-out': return { message: 'Sign in to enable transcription.', action: onSignIn ? 'Sign in' : undefined }
+      case 'dev-key': return { message: 'Local transcription needs SONIOX_API_KEY in .env. Restart npm run dev after adding it.' }
+      case 'account': return { message: 'Transcription service unavailable (account issue).' }
+      case 'silence': return { message: 'Not hearing anything — is your mic muted?' }
+      default: return null
+    }
+  })()
+
+  const onCaptureAction = () => {
+    if (captureIssue === 'signed-out') {
+      onSignIn?.()
+      return
+    }
+    if (captureIssue === 'tab-cancelled' || captureIssue === 'tab-missing' || captureIssue === 'tab-ended') {
+      // getDisplayMedia must be invoked during this click's transient user
+      // activation. Deferring it to the retry effect makes Chrome ignore it.
+      let request: Promise<MediaStream>
+      try {
+        request = navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      } catch {
+        setCaptureIssue('tab-cancelled')
+        return
+      }
+      void request.then((display) => {
+        if (!recordingRef.current) {
+          display.getTracks().forEach((track) => track.stop())
+          return
+        }
+        sharedDisplayRef.current = display
+        retryCapture()
+      }).catch(() => {
+        // Cancelling the picker keeps the healthy mic-only session running.
+        setCaptureState('degraded')
+        setCaptureIssue('tab-cancelled')
+      })
+      return
+    }
+    retryCapture()
+  }
+
+  const stateLabel: Record<CaptureState, string> = {
+    idle: 'Ready',
+    connecting: 'Connecting…',
+    live: 'Live',
+    degraded: 'Recording with an issue',
+    reconnecting: 'Reconnecting…',
+    error: 'Recording paused'
+  }
 
   const onRecordClick = () => {
     if (collapsed) {
@@ -509,29 +852,64 @@ export function Transcript({
 
         {tail.length > 0 && renderSection(null, tail)}
 
-        {!hasContent && (
+        {!hasContent && !stopped && (
           <div className="placeholder">
             {recording
-              ? 'Listening… key signals from the conversation will appear here every couple of minutes.'
+              ? 'Highlights appear every ~2 minutes as you talk.'
               : 'Press ●, allow the mic, and start talking. Key signals — judgments, questions, decisions — appear here, organized into sections.'}
           </div>
         )}
 
+        {listening && <div className="status-caption ai-thinking">Listening…</div>}
         {caption && <div className="status-caption ai-thinking">{caption}</div>}
+        {stopped && <div className="status-caption done">{doneMsg}</div>}
         {err && <div className="placeholder err">{err}</div>}
+        {(recording || sttBlocked) && captureNotice && captureIssue !== 'silence' && (
+          <div className={`stt-notice ${captureState}`} role={captureState === 'error' ? 'alert' : 'status'}>
+            <span>{captureNotice.message}</span>
+            {captureNotice.action && <button type="button" onClick={onCaptureAction}>{captureNotice.action}</button>}
+          </div>
+        )}
       </aside>
 
       {/* Recording control: bottom-center of the transcript pane, on a white
           gradient (solid at the bottom, fading to transparent) so it reads
           clearly over scrolled-up text without a hard edge. */}
       <div className="transcript-record-dock">
+        {recording && (captureIssue === 'silence' ? (
+          <div className="stt-state-pill silence" role="status">
+            <span>Not hearing anything — is your mic muted?</span>
+            <button
+              type="button"
+              aria-label="Dismiss microphone silence hint"
+              onClick={() => {
+                silenceDismissedRef.current = true
+                silenceShownRef.current = false
+                setCaptureIssue(null)
+              }}
+            >
+              ×
+            </button>
+          </div>
+        ) : (
+          <div className={`stt-state-pill ${captureState}`}>{stateLabel[captureState]}</div>
+        ))}
         <button
-          className={`record ${recording ? 'on' : ''}`}
-          title={recording ? 'Stop recording' : 'Start recording'}
+          className={`record ${captureState === 'live' || captureState === 'degraded' ? 'on' : ''} ${captureState}`}
+          title={
+            recording
+              ? `${stateLabel[captureState]} — stop recording`
+              : sttBlocked
+                ? 'Sign in to enable transcription'
+                : 'Start recording'
+          }
           onClick={onRecordClick}
+          disabled={sttBlocked && !recording}
         >
           {collapsed && <span className="record-label">Record</span>}
-          {recording ? <span className="stop-sq" /> : <span className="rec-dot" />}
+          {captureState === 'live' || captureState === 'degraded'
+            ? <span className="stop-sq" />
+            : <span className="rec-dot" />}
         </button>
       </div>
     </div>

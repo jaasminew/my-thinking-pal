@@ -15,6 +15,12 @@ describe('resolveProvider', () => {
     expect(p.model).toBe('custom-model')
   })
 
+  it('resolves DeepSeek without requiring a manually persisted base URL', () => {
+    const p = resolveProvider('deepseek', { apiKey: 'dk', model: 'deepseek-v4-flash' })
+    expect(p.baseUrl).toBe('https://api.deepseek.com')
+    expect(p.model).toBe('deepseek-v4-flash')
+  })
+
   it('treats an unknown id with a baseUrl as a custom endpoint', () => {
     const p = resolveProvider('my-gw', { baseUrl: 'https://gw.local/v1', model: 'm' })
     expect(p.id).toBe('my-gw')

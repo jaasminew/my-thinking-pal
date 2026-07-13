@@ -44,9 +44,10 @@ export function buildObserverEvaluatorSystem(): string {
     `Before emitting, CHECK your idea against the existing canvas summary, the list of recent observer ` +
     `topics, and the list of rejected suggestions. If it overlaps any of them, do not emit — the group has ` +
     `already seen it or turned it down.\n\n` +
-    `If your contribution would rest on a factual claim — a product, statistic, comparison, case study, ` +
-    `or anything verifiable — set "needsResearch": true and give a concise "suggestedSearchQuery". ` +
-    `Purely conceptual contributions (a connection, a risk, a question) need no research.\n\n` +
+    `The note the contributor writes will almost always be grounded in a real, named case — a product, ` +
+    `person, paper, service, or statistic — so DEFAULT to "needsResearch": true and give a concise ` +
+    `"suggestedSearchQuery" that would find that kind of case. Reserve "needsResearch": false for the rare ` +
+    `purely-conceptual angle (a bare connection, risk, or question) that rests on nothing verifiable.\n\n` +
     `Return ONLY one JSON object of exactly this shape (no prose, no markdown, no code fences):\n` +
     `{"emit":<true|false>,"confidence":<0..1>,"opportunityType":"<${OPPORTUNITY_TYPES}>",` +
     `"topic":"<short phrase naming the angle>","reason":"<one sentence: the intent you read and why this ` +
@@ -143,12 +144,13 @@ export function buildObserverContributorSystem(): string {
     `- <the bridge: what in their discussion leads to this concept, at most 25 words>\n` +
     `- <a named case grounding the concept>\n` +
     `(1 to ${MAX_BULLETS} bullets, each starting with "- "; no bullet may merely repeat the transcript)\n` +
-    `Then, ONLY if the brief says research is needed, a final line:\n` +
-    `SEARCH: <a query that finds the page about the case you named>\n\n` +
+    `Then, whenever ANY bullet names a real product, person, case, paper, or service, a final line:\n` +
+    `SEARCH: <a query that finds the page about the specific case you named>\n\n` +
     `Rules: no preamble, no closing remarks, no headings other than KEYWORD. Do NOT put URLs or a "Sources" ` +
-    `list in the bullets — sources are attached separately by the app from the search path. Add the SEARCH ` +
-    `line only when told research is needed; otherwise omit it entirely. Write everything in the dominant ` +
-    `language of the conversation.`
+    `list in the bullets — sources are attached separately by the app from the search path. YOU decide ` +
+    `whether to search, from what you actually wrote: include the SEARCH line whenever you named something ` +
+    `real and lookupable (the brief's research hint is only a prior, not a veto); omit it only for a purely ` +
+    `conceptual note that names nothing. Write everything in the dominant language of the conversation.`
   )
 }
 
@@ -159,7 +161,11 @@ export function buildObserverContributorUserText(input: ObserverContributorInput
   if (d.opportunityType) brief.push(`Kind of contribution: ${d.opportunityType}`)
   if (d.topic) brief.push(`Angle to develop: ${d.topic}`)
   if (d.reason) brief.push(`Why it matters here: ${d.reason}`)
-  brief.push(d.needsResearch ? `Research: NEEDED — end with a SEARCH: line.` : `Research: not needed — no SEARCH line.`)
+  brief.push(
+    d.needsResearch
+      ? `Research: recommended — end with a SEARCH: line targeting the case you name.`
+      : `Research: likely optional — but still add a SEARCH: line if you end up naming a real case.`
+  )
   parts.push(`Your brief (from the evaluator):\n${brief.join('\n')}`)
 
   parts.push(`Signals from the conversation that prompted this:\n${renderSignals(input.signals)}`)

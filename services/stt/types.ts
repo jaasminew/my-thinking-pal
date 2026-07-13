@@ -19,10 +19,21 @@ export interface STTStartOpts {
   stream?: MediaStream
 }
 
+export type SttConnectionState = 'connecting' | 'live' | 'reconnecting' | 'error'
+
+export interface SttStatusEvent {
+  state: SttConnectionState
+  /** Adapter detail is for diagnostics; the UI owns recovery-oriented copy. */
+  detail?: string
+}
+
 export interface STTProvider {
   readonly name: string
   start(opts: STTStartOpts): Promise<void>
   stop(): void | Promise<void>
   onTranscript(cb: (e: TranscriptEvent) => void): void
   onError(cb: (err: Error) => void): void
+  onStatus(cb: (status: SttStatusEvent) => void): void
+  /** Normalized RMS (0–1), emitted while audio frames are being captured. */
+  onAudioLevel?(cb: (level: number) => void): void
 }

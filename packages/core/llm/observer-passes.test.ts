@@ -50,11 +50,18 @@ describe('observerEvaluate (integration)', () => {
     expect(out.decision).toEqual({ emit: false, confidence: 0.1 })
   })
 
-  it('returns a null decision with no error on unparseable output (no retry)', async () => {
+  it('returns parse diagnostics on unparseable output (no retry)', async () => {
     const mock = mockFetchSequence([jsonResponse('the model rambled without JSON')])
     const out = await observerEvaluate(TEST_PROVIDER, evalInput, mock.fetch)
     expect(out.decision).toBeNull()
-    expect(out.error).toBeUndefined()
+    expect(out.error).toMatch(/unparseable-response/)
+    expect(out.error).toMatch(/reasoning_content=absent/)
+  })
+
+  it('raises the evaluator token budget to leave room for reasoning models', async () => {
+    const mock = mockFetchSequence([jsonResponse('{"emit":false,"confidence":0.1}')])
+    await observerEvaluate(TEST_PROVIDER, evalInput, mock.fetch)
+    expect(mock.calls[0].body.max_tokens).toBe(3000)
   })
 
   it('maps an HTTP failure to a null decision + error (never throws)', async () => {
@@ -79,11 +86,18 @@ describe('observerContribute (integration)', () => {
     expect(mock.calls[0].body.messages[0].content).toContain('KEYWORD:')
   })
 
-  it('returns a null contribution with no error on malformed output', async () => {
+  it('returns parse diagnostics on malformed output', async () => {
     const mock = mockFetchSequence([jsonResponse('no keyword here, just prose')])
     const out = await observerContribute(TEST_PROVIDER, contribInput, mock.fetch)
     expect(out.contribution).toBeNull()
-    expect(out.error).toBeUndefined()
+    expect(out.error).toMatch(/unparseable-response/)
+    expect(out.error).toMatch(/reasoning_content=absent/)
+  })
+
+  it('gives the contributor enough output budget for reasoning models', async () => {
+    const mock = mockFetchSequence([jsonResponse('KEYWORD: Topic\n- useful angle')])
+    await observerContribute(TEST_PROVIDER, contribInput, mock.fetch)
+    expect(mock.calls[0].body.max_tokens).toBe(3000)
   })
 
   it('maps an HTTP failure to a null contribution + error', async () => {

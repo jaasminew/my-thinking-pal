@@ -58,20 +58,26 @@ describe('requestObserverEvaluate', () => {
     expect(await requestObserverEvaluate(evalInput, deps)).toEqual(decision)
   })
 
-  it('returns null (surfaces nothing to emit) when the Listener is unavailable', async () => {
+  it('returns the resolution reason when the Listener is unavailable', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ listener: { error: 'no listener' } }),
       evaluatePass: async () => ({ decision, serverMs: 0 })
     }
-    expect(await requestObserverEvaluate(evalInput, deps)).toBeNull()
+    expect(await requestObserverEvaluate(evalInput, deps)).toEqual({
+      decision: null,
+      error: 'listener-unresolved: no listener'
+    })
   })
 
-  it('passes null through on a failed evaluator pass', async () => {
+  it('preserves the evaluator pass error', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ listener: { provider: webProvider } }),
       evaluatePass: async () => ({ decision: null, serverMs: 0, error: 'boom' })
     }
-    expect(await requestObserverEvaluate(evalInput, deps)).toBeNull()
+    expect(await requestObserverEvaluate(evalInput, deps)).toEqual({
+      decision: null,
+      error: 'boom'
+    })
   })
 })
 
@@ -172,12 +178,17 @@ describe('requestObserverContribute — web Thinker', () => {
     expect(res?.sources).toEqual([card(1)])
   })
 
-  it('returns null on a failed contributor pass', async () => {
+  it('preserves the failed contributor pass reason', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ thinker: { provider: webProvider } }),
       contributePass: async () => ({ contribution: null, serverMs: 0, error: 'boom' })
     }
-    expect(await requestObserverContribute(contribInput, deps)).toBeNull()
+    expect(await requestObserverContribute(contribInput, deps)).toMatchObject({
+      error: 'contributor: boom',
+      keyword: '',
+      bullets: [],
+      sources: []
+    })
   })
 })
 
@@ -200,31 +211,40 @@ describe('requestObserverContribute — CLI Thinker', () => {
     expect(res?.model).toBe('opus')
   })
 
-  it('returns null when the CLI transport throws', async () => {
+  it('preserves the reason when the CLI transport throws', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ thinker: { runtime: 'codex', command: 'codex' } }),
       runLocalPromptImpl: (async () => {
         throw new Error('bridge down')
       }) as any
     }
-    expect(await requestObserverContribute(contribInput, deps)).toBeNull()
+    expect(await requestObserverContribute(contribInput, deps)).toMatchObject({
+      error: 'contributor: local-runtime-failed',
+      searchPath: 'cli-native'
+    })
   })
 
-  it('returns null when CLI output is unparseable', async () => {
+  it('preserves the reason when CLI output is unparseable', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ thinker: { runtime: 'codex', command: 'codex' } }),
       runLocalPromptImpl: (async () => 'no keyword, just prose') as any
     }
-    expect(await requestObserverContribute(contribInput, deps)).toBeNull()
+    expect(await requestObserverContribute(contribInput, deps)).toMatchObject({
+      error: 'contributor: unparseable-response',
+      searchPath: 'cli-native'
+    })
   })
 })
 
 describe('requestObserverContribute — unresolved Thinker', () => {
-  it('returns null when the Thinker category errors', async () => {
+  it('preserves the reason when the Thinker category errors', async () => {
     const deps: ObserverServiceDeps = {
       resolveCategory: resolver({ thinker: { error: 'no thinker' } }),
       contributePass: async () => ({ contribution: { keyword: 'k', bullets: ['a'] }, serverMs: 0 })
     }
-    expect(await requestObserverContribute(contribInput, deps)).toBeNull()
+    expect(await requestObserverContribute(contribInput, deps)).toMatchObject({
+      error: 'contributor: thinker-unresolved: no thinker',
+      searchPath: 'none'
+    })
   })
 })

@@ -88,6 +88,12 @@ export function getJsonReasoningParams(model: string): ReasoningParams {
   if (/gpt-oss/i.test(model)) {
     return { reasoning_effort: 'medium', reasoning_format: 'hidden' }
   }
+  // Native DeepSeek's OpenAI-compatible endpoint does not accept the
+  // Groq/OpenRouter reasoning_effort/include_reasoning extensions. Omitting
+  // them avoids a 400; the larger JSON-pass token budget provides headroom.
+  if (/deepseek/i.test(model)) {
+    return {}
+  }
   return getReasoningParams(model)
 }
 

@@ -35,15 +35,35 @@ export async function observerEvaluate(
   fetchImpl?: FetchLike
 ): Promise<ObserverEvaluateOutcome> {
   try {
-    const { content, serverMs } = await chatCompletion(provider, {
+    const { content, serverMs, finishReason, hasReasoningContent } = await chatCompletion(provider, {
       system: buildObserverEvaluatorSystem(),
       userText: buildObserverEvaluatorUserText(input),
       fetchImpl,
-      maxTokens: 800,
+      maxTokens: 3000,
       reasoning: getJsonReasoningParams(provider.model)
     })
-    // Parse failure → null decision, no error: the engine skips this round.
-    return { decision: parseObserverDecision(content), serverMs, model: provider.model }
+    const decision = parseObserverDecision(content)
+    if (!decision) {
+      // Keep this diagnostic at the parse boundary: the network panel does not
+      // make provider reasoning-vs-answer starvation obvious. Never print the
+      // prompt or credentials.
+      console.warn('[observer] unparseable evaluator response', {
+        content,
+        finish_reason: finishReason ?? null,
+        reasoning_content_present: hasReasoningContent
+      })
+      const metadata = [
+        finishReason ? `finish_reason=${finishReason}` : '',
+        `reasoning_content=${hasReasoningContent ? 'present' : 'absent'}`
+      ].filter(Boolean).join(', ')
+      return {
+        decision: null,
+        serverMs,
+        model: provider.model,
+        error: `unparseable-response (${metadata})`
+      }
+    }
+    return { decision, serverMs, model: provider.model }
   } catch (e) {
     const serverMs = e instanceof ChatHttpError ? e.serverMs : 0
     return { decision: null, serverMs, model: provider.model, error: errMsg(e) }
@@ -63,16 +83,34 @@ export async function observerContribute(
   fetchImpl?: FetchLike
 ): Promise<ObserverContributeOutcome> {
   try {
-    const { content, serverMs } = await chatCompletion(provider, {
+    const { content, serverMs, finishReason, hasReasoningContent } = await chatCompletion(provider, {
       system: buildObserverContributorSystem(),
       userText: buildObserverContributorUserText(input),
       fetchImpl,
-      maxTokens: 1000,
+      maxTokens: 3000,
       // Plain-text protocol (KEYWORD/bullets/SEARCH), not JSON — use the
       // non-JSON reasoning params like the section-header pass.
       reasoning: getReasoningParams(provider.model)
     })
-    return { contribution: parseObserverContribution(content), serverMs, model: provider.model }
+    const contribution = parseObserverContribution(content)
+    if (!contribution) {
+      console.warn('[observer] unparseable contributor response', {
+        content,
+        finish_reason: finishReason ?? null,
+        reasoning_content_present: hasReasoningContent
+      })
+      const metadata = [
+        finishReason ? `finish_reason=${finishReason}` : '',
+        `reasoning_content=${hasReasoningContent ? 'present' : 'absent'}`
+      ].filter(Boolean).join(', ')
+      return {
+        contribution: null,
+        serverMs,
+        model: provider.model,
+        error: `unparseable-response (${metadata})`
+      }
+    }
+    return { contribution, serverMs, model: provider.model }
   } catch (e) {
     const serverMs = e instanceof ChatHttpError ? e.serverMs : 0
     return { contribution: null, serverMs, model: provider.model, error: errMsg(e) }

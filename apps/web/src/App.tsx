@@ -73,7 +73,7 @@ function logObserverRecord(rec: ObserverLogRecord): void {
       d.emit ? '' : `\n         reason: ${d.reason ?? '(none)'}`
     )
   } else if (rec.kind === 'emission') {
-    console.log(`${tag} EMIT ✓  note placed  (model ${rec.model ?? '?'}, search ${rec.searchPath ?? '?'})`, base + 'color:#fff;background:#2563eb')
+    console.log(`${tag} EMIT ✓  note placed  (model ${rec.model ?? '?'}, search ${rec.searchPath ?? '?'}, ${rec.sourceCount ?? 0} source${rec.sourceCount === 1 ? '' : 's'})`, base + 'color:#fff;background:#2563eb')
   } else if (rec.kind === 'skip') {
     console.log(`${tag} skip: ${rec.gate}`, base + 'color:#fff;background:#b45309')
   } else if (rec.kind === 'error') {
@@ -315,7 +315,9 @@ function CanvasSpace({
   modelConfigs,
   sync,
   makeStt,
-  seedFromLocal = true
+  seedFromLocal = true,
+  onSignIn,
+  sttBlocked = false
 }: {
   /** This canvas's tree-node id — resolves the Project Memory scope. */
   spaceId: string
@@ -341,6 +343,8 @@ function CanvasSpace({
   /** Seed a fresh board from local canvas content (migrate). False when adopting
    *  an existing/blank server document — that board comes from the server. */
   seedFromLocal?: boolean
+  onSignIn?: () => void
+  sttBlocked?: boolean
 }) {
   const k = (key: string) => key + storageSuffix
   // Notes are restored from localStorage so testing data survives refreshes.
@@ -2131,6 +2135,8 @@ function CanvasSpace({
         makeStt={makeStt}
         projectInstructions={projectMemory.instructions.transcriptionSummary}
         transcriptSync={sync ? transcriptSync : undefined}
+        onSignIn={onSignIn}
+        sttBlocked={sttBlocked}
         seedFromLocal={seedFromLocal}
       />
       <div
@@ -2881,6 +2887,8 @@ export function App() {
                 sync={backend.syncFor(id)}
                 makeStt={makeStt}
                 seedFromLocal={!backend.isAdopted(id)}
+                onSignIn={() => setShowAuth(true)}
+                sttBlocked={backend.enabled && !backend.user}
               />
             </div>
           </section>

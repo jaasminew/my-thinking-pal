@@ -79,4 +79,8 @@ describe('reasoning params', () => {
   it('is empty for a plain model', () => {
     expect(getReasoningParams('llama3.1-8b')).toEqual({})
   })
+
+  it('omits unsupported reasoning extensions for native DeepSeek requests', () => {
+    expect(getJsonReasoningParams('deepseek-v4-flash')).toEqual({})
+  })
 })
