@@ -1127,10 +1127,15 @@ function CanvasSpace({
 
       const thinkerRes = await resolveCategoryProvider('thinker', thinkerAssignRef.current)
       if (thinkerRes.error && !thinkerRes.provider && !thinkerRes.runtime) {
-        patchNote(noteId, (n) => ({ ...n, aiRunning: false }))
         firesRef.current.delete(fireId)
+        rejectedFireLinesRef.current.delete(fireId)
+        const reveal = revealRef.current.get(fireId)
+        if (reveal) reveal.hasDisplayOutput = true
         scheduler.push({ kind: 'text', chunk: `⚠ ${thinkerRes.error}` })
-        scheduler.push({ kind: 'done' })
+        patchNote(noteId, (n) => ({ ...n, aiRunning: false }))
+        // Same as a provider error with display output: finish() so goLive's
+        // done() callback ends the cursor once the warning drains.
+        scheduler.finish()
         return
       }
 
