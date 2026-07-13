@@ -27,6 +27,10 @@ type Config struct {
 	TencentSecretKey   string
 	TencentEngineModel string
 	TavilyAPIKey       string
+	DeepSeekAPIKey     string
+	DeepSeekBaseURL    string
+	DeepSeekListener   string
+	DeepSeekThinker    string
 	CORSOrigin         string // allowed web origin ("*" reflects any)
 }
 
@@ -51,6 +55,10 @@ func Load() Config {
 		TencentSecretKey:   envAny([]string{"TENCENT_SECRET_KEY", "TENCENT_CLOUD_SECRET_KEY"}, ""),
 		TencentEngineModel: env("TENCENT_ENGINE_MODEL", "16k_zh"),
 		TavilyAPIKey:       env("TAVILY_API_KEY", ""),
+		DeepSeekAPIKey:     env("DEEPSEEK_API_KEY", ""),
+		DeepSeekBaseURL:    env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+		DeepSeekListener:   env("DEEPSEEK_LISTENER_MODEL", "deepseek-v4-flash"),
+		DeepSeekThinker:    env("DEEPSEEK_THINKER_MODEL", "deepseek-v4-pro"),
 		CORSOrigin:         env("CORS_ORIGIN", "*"),
 	}
 }

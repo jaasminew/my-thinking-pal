@@ -165,12 +165,15 @@ export function LlmSettingsPanel({
   configs,
   selections,
   onSave,
-  onClose
+  onClose,
+  hostedAvailable = false
 }: {
   configs: readonly AiModelConfig[]
   selections: ModelSelections
   onSave: (nextSelections: ModelSelections, nextConfigs: AiModelConfig[]) => void
   onClose: () => void
+  /** Signed into Go backend — empty selection uses hosted DeepSeek Flash/Pro. */
+  hostedAvailable?: boolean
 }) {
   const { tr } = useLocale()
   const [draftSelections, setDraftSelections] = useState<ModelSelections>(selections)
@@ -302,16 +305,33 @@ export function LlmSettingsPanel({
     setLocalSetupStarted(false)
   }
 
+  const removeConfig = (id: string) => {
+    setDraftConfigs((cs) => cs.filter((c) => c.id !== id))
+    setDraftSelections((s) => ({
+      listener: s.listener === id ? '' : s.listener,
+      thinker: s.thinker === id ? '' : s.thinker
+    }))
+  }
+
   const save = () => {
     const byId = new Map(draftConfigs.map((c) => [c.id, c]))
     const firstWeb = draftConfigs.find((c) => !isCliConfig(c))?.id ?? ''
     const firstAny = draftConfigs[0]?.id ?? ''
     // Listener must resolve to a web config (CLI runtimes are never offered
-    // there); Thinker accepts anything.
+    // there); Thinker accepts anything. Empty selection is intentional
+    // (hosted DeepSeek when signed in, or "no model" locally).
     const listenerOk = (id: string) => byId.has(id) && !isCliConfig(byId.get(id)!)
     const nextSelections: ModelSelections = {
-      listener: listenerOk(draftSelections.listener) ? draftSelections.listener : firstWeb,
-      thinker: byId.has(draftSelections.thinker) ? draftSelections.thinker : firstAny
+      listener: !draftSelections.listener
+        ? ''
+        : listenerOk(draftSelections.listener)
+          ? draftSelections.listener
+          : firstWeb,
+      thinker: !draftSelections.thinker
+        ? ''
+        : byId.has(draftSelections.thinker)
+          ? draftSelections.thinker
+          : firstAny
     }
     onSave(nextSelections, draftConfigs)
     onClose()
@@ -357,17 +377,32 @@ export function LlmSettingsPanel({
 
             <section className="llm-section">
               <h2>{tr('Model Selection', '模型选择')}</h2>
+              {hostedAvailable && (
+                <p className="llm-setup-info">
+                  {tr(
+                    'Signed in: empty selection uses hosted DeepSeek (Listener = Flash, Thinker = Pro). Add a model with your own API key to override.',
+                    '已登录：未选择模型时使用托管 DeepSeek（聆听者 = Flash，思考者 = Pro）。添加带自己 API 密钥的模型可覆盖。'
+                  )}
+                </p>
+              )}
 
               {(['listener', 'thinker'] as ModelCategory[]).map((category) => {
                 // CLI runtimes can't back the Listener (ambient evaluator can't
                 // afford CLI startup) — hide them from that dropdown only.
                 const options = category === 'listener' ? draftConfigs.filter((m) => !isCliConfig(m)) : draftConfigs
+                const hostedLabel =
+                  category === 'listener'
+                    ? tr('Hosted DeepSeek Flash', '托管 DeepSeek Flash')
+                    : tr('Hosted DeepSeek Pro', '托管 DeepSeek Pro')
+                const emptyLabel = hostedAvailable
+                  ? hostedLabel
+                  : tr('No model configured', '尚未配置模型')
                 return (
                   <div className="llm-model-row" key={category}>
                     <label className="llm-field">
                       <span>{category === 'listener' ? tr('Listener (speech, fast)', '聆听者（语音，快速）') : tr('Thinker (content, quality)', '思考者（内容，高质量）')}</span>
                       <select value={draftSelections[category]} onChange={(e) => patchSelection(category, e.target.value)}>
-                        {options.length === 0 && <option value="">{tr('No model configured', '尚未配置模型')}</option>}
+                        <option value="">{emptyLabel}</option>
                         {options.map((m) => (
                           <option key={m.id} value={m.id}>{displayLabel(m)}</option>
                         ))}
@@ -380,6 +415,28 @@ export function LlmSettingsPanel({
                 )
               })}
             </section>
+
+            {draftConfigs.length > 0 && (
+              <section className="llm-section">
+                <h2>{tr('Saved models', '已保存的模型')}</h2>
+                <ul className="llm-saved-list">
+                  {draftConfigs.map((m) => (
+                    <li className="llm-saved-row" key={m.id}>
+                      <span className="llm-saved-label" title={displayLabel(m)}>
+                        {displayLabel(m)}
+                      </span>
+                      <button
+                        type="button"
+                        className="llm-delete-model"
+                        onClick={() => removeConfig(m.id)}
+                      >
+                        {tr('Delete', '删除')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             <div className="llm-settings-actions">
               <button className="llm-save" onClick={save}>
@@ -468,6 +525,12 @@ export function LlmSettingsPanel({
                     type="password"
                     placeholder="sk-..."
                   />
+                  <span className="llm-field-hint">
+                    {tr(
+                      'Required to override hosted models with your own provider.',
+                      '用于覆盖托管模型，改用你自己的提供商。'
+                    )}
+                  </span>
                 </label>
 
                 {draftConfig.providerId === 'deepseek' && (

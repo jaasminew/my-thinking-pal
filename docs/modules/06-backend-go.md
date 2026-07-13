@@ -83,6 +83,10 @@ GET    /stt                   (auth)
 # 搜索 / URL 元数据转发（后端持 Tavily key；与 STT 同为登录态代理）
 GET    /search?q=&n=          (auth)     -> { results: [{ title, url, snippet? }] }
 GET    /url-meta?url=         (auth)     -> { description?, image? }
+
+# 托管 LLM（后端持 DeepSeek key；未 BYOK 时前端默认走此代理）
+POST   /llm/chat/completions  (auth)     -> OpenAI 兼容 JSON / SSE
+# Header X-Thinking-Pal-Role: listener|thinker → DEEPSEEK_LISTENER_MODEL / DEEPSEEK_THINKER_MODEL
 ```
 
 ## 6.4 同步 Hub 骨架（示意）
@@ -147,6 +151,12 @@ STT_PROVIDER=soniox             # soniox | tencent | mock
 SONIOX_API_KEY=...
 SONIOX_MODEL=stt-rt-v5
 # TENCENT_APPID= / TENCENT_SECRET_ID= / TENCENT_SECRET_KEY=（STT_PROVIDER=tencent 时）
+
+# 托管 LLM（登录默认；Listener=Flash，Thinker=Pro；忽略客户端 model）
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_LISTENER_MODEL=deepseek-v4-flash
+DEEPSEEK_THINKER_MODEL=deepseek-v4-pro
 
 # --- 规模化时才需要（后期） ---
 # ACCOUNT_STORE=postgres

@@ -135,7 +135,8 @@ export function Transcript({
   transcriptSync,
   seedFromLocal = true,
   onSignIn,
-  sttBlocked = false
+  sttBlocked = false,
+  listenerAssignment
 }: {
   recording: boolean
   onToggleRecord: () => void
@@ -172,6 +173,8 @@ export function Transcript({
   onSignIn?: () => void
   /** Backend mode is configured but the current account session is signed out. */
   sttBlocked?: boolean
+  /** Live Listener assignment for hosted DeepSeek / BYOK resolution. */
+  listenerAssignment?: () => import('../../../services/llm/model-roles').CategoryAssignment | undefined
 }) {
   const { tr, chinese } = useLocale()
   const collapseKey = `transcript-collapsed${storageSuffix}`
@@ -217,6 +220,10 @@ export function Transcript({
   useEffect(() => {
     summaryModelRef.current = summaryModel
   }, [summaryModel])
+  const listenerAssignmentRef = useRef(listenerAssignment)
+  useEffect(() => {
+    listenerAssignmentRef.current = listenerAssignment
+  }, [listenerAssignment])
   const projectInstructionsRef = useRef(projectInstructions)
   useEffect(() => {
     projectInstructionsRef.current = projectInstructions
@@ -267,6 +274,7 @@ export function Transcript({
       organizeProvider: summaryModelRef.current?.providerId || organizeProvider,
       extractModel: summaryModelRef.current?.model || 'openai/gpt-oss-120b',
       organizeModel: summaryModelRef.current?.model || 'openai/gpt-oss-120b',
+      listenerAssignment: () => listenerAssignmentRef.current?.(),
       systemPrompt: EXTRACT_PROMPT + formatProjectInstructions(projectInstructionsRef.current),
       extractIntervalMs: 120000,
       organizeIntervalMs: 300000,

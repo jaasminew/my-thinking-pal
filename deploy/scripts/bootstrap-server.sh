@@ -103,5 +103,5 @@ fi
 
 echo "Bootstrap complete."
 echo "1. Point the ${APP_DOMAIN} A record at this server and confirm ICP filing."
-echo "2. Fill ${CONFIG_ROOT}/api.env provider keys (SONIOX_API_KEY, TAVILY_API_KEY)."
+echo "2. Fill ${CONFIG_ROOT}/api.env provider keys (SONIOX_API_KEY, TAVILY_API_KEY, DEEPSEEK_API_KEY)."
 echo "3. Run: sudo APP_DOMAIN=${APP_DOMAIN} ${DEPLOY_DIR}/scripts/enable-tls.sh"

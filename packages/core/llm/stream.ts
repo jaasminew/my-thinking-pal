@@ -37,7 +37,8 @@ export async function streamOpenModel(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {})
+      ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+      ...(provider.requestHeaders || {})
     },
     body: JSON.stringify({
       model: provider.model,

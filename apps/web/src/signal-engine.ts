@@ -50,6 +50,8 @@ export interface SignalEngineConfig {
   extractModel?: string
   /** thinking model for the async organize pass (Groq only) */
   organizeModel?: string
+  /** Live Listener assignment for hosted/BYOK resolution (read each pass). */
+  listenerAssignment?: () => import('../../../services/llm/model-roles').CategoryAssignment | undefined
   systemPrompt: string
   /** how often the raw buffer is distilled into pending signals */
   extractIntervalMs: number
@@ -244,13 +246,16 @@ export class SignalEngine {
     this.extracting = true
     this.setStatus('extracting')
 
-    const res = await requestExtractSignals({
-      rawText: raw,
-      existingSignals: this.recentTailText().slice(-1200),
-      provider: this.config.provider,
-      model: this.config.extractModel,
-      systemPrompt: this.config.systemPrompt
-    })
+    const res = await requestExtractSignals(
+      {
+        rawText: raw,
+        existingSignals: this.recentTailText().slice(-1200),
+        provider: this.config.provider,
+        model: this.config.extractModel,
+        systemPrompt: this.config.systemPrompt
+      },
+      { category: 'listener', assignment: this.config.listenerAssignment?.() }
+    )
 
     if (gen !== this.gen) return
     this.extracting = false
@@ -306,12 +311,15 @@ export class SignalEngine {
       .join('\n')
 
     const op = this.config.organizeProvider || this.config.provider
-    const res = await requestOrganize({
-      lines: numbered,
-      closing,
-      provider: op,
-      model: this.config.organizeModel
-    })
+    const res = await requestOrganize(
+      {
+        lines: numbered,
+        closing,
+        provider: op,
+        model: this.config.organizeModel
+      },
+      { category: 'listener', assignment: this.config.listenerAssignment?.() }
+    )
 
     if (gen !== this.gen) return
     this.organizing = false
