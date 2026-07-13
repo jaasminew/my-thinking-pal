@@ -318,7 +318,8 @@ function CanvasSpace({
   seedFromLocal = true,
   onSignIn,
   sttBlocked = false,
-  relayAvailable = true
+  relayAvailable = true,
+  hostedAvailable = false
 }: {
   /** This canvas's tree-node id — resolves the Project Memory scope. */
   spaceId: string
@@ -348,6 +349,8 @@ function CanvasSpace({
   sttBlocked?: boolean
   /** Whether web search relay is usable (local Vite or signed-in Go). */
   relayAvailable?: boolean
+  /** Signed in — empty model selection uses hosted DeepSeek (no BYOK needed). */
+  hostedAvailable?: boolean
 }) {
   const { tr } = useLocale()
   const k = (key: string) => key + storageSuffix
@@ -546,7 +549,9 @@ function CanvasSpace({
 
   // AI co-creation mode: OFF suppresses ambient fires and cancels in-flight
   // ones. Tier-3 commands stay live — an explicit command is an invitation.
-  const [aiEnabled, setAiEnabled] = useState(modelConfigs.length > 0)
+  // Ready when the user has a BYOK model OR signed-in hosted DeepSeek.
+  const aiReady = modelConfigs.length > 0 || hostedAvailable
+  const [aiEnabled, setAiEnabled] = useState(aiReady)
 
   // ---- Tier-3 command sessions: select text → bubble → side-panel chat ----
   // bubbleSel is the FROZEN SelectionSnapshot the bubble was opened from; the
@@ -583,7 +588,7 @@ function CanvasSpace({
   const selectedIdsRef = useRef(selectedIds)
   useEffect(() => { selectedIdsRef.current = selectedIds }, [selectedIds])
   const aiBufRef = useRef<Record<string, string>>({})
-  const aiEnabledRef = useRef(modelConfigs.length > 0)
+  const aiEnabledRef = useRef(aiReady)
   useEffect(() => { aiEnabledRef.current = aiEnabled }, [aiEnabled])
   const isActiveRef = useRef(isActive)
   useEffect(() => { isActiveRef.current = isActive }, [isActive])
@@ -835,23 +840,28 @@ function CanvasSpace({
   // Project Memory Stage-A selection runs on the Listener category (contract §5):
   // a fast catalog-metadata pass, decoupled from the Thinker that writes the note.
   const memorySelectionCall = useCallback(() => {
-    const cfg = modelConfigAt(modelConfigs, modelSelections.listener)
-    if (cfg.runtime === 'codex' || cfg.runtime === 'claude-code' || cfg.runtime === 'cursor') {
-      return (system: string, user: string) =>
-        runLocalPrompt({
-          runtime: cfg.runtime as LocalRuntime,
-          command: cfg.command || undefined,
-          model: cfg.model || undefined,
-          system,
-          userText: user
-        })
+    const listenerId = modelSelections.listener
+    let assignment: CategoryAssignment | undefined
+    if (listenerId) {
+      const cfg = modelConfigAt(modelConfigs, listenerId)
+      if (cfg.runtime === 'codex' || cfg.runtime === 'claude-code' || cfg.runtime === 'cursor') {
+        return (system: string, user: string) =>
+          runLocalPrompt({
+            runtime: cfg.runtime as LocalRuntime,
+            command: cfg.command || undefined,
+            model: cfg.model || undefined,
+            system,
+            userText: user
+          })
+      }
+      assignment = {
+        runtime: cfg.runtime,
+        providerId: cfg.providerId,
+        model: cfg.model || undefined,
+        apiKey: cfg.apiKey || undefined
+      }
     }
-    const assignment: CategoryAssignment = {
-      runtime: cfg.runtime,
-      providerId: cfg.providerId,
-      model: cfg.model || undefined,
-      apiKey: cfg.apiKey || undefined
-    }
+    // Empty selection → undefined → hosted DeepSeek / Groq fallback.
     return async (system: string, user: string) => {
       const res = await resolveCategoryProvider('listener', assignment)
       if (!res.provider) throw new Error(res.error || 'No usable Listener model')
@@ -1309,7 +1319,7 @@ function CanvasSpace({
   // CURRENT word count, so writing done while off never triggers a burst of
   // stale suggestions. OFF cancels in-flight ambient fires (commands finish).
   const toggleAi = useCallback(() => {
-    if (modelConfigs.length === 0) return
+    if (!aiReady) return
     const next = !aiEnabledRef.current
     if (next) {
       setNotes((ns) => ns.map((n) => ({ ...n, lastFiredWords: humanWords(n) })))
@@ -1319,7 +1329,22 @@ function CanvasSpace({
       }
     }
     setAiEnabled(next)
-  }, [modelConfigs.length])
+  }, [aiReady])
+
+  // Auth restores after first paint — once hosted LLM is ready, default the
+  // switch ON for users who have no personal model configs (same as having
+  // models at mount). Only runs the first time we become ready.
+  const autoEnabledHostedRef = useRef(false)
+  useEffect(() => {
+    if (autoEnabledHostedRef.current || !hostedAvailable || modelConfigs.length > 0) return
+    if (aiEnabledRef.current) {
+      autoEnabledHostedRef.current = true
+      return
+    }
+    autoEnabledHostedRef.current = true
+    setNotes((ns) => ns.map((n) => ({ ...n, lastFiredWords: humanWords(n) })))
+    setAiEnabled(true)
+  }, [hostedAvailable, modelConfigs.length])
 
   // ---- Tier-3: persistent context highlight --------------------------------
   // Painted from the frozen snapshot (bubble open or session running), rebuilt
@@ -1864,7 +1889,8 @@ function CanvasSpace({
   // Keep the two category assignments current so a mid-session model switch is
   // honored by the engine deps (which read these refs live).
   useEffect(() => {
-    const toAssign = (id: string): CategoryAssignment => {
+    const toAssign = (id: string): CategoryAssignment | undefined => {
+      if (!id) return undefined // empty = hosted DeepSeek (when signed in) / Groq fallback
       const cfg = modelConfigAt(modelConfigs, id)
       return {
         runtime: cfg.runtime,
@@ -2228,8 +2254,12 @@ function CanvasSpace({
               role="switch"
               aria-checked={aiEnabled}
               aria-label={tr('AI co-creation mode', 'AI 共创模式')}
-              title={modelConfigs.length === 0 ? tr('Configure a model in Settings first', '请先在设置中配置模型') : undefined}
-              disabled={modelConfigs.length === 0}
+              title={
+                !aiReady
+                  ? tr('Sign in for hosted DeepSeek, or configure a model in Settings', '请登录使用托管 DeepSeek，或在设置中配置模型')
+                  : undefined
+              }
+              disabled={!aiReady}
               onClick={toggleAi}
             />
             <button
@@ -3186,6 +3216,7 @@ export function App() {
                 onSignIn={() => setShowAuth(true)}
                 sttBlocked={backend.enabled && !backend.user}
                 relayAvailable={relayAvailable}
+                hostedAvailable={!!backend.user}
               />
             </div>
           </section>
