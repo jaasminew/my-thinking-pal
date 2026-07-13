@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { useLocale } from './locale'
 
 // One node in the sidebar nav tree: a project (folder that holds idea spaces)
 // or an idea space (an infinite canvas). Persisted as plain JSON.
@@ -77,6 +78,7 @@ export function Sidebar({
   onOpenCanvasMemory?: (spaceId: string) => void
   footer?: ReactNode
 }) {
+  const { tr } = useLocale()
   // Highlights the project row (or the root drop zone) currently under a
   // dragged canvas, and drives the cursor-following "Move into ..." tooltip.
   const [dragOverId, setDragOverId] = useState<string | null>(null)
@@ -108,7 +110,7 @@ export function Sidebar({
           e.dataTransfer.dropEffect = 'move'
           setDragOverId(n.id)
           setDragOverRoot(false)
-          setTooltip({ x: e.clientX, y: e.clientY, text: `Move into "${n.name}"` })
+          setTooltip({ x: e.clientX, y: e.clientY, text: tr(`Move into "${n.name}"`, `移至“${n.name}”`) })
         }}
         onDragEnter={(e) => {
           if (n.kind !== 'project') return
@@ -136,7 +138,7 @@ export function Sidebar({
           e.stopPropagation()
           onContextMenu(n, e.clientX, e.clientY)
         }}
-        title="Double-click to rename"
+        title={tr('Double-click to rename', '双击重命名')}
       >
         {n.kind === 'project' ? FolderIcon : CanvasIcon}
         {renamingId === n.id ? (
@@ -161,8 +163,8 @@ export function Sidebar({
         {((n.kind === 'project' && onOpenProjectMemory) || (n.kind === 'space' && onOpenCanvasMemory)) && renamingId !== n.id && (
           <button
             className="row-tool"
-            title={`Memory — ${n.name}`}
-            aria-label={`Open memory for ${n.name}`}
+            title={tr(`Memory — ${n.name}`, `记忆 — ${n.name}`)}
+            aria-label={tr(`Open memory for ${n.name}`, `打开 ${n.name} 的记忆库`)}
             onClick={(e) => {
               e.stopPropagation()
               if (n.kind === 'project') onOpenProjectMemory?.(n.id)
@@ -188,17 +190,17 @@ export function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
       <div className="side-toggle-row">
-        <button className="side-toggle" onClick={onToggle} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+        <button className="side-toggle" onClick={onToggle} title={collapsed ? tr('Expand sidebar', '展开侧边栏') : tr('Collapse sidebar', '收起侧边栏')}>
           {PanelToggleIcon}
         </button>
       </div>
-      <button className="side-btn" onClick={onNewProject} title="New Project">
+      <button className="side-btn" onClick={onNewProject} title={tr('New Project', '新建项目')}>
         {FolderPlusIcon}
-        {!collapsed && <span>New Project</span>}
+        {!collapsed && <span>{tr('New Project', '新建项目')}</span>}
       </button>
-      <button className="side-btn" onClick={onNewIdeaSpace} title="New Idea Space">
+      <button className="side-btn" onClick={onNewIdeaSpace} title={tr('New Idea Space', '新建灵感空间')}>
         {CanvasPlusIcon}
-        {!collapsed && <span>New Idea Space</span>}
+        {!collapsed && <span>{tr('New Idea Space', '新建灵感空间')}</span>}
       </button>
       {!collapsed && (
         <div
@@ -208,7 +210,7 @@ export function Sidebar({
             e.dataTransfer.dropEffect = 'move'
             setDragOverId(null)
             setDragOverRoot(true)
-            setTooltip({ x: e.clientX, y: e.clientY, text: 'Move to top level' })
+            setTooltip({ x: e.clientX, y: e.clientY, text: tr('Move to top level', '移至顶层') })
           }}
           onDragLeave={() => setDragOverRoot(false)}
           onDrop={(e) => {

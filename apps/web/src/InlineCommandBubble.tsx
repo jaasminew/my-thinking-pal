@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SelectionSnapshot } from './command-session'
 import { isImeEvent } from './ime'
+import { useLocale } from './locale'
 
 // Floating AI command input, anchored just below the frozen selection rect.
 // Viewport-space (position: fixed) — it lives OUTSIDE the scaled canvas layer,
@@ -17,6 +18,7 @@ export function InlineCommandBubble({
   onSubmit: (command: string) => void
   onDismiss: () => void
 }) {
+  const { tr } = useLocale()
   const [value, setValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -53,7 +55,7 @@ export function InlineCommandBubble({
       <input
         ref={inputRef}
         value={value}
-        placeholder="Ask AI about this…"
+        placeholder={tr('Ask AI about this…', '向 AI 提问…')}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (isImeEvent(e)) return
@@ -61,7 +63,7 @@ export function InlineCommandBubble({
           else if (e.key === 'Escape') onDismiss()
         }}
       />
-      <button className="send" title="Send" onClick={submit}>↑</button>
+      <button className="send" title={tr('Send', '发送')} onClick={submit}>↑</button>
     </div>
   )
 }
