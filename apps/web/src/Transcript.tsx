@@ -239,6 +239,12 @@ export function Transcript({
   const sharedDisplayRef = useRef<MediaStream | null>(null)
   const silenceDismissedRef = useRef(false)
   const silenceShownRef = useRef(false)
+  // Survives capture retries (mic reconnect / stall restart) so a prior
+  // tab-audio degradation is not wiped when the provider is rebuilt.
+  const tabDegradedRef = useRef<CaptureIssue | null>(null)
+  // Capture cleanup publishes its STT stop promise here so the recording-session
+  // cleanup can await the final flush before SignalEngine.stop().
+  const sttStoppingRef = useRef<Promise<void> | null>(null)
 
   useEffect(() => {
     if (sttBlocked) {
@@ -300,46 +306,63 @@ export function Transcript({
 
   // The transcript engine follows the user's overall recording session. Capture
   // retries below replace only the provider/stream, preserving engine content.
+  // sttBlocked is intentionally NOT a dependency: signing out mid-session must
+  // leave the engine running until the user can press stop (button stays enabled
+  // while recording). Capture below bails out when blocked.
   useEffect(() => {
     if (!recording) return
-    if (sttBlocked) {
-      setCaptureState('error')
-      setCaptureIssue('signed-out')
-      return
-    }
     setEverRecorded(true)
     silenceDismissedRef.current = false
     silenceShownRef.current = false
+    tabDegradedRef.current = null
     engineRef.current?.resetCapture()
     setEditing(null)
     setErr('')
     engineRef.current?.start()
     return () => {
-      void engineRef.current?.stop()
+      const pendingStt = sttStoppingRef.current
+      void (async () => {
+        if (pendingStt) {
+          try { await pendingStt } catch { /* provider already failed */ }
+        }
+        await engineRef.current?.stop()
+      })()
       setCaptureState('idle')
       setCaptureIssue(null)
+      tabDegradedRef.current = null
       micReconnectDeadlineRef.current = null
     }
-  }, [recording, sttBlocked])
+  }, [recording])
 
   // Provider + browser audio supervisor. Bumping captureAttempt is a retry: it
   // tears down only this capture pass, never the transcript accumulated so far.
   useEffect(() => {
-    if (!recording) return
+    if (!recording || sttBlocked) return
     let cancelled = false
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let stream: MediaStream | undefined
-    let degradedIssue: CaptureIssue | null = null
     let wasLive = false
     const sharedDisplay = sharedDisplayRef.current
     sharedDisplayRef.current = null
+    // A fresh tab-share attempt clears prior degradation; automatic retries
+    // (mic reconnect / stall) keep the last tab issue so Live doesn't lie.
+    if (sharedDisplay) tabDegradedRef.current = null
+    let degradedIssue: CaptureIssue | null = tabDegradedRef.current
     suppressAudioEventsRef.current = false
     silenceShownRef.current = false
-    setCaptureState('connecting')
-    setCaptureIssue(null)
+    setCaptureState(degradedIssue ? 'degraded' : 'connecting')
+    if (degradedIssue) setCaptureIssue(degradedIssue)
+    else setCaptureIssue(null)
     setCaptureDetail('')
     lastTranscriptAtRef.current = Date.now()
     lastAudibleAtRef.current = Date.now()
+
+    const rememberTabDegraded = (issue: CaptureIssue) => {
+      degradedIssue = issue
+      tabDegradedRef.current = issue
+      setCaptureState('degraded')
+      setCaptureIssue(issue)
+    }
 
     void (async () => {
       try {
@@ -348,19 +371,15 @@ export function Transcript({
           onEvent: (event) => {
             if (cancelled || suppressAudioEventsRef.current) return
             if (event.type === 'mic-ended') micReconnectRef.current()
-            if (event.type === 'tab-ended') {
-              degradedIssue = 'tab-ended'
-              setCaptureState('degraded')
-              setCaptureIssue('tab-ended')
-            }
+            if (event.type === 'tab-ended') rememberTabDegraded('tab-ended')
             if (event.type === 'degraded') {
-              degradedIssue = event.reason === 'tab-cancelled'
-                ? 'tab-cancelled'
-                : event.reason === 'tab-audio-unsupported'
-                  ? 'tab-unsupported'
-                  : 'tab-missing'
-              setCaptureState('degraded')
-              setCaptureIssue(degradedIssue)
+              rememberTabDegraded(
+                event.reason === 'tab-cancelled'
+                  ? 'tab-cancelled'
+                  : event.reason === 'tab-audio-unsupported'
+                    ? 'tab-unsupported'
+                    : 'tab-missing'
+              )
             }
           }
         })
@@ -415,6 +434,7 @@ export function Transcript({
           wasLive = true
           micReconnectDeadlineRef.current = null
           setCaptureState(degradedIssue ? 'degraded' : 'live')
+          if (degradedIssue) setCaptureIssue(degradedIssue)
         } else setCaptureState(next.state)
       })
       stt.onAudioLevel?.((level) => {
@@ -439,7 +459,10 @@ export function Transcript({
       })
       stt.onTranscript((ev) => {
         lastTranscriptAtRef.current = Date.now()
-        setCaptureIssue((current) => current === 'stall' ? null : current)
+        setCaptureIssue((current) => {
+          if (current === 'stall') return degradedIssue
+          return current
+        })
         if (ev.isFinal) {
           engineRef.current?.pushFinal(ev.text, ev.speaker)
           if (ev.text.trim()) onRawFinalRef.current?.(ev.text.trim(), Date.now())
@@ -476,11 +499,14 @@ export function Transcript({
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
       const active = sttRef.current
-      const stopping = active?.stop()
+      const stopping = Promise.resolve(active?.stop()).then(() => undefined)
+      sttStoppingRef.current = stopping
       if (stream) stopAudioStream(stream)
       if (activeStreamRef.current === stream) activeStreamRef.current = null
       if (sttRef.current === active) sttRef.current = null
-      void Promise.resolve(stopping)
+      void stopping.finally(() => {
+        if (sttStoppingRef.current === stopping) sttStoppingRef.current = null
+      })
     }
   }, [recording, captureAttempt, makeStt, sttBlocked])
 
@@ -870,9 +896,15 @@ export function Transcript({
         ))}
         <button
           className={`record ${captureState === 'live' || captureState === 'degraded' ? 'on' : ''} ${captureState}`}
-          title={sttBlocked ? 'Sign in to enable transcription' : recording ? `${stateLabel[captureState]} — stop recording` : 'Start recording'}
+          title={
+            recording
+              ? `${stateLabel[captureState]} — stop recording`
+              : sttBlocked
+                ? 'Sign in to enable transcription'
+                : 'Start recording'
+          }
           onClick={onRecordClick}
-          disabled={sttBlocked}
+          disabled={sttBlocked && !recording}
         >
           {collapsed && <span className="record-label">Record</span>}
           {captureState === 'live' || captureState === 'degraded'
