@@ -15,20 +15,33 @@ import {
 } from '../../packages/core/llm'
 import { resolveClientProvider } from './provider-config'
 import { isProviderUsable } from '../../packages/core/llm'
+import type { ModelCategory } from '../../packages/core/llm/observer-types'
+import { resolveCategoryProvider, type CategoryAssignment } from './model-roles'
 
 // The transcript pipeline (cleanup / summary) now runs CLIENT-DIRECT: these
 // functions resolve the user's provider + key and call the OpenAI-compatible
-// endpoint straight from the browser (docs module 08). The request/result
-// contracts are unchanged, so signal-engine.ts and the app need no edits.
-//
-// `deps` is a test seam only: the app calls these with a single argument and the
-// provider/fetch are resolved from settings.
+// endpoint straight from the browser (docs module 08). When signed in without
+// a personal key, resolveCategoryProvider returns the hosted DeepSeek proxy.
+
 export interface ClientDeps {
   provider?: LlmProvider
   fetchImpl?: FetchLike
+  /** Prefer category ladder (hosted / BYOK / fallback) over raw provider id. */
+  category?: ModelCategory
+  assignment?: CategoryAssignment
 }
 
-async function pickProvider(deps: ClientDeps | undefined, providerId: string, model?: string): Promise<LlmProvider> {
+async function pickProvider(
+  deps: ClientDeps | undefined,
+  providerId: string,
+  model?: string
+): Promise<LlmProvider> {
+  if (deps?.provider) return deps.provider
+  if (deps?.category) {
+    const res = await resolveCategoryProvider(deps.category, deps.assignment)
+    if (res.provider) return res.provider
+    throw new Error(res.error || `No usable ${deps.category} model`)
+  }
   return deps?.provider ?? (await resolveClientProvider(providerId, model))
 }
 

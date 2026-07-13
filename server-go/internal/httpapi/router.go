@@ -12,6 +12,7 @@ import (
 
 	"mythinkingpal/server/internal/auth"
 	"mythinkingpal/server/internal/documents"
+	"mythinkingpal/server/internal/llm"
 	"mythinkingpal/server/internal/projectmemory"
 	"mythinkingpal/server/internal/search"
 	"mythinkingpal/server/internal/stt"
@@ -27,6 +28,7 @@ type Deps struct {
 	Sync          *syncsvc.Handler
 	STT           *stt.Handler
 	Search        *search.Handler
+	LLM           *llm.Handler
 	CORSOrigin    string
 }
 
@@ -72,6 +74,11 @@ func New(d Deps) http.Handler {
 		mux.Handle("GET /url-meta", d.Auth.RequireAuth(http.HandlerFunc(d.Search.URLMeta)))
 	}
 
+	// Hosted LLM proxy — DeepSeek Flash/Pro by role (auth-gated).
+	if d.LLM != nil {
+		mux.Handle("POST /llm/chat/completions", d.Auth.RequireAuth(http.HandlerFunc(d.LLM.ChatCompletions)))
+	}
+
 	// Project Memory — knowledge-base files + per-scope AI instructions.
 	if d.ProjectMemory != nil {
 		pm := d.ProjectMemory
@@ -102,7 +109,7 @@ func cors(origin string, next http.Handler) http.Handler {
 		h.Set("Access-Control-Allow-Origin", allow)
 		h.Set("Vary", "Origin")
 		h.Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		h.Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		h.Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Thinking-Pal-Role")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

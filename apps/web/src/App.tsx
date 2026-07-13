@@ -37,13 +37,13 @@ import { createMemoryClient } from '../../../services/project-memory/client'
 import { extractTextBrowser } from '../../../services/project-memory/ingestion'
 import { scopeDisplayName } from '../../../services/project-memory/scope'
 import type { MemoryBucket, MemoryScopeSection, ProjectMemoryScope } from '../../../services/project-memory/types'
-import { defaultStageACall } from '../../../services/project-memory/retrieve'
 import { runLocalPrompt, type LocalRuntime } from '../../../services/llm/local-runtime'
 import { ObserverEngine, DEFAULT_COOLDOWN_MS, DEFAULT_MAX_RECENT_TOPICS } from './observer-engine'
 import { makeObserverLog } from './observer-log'
 import { placeObserverNote, DEFAULT_NOTE_W, DEFAULT_NOTE_H, type PlacedRect } from './observer-placement'
 import { requestObserverEvaluate, requestObserverContribute } from '../../../services/llm/observer'
 import { configureWebSearch, fetchUrlMeta } from '../../../services/llm/web-search'
+import { configureLlmTransport } from '../../../services/llm/llm-transport'
 import { resolveCategoryProvider, type CategoryAssignment } from '../../../services/llm/model-roles'
 import type {
   ObserverCanvasContext,
@@ -82,7 +82,6 @@ function logObserverRecord(rec: ObserverLogRecord): void {
   }
 }
 
-const OPEN_PROVIDER: CocreateProvider = 'open'
 const DEFAULT_MODEL_CONFIGS: AiModelConfig[] = []
 const LEGACY_PLACEHOLDER_MODEL_IDS = new Set([
   'groq-llama-3-3-70b',
@@ -833,30 +832,33 @@ function CanvasSpace({
       }
   }, [notes, patchNote])
 
-  // Co-creation and commands both run on the Thinker category (contract §5).
-  const providerArgs = useCallback(() => {
-    const cfg = modelConfigAt(modelConfigs, modelSelections.thinker)
-    if (cfg.runtime === 'api' || cfg.runtime === 'ollama') {
-      return { provider: OPEN_PROVIDER, openSub: cfg.providerId || 'groq', model: cfg.model || undefined, webSearch: true }
-    }
-    return { provider: cfg.runtime, model: cfg.model || undefined, runtimeCommand: cfg.command || undefined, webSearch: true }
-  }, [modelConfigs, modelSelections.thinker])
-
   // Project Memory Stage-A selection runs on the Listener category (contract §5):
   // a fast catalog-metadata pass, decoupled from the Thinker that writes the note.
   const memorySelectionCall = useCallback(() => {
     const cfg = modelConfigAt(modelConfigs, modelSelections.listener)
-    if (cfg.runtime === 'api' || cfg.runtime === 'ollama') {
-      return defaultStageACall(cfg.providerId || (cfg.runtime === 'ollama' ? 'ollama' : 'groq'), cfg.model || undefined)
+    if (cfg.runtime === 'codex' || cfg.runtime === 'claude-code' || cfg.runtime === 'cursor') {
+      return (system: string, user: string) =>
+        runLocalPrompt({
+          runtime: cfg.runtime as LocalRuntime,
+          command: cfg.command || undefined,
+          model: cfg.model || undefined,
+          system,
+          userText: user
+        })
     }
-    return (system: string, user: string) =>
-      runLocalPrompt({
-        runtime: cfg.runtime as LocalRuntime,
-        command: cfg.command || undefined,
-        model: cfg.model || undefined,
-        system,
-        userText: user
-      })
+    const assignment: CategoryAssignment = {
+      runtime: cfg.runtime,
+      providerId: cfg.providerId,
+      model: cfg.model || undefined,
+      apiKey: cfg.apiKey || undefined
+    }
+    return async (system: string, user: string) => {
+      const res = await resolveCategoryProvider('listener', assignment)
+      if (!res.provider) throw new Error(res.error || 'No usable Listener model')
+      const { chatCompletion } = await import('../../../packages/core/llm')
+      const r = await chatCompletion(res.provider, { system, userText: user, temperature: 0, maxTokens: 400 })
+      return r.content
+    }
   }, [modelConfigs, modelSelections.listener])
 
   // The SignalEngine (extract + organize) runs on the Listener category.
@@ -1123,6 +1125,29 @@ function CanvasSpace({
         allowWebSearch: isCommand
       })
 
+      const thinkerRes = await resolveCategoryProvider('thinker', thinkerAssignRef.current)
+      if (thinkerRes.error && !thinkerRes.provider && !thinkerRes.runtime) {
+        patchNote(noteId, (n) => ({ ...n, aiRunning: false }))
+        firesRef.current.delete(fireId)
+        scheduler.push({ kind: 'text', chunk: `⚠ ${thinkerRes.error}` })
+        scheduler.push({ kind: 'done' })
+        return
+      }
+
+      const thinkerReq = thinkerRes.runtime
+        ? {
+            provider: thinkerRes.runtime as CocreateProvider,
+            model: thinkerRes.model,
+            runtimeCommand: thinkerRes.command,
+            webSearch: true as const
+          }
+        : {
+            provider: 'open' as const,
+            openSub: thinkerRes.provider!.id === 'hosted-deepseek' ? 'deepseek' : thinkerRes.provider!.id,
+            model: thinkerRes.provider!.model,
+            webSearch: true as const
+          }
+
       const result = await requestCocreate(
         {
           projectInstructions: isCommand ? pm.instructions.aiCommand : pm.instructions.coCreation,
@@ -1138,7 +1163,7 @@ function CanvasSpace({
           existingIdeas,
           transcriptWindow,
           signalWindow,
-          ...providerArgs()
+          ...thinkerReq
         },
         {
           onDiagnosis: (d) => scheduler.push({ kind: 'diagnosis', text: d }),
@@ -1162,7 +1187,8 @@ function CanvasSpace({
             scheduler.push({ kind: 'image', src: img.src, sourceUrl: img.sourceUrl, title: img.title, line: img.line })
           }
         },
-        controller.signal
+        controller.signal,
+        { provider: thinkerRes.provider }
       )
 
       firesRef.current.delete(fireId)
@@ -1207,7 +1233,7 @@ function CanvasSpace({
       // queue drains — don't dispatch end here.
       scheduler.finish()
     },
-    [patchNote, providerArgs, memorySelectionCall, transcriptSlice, anchorForNote]
+    [patchNote, memorySelectionCall, transcriptSlice, anchorForNote]
   )
 
   // ---- serialized reveal gate: when an activity becomes current, start
@@ -1378,11 +1404,32 @@ function CanvasSpace({
       allowWebSearch: true
     })
 
+    const thinkerRes = await resolveCategoryProvider('thinker', thinkerAssignRef.current)
+    if (thinkerRes.error && !thinkerRes.provider && !thinkerRes.runtime) {
+      patchAsst((m) => ({ ...m, text: `⚠ ${thinkerRes.error}`, streaming: false }))
+      setChatStreaming(false)
+      firesRef.current.delete(fireId)
+      return
+    }
+    const thinkerReq = thinkerRes.runtime
+      ? {
+          provider: thinkerRes.runtime as CocreateProvider,
+          model: thinkerRes.model,
+          runtimeCommand: thinkerRes.command,
+          webSearch: true as const
+        }
+      : {
+          provider: 'open' as const,
+          openSub: thinkerRes.provider!.id === 'hosted-deepseek' ? 'deepseek' : thinkerRes.provider!.id,
+          model: thinkerRes.provider!.model,
+          webSearch: true as const
+        }
+
     const result = await requestCommandChat(
       {
         projectInstructions: pm.instructions.aiCommand,
         projectMemory: memory ?? undefined,
-        ...providerArgs(),
+        ...thinkerReq,
         messages: history.map((m) => ({ role: m.role, text: m.text })),
         context: buildTurnContext(note, cur.source, transcriptWindow)
       },
@@ -1392,7 +1439,8 @@ function CanvasSpace({
         onAction: (action) =>
           patchAsst((m) => ({ ...m, actions: [...(m.actions || []), { id: uid('a'), action }] }))
       },
-      controller.signal
+      controller.signal,
+      { provider: thinkerRes.provider }
     )
 
     firesRef.current.delete(fireId)
@@ -1403,7 +1451,7 @@ function CanvasSpace({
       pending: false,
       text: result.error ? (m.text ? `${m.text}\n⚠ ${result.error}` : `⚠ ${result.error}`) : m.text
     }))
-  }, [providerArgs, memorySelectionCall, transcriptSlice])
+  }, [memorySelectionCall, transcriptSlice])
 
   // Open a session from the bubble (snapshot) or the bottom bar (null source),
   // replacing any previous one — its stream is aborted, its highlight replaced.
@@ -1813,7 +1861,13 @@ function CanvasSpace({
   useEffect(() => {
     const toAssign = (id: string): CategoryAssignment => {
       const cfg = modelConfigAt(modelConfigs, id)
-      return { runtime: cfg.runtime, providerId: cfg.providerId, model: cfg.model || undefined, command: cfg.command || undefined }
+      return {
+        runtime: cfg.runtime,
+        providerId: cfg.providerId,
+        model: cfg.model || undefined,
+        apiKey: cfg.apiKey || undefined,
+        command: cfg.command || undefined
+      }
     }
     listenerAssignRef.current = toAssign(modelSelections.listener)
     thinkerAssignRef.current = toAssign(modelSelections.thinker)
@@ -2139,6 +2193,7 @@ function CanvasSpace({
         onSignals={onSignals}
         organizeProvider={summaryModel.providerId}
         summaryModel={summaryModel}
+        listenerAssignment={() => listenerAssignRef.current}
         storageSuffix={storageSuffix}
         highlights={highlights}
         onHoverNote={setHoveredNoteId}
@@ -2453,16 +2508,23 @@ export function App() {
   useEffect(() => {
     if (!backend.enabled) {
       configureWebSearch({ mode: 'local' })
+      configureLlmTransport({ mode: 'client' })
       return
     }
     if (!backend.user) {
       configureWebSearch({ mode: 'none' })
+      configureLlmTransport({ mode: 'client' })
       return
     }
     configureWebSearch({
       mode: 'auth',
       search: (q, n) => backend.search(q, n),
       urlMeta: (u) => backend.urlMeta(u)
+    })
+    configureLlmTransport({
+      mode: 'hosted',
+      getToken: () => sharedTokenStore().access,
+      apiBase: apiBaseUrl()
     })
   }, [backend.enabled, backend.user, backend.search, backend.urlMeta])
 
@@ -3129,6 +3191,7 @@ export function App() {
         <LlmSettingsPanel
           configs={modelConfigs}
           selections={modelSelections}
+          hostedAvailable={!!backend.user}
           onSave={(nextSelections, nextConfigs) => {
             const normalizedConfigs = normalizeModelConfigs(nextConfigs)
             setModelConfigs(normalizedConfigs)

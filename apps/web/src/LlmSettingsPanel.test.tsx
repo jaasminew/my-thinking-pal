@@ -18,4 +18,20 @@ describe('LlmSettingsPanel', () => {
     expect(screen.queryByText('Groq · GPT-OSS 120B')).toBeNull()
     expect(screen.getAllByRole('button', { name: '+ New Model' })).toHaveLength(2)
   })
+
+  it('shows hosted DeepSeek defaults when signed in with empty selection', () => {
+    render(
+      <LlmSettingsPanel
+        configs={[]}
+        selections={{ listener: '', thinker: '' }}
+        hostedAvailable
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getByRole('option', { name: 'Hosted DeepSeek Flash' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Hosted DeepSeek Pro' })).toBeTruthy()
+    expect(screen.getByText(/empty selection uses hosted DeepSeek/i)).toBeTruthy()
+  })
 })

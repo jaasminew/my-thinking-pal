@@ -211,6 +211,9 @@ body { background: var(--bg); color: var(--ink); }
   border-radius: 8px; font-size: 12px; line-height: 1.4; margin: 0; padding: 8px 10px;
   white-space: pre-wrap;
 }
+.llm-field-hint {
+  display: block; color: #888; font-size: 11px; line-height: 1.35; margin-top: 4px;
+}
 .llm-setup-error {
   background: #fff8f7; border: 1px solid #f0c9c3; border-radius: 8px;
   line-height: 1.4; padding: 8px 10px; white-space: pre-wrap;

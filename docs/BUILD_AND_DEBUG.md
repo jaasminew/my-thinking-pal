@@ -2,7 +2,7 @@
 
 面向本仓库的三层结构:**Web 前端(`apps/web`)** + **可选 Go 后端(`server-go`)** + **可选桌面壳(`apps/desktop`)**。共享客户端库在 `packages/core`(CRDT/LLM/设置)与 `services/*`(api/sync/stt/llm)。
 
-> 核心心智:**声音 → 文字,走后端;文字 → 更多文字(agent/润色),走前端。** LLM 前端直连 MaaS,STT 与跨设备同步走 Go 后端(登录后)。不配后端时一切退化为「本地-only」,零登录、IndexedDB 持久化、浏览器直连 Soniox。
+> 核心心智:**声音 → 文字,走后端;文字 → 更多文字(agent/润色),登录后默认可走托管 LLM,本地-only / BYOK 仍前端直连。** LLM 在本地-only 或用户自配 key 时直连 MaaS;登录且无个人 key 时走 Go `POST /llm/chat/completions`(DeepSeek Flash/Pro)。STT、搜索与跨设备同步走 Go 后端(登录后)。不配后端时一切退化为「本地-only」,零登录、IndexedDB 持久化、浏览器直连 Soniox。
 
 ---
 
@@ -53,6 +53,7 @@ VITE_API_URL=http://127.0.0.1:8080 npm run dev
 - 第二台设备只需登录同一账号，侧栏树与画布内容会自动对齐；无需 Documents 面板或「Open here」。
 - 登录后 Transcript 自动改用 `BackendSTT` 经后端 `/stt` 转发(key 只在后端)。
 - 登录后 Web 搜索 / og:image 走 Go `GET /search`、`GET /url-meta`（`RequireAuth`，后端持 `TAVILY_API_KEY`）；未登录时搜索降级为空。
+- 登录后 LLM 默认走 Go `POST /llm/chat/completions`（`RequireAuth`，后端持 `DEEPSEEK_API_KEY`；Listener=Flash，Thinker=Pro）。设置里填了个人 API key 则仍客户端直连。
 - 真机 STT 用 `STT_PROVIDER=soniox` 并在后端设 `SONIOX_API_KEY`;`mock` 用于无 key 联调。
 
 ### C. 桌面壳(Electron)
@@ -90,13 +91,13 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 
 | 变量 | 作用 |
 | --- | --- |
-| `GROQ_API_KEY` / `GROQ_MODEL` | 默认 LLM(共创 + 转写清洗/摘要);dev 经编译期注入,prod 用 App 内设置 |
+| `GROQ_API_KEY` / `GROQ_MODEL` | 本地-only / BYOK 回退 LLM;dev 经编译期注入,prod 可用 App 内设置 |
 | `CEREBRAS_API_KEY` / `CEREBRAS_MODEL` | 可选 LLM provider |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | 本地 Ollama(无 key、无代理) |
 | `SONIOX_API_KEY` / `SONIOX_MODEL` | 浏览器直连 STT(本地模式) |
 | `TAVILY_API_KEY` | 本地-only：Vite `/api/search`；生产 / 已登录：Go `/search` |
-| `HTTPS_PROXY` | 仅 hosted API(Groq/Cerebras/Tavily)在 CN 需要 |
-| `VITE_API_URL` | 指向 Go 后端以开启登录/同步/后端 STT;**留空 = 本地-only** |
+| `HTTPS_PROXY` | 仅 hosted API(Groq/Cerebras/Tavily/DeepSeek)在 CN 需要 |
+| `VITE_API_URL` | 指向 Go 后端以开启登录/同步/后端 STT/搜索/托管 LLM;**留空 = 本地-only** |
 
 > 生产构建中 `__DEV_LLM_KEYS__` 被替换为 `null` 并 dead-code 消除——**不会**把 `.env` 的 key 打进产物。
 
@@ -114,6 +115,8 @@ Vitest 用 `node` 环境;个别触碰 DOM 的用例用文件顶部 `// @vitest-e
 | `SONIOX_API_KEY` / `SONIOX_MODEL` | — / `stt-rt-v5` | Soniox 上游 |
 | `TENCENT_APPID` / `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY` | — | 腾讯云 ASR(占位) |
 | `TAVILY_API_KEY` | — | 登录态 `/search` Tavily 转发 |
+| `DEEPSEEK_API_KEY` | — | 登录态 `/llm` DeepSeek 转发 |
+| `DEEPSEEK_LISTENER_MODEL` / `DEEPSEEK_THINKER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 角色→模型 |
 | `CORS_ORIGIN` | `*` | 允许的 Web 源 |
 
 ---

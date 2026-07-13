@@ -4,15 +4,18 @@
 export type ProviderKind = 'openai-compatible' | 'anthropic'
 
 // A single user-configured MaaS endpoint. Per docs module 08, the browser holds
-// the key and talks to the provider directly — nothing is proxied through our
-// backend for "text -> text" work.
+// the key and talks to the provider directly for local-only / BYOK. When signed
+// into the Go backend without a personal key, a hosted DeepSeek proxy is used
+// instead (apiKey = JWT, baseUrl = `${api}/llm`, requestHeaders carry the role).
 export interface LlmProvider {
-  id: string // 'groq' | 'openai' | 'openrouter' | 'cerebras' | 'ollama' | 'custom'
+  id: string // 'groq' | 'openai' | 'openrouter' | 'cerebras' | 'ollama' | 'hosted-deepseek' | 'custom'
   label: string
   baseUrl: string // e.g. https://api.groq.com/openai/v1
-  apiKey: string // user-supplied (Ollama may be empty)
+  apiKey: string // user-supplied, or JWT when hosted
   model: string
   kind: ProviderKind
+  /** Extra headers merged into chat/stream requests (e.g. X-Thinking-Pal-Role). */
+  requestHeaders?: Record<string, string>
 }
 
 // A URL reference surfaced as an inspiration card. Kept minimal and identical in

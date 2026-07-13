@@ -15,7 +15,7 @@ Thinking Pal 是实时思考工作台，不是会议纪要工具。核心约束�
 | 维度 | 原始现状 | 进度 |
 | --- | --- | --- |
 | 后端 | `server/api-plugin.ts` 是 **Vite dev 中间件** | ✅ **已瘦身**为最小 relay（仅 `/api/search`、`/api/url-meta`）；dev key 握手端点 `/api/llm-config`、`/api/soniox-key` **已下线**，改为编译期 dev 注入（`services/dev-keys.ts`）；LLM 逻辑全迁至 `packages/core/llm`。✅ **Go 后端 `server-go/` 已起**（Auth/JWT/argon2id + documents + `/sync` 同步中继） |
-| LLM 密钥 | 握在 dev 层注册表，经 `/api/cocreate` 中转 | ✅ **前端直连 MaaS**：key 存浏览器（`localStorage`，dev 经编译期注入回退 `.env`，prod 不打进包），设置弹窗可编辑 provider/模型/key |
+| LLM 密钥 | 握在 dev 层注册表，经 `/api/cocreate` 中转 | ✅ **前端直连 MaaS**（本地-only / BYOK）：key 存浏览器；✅ **登录态托管**：无个人 key 时走 Go `POST /llm/chat/completions`（DeepSeek Flash/Pro） |
 | CLI 路线 | `server/agents.ts` spawn 本机 `claude`/`codex` | ✅ **已下线** `agents.ts`；Web 默认 Groq 直连，移除 CLI 选择器 |
 | 持久化 | 笔记只在 `App.tsx` 的 `useState`/`localStorage` | ✅ **本地优先 CRDT**（Yjs + `y-indexeddb`，`packages/core/doc`）；✅ 云端同步哑中继 `/sync` 已实现，✅ **前端已接线**：登录后每个 space 映射一个 server 文档，`BoardSync` 挂上 `board.doc`（`VITE_API_URL` 开启，未配置则纯本地） |
 | 账号 | 无 | ✅ **Go 后端已实现**（注册/登录/刷新轮换/me，argon2id + HS256 JWT）；✅ **SQLite 持久化**（`modernc.org/sqlite` 纯 Go，重启不丢，`ACCOUNT_STORE=sqlite`）；✅ **前端登录 UI 已接**（`AuthPanel` + `useBackend`，token 存浏览器，401 自动刷新） |
@@ -30,13 +30,13 @@ Thinking Pal 是实时思考工作台，不是会议纪要工具。核心约束�
 - 最小 dev 后端：`server/api-plugin.ts`、`server/search.ts`、`server/url-meta.ts`、`server/proxy.ts`（search relay 用；`agents.ts` 已删）
 - 入口构建：`index.html`、`vite.config.ts`
 
-## 1.3 决策一：LLM 前端直连 MaaS，不走后端
+## 1.3 决策一：LLM 默认前端直连；登录态可走托管代理
 
-**结论：是。但必须区分 STT 与 LLM。**
+**结论：区分本地-only / BYOK 与登录托管；仍与 STT 分开。**
 
-- **LLM 推理**（agent 核心调用 + 基于 LLM 的转写润色/翻译/断句）：前端用**用户自配 key 直连 MaaS**。
+- **LLM 推理**：本地-only 或用户在设置里填了个人 key（BYOK）→ 前端直连 MaaS；**已登录且无个人 key** → Go `POST /llm/chat/completions`（后端持 `DEEPSEEK_API_KEY`，Listener=Flash，Thinker=Pro）。
 - **原始语音转文字（STT）**：走后端转发（模块 07）。
-- 一句话：**声音 → 文字走后端；文字 → 更多文字走前端。**
+- 一句话：**声音 → 文字走后端；文字 → 更多文字：登录托管或前端直连。**
 
 理由：
 

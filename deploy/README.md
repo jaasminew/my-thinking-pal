@@ -151,8 +151,8 @@ the first deployment and at least quarterly.
 - Registration, login, refresh, and logout work.
 - A document synchronizes between two browsers over WSS.
 - Unknown documents and untrusted WebSocket Origins receive 403.
-- STT, Project Memory, authenticated Tavily search (`/search`), and URL cards
-  (`/url-meta`) work when signed in.
+- STT, Project Memory, authenticated Tavily search (`/search`), URL cards
+  (`/url-meta`), and hosted LLM (`/llm`) work when signed in.
 - Restarting the API preserves accounts and board state.
 - A deliberately unhealthy release rolls back automatically.
 - A backup can be restored on a clean test directory/server.

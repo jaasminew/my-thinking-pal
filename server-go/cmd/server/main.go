@@ -17,6 +17,7 @@ import (
 	"mythinkingpal/server/internal/httpapi"
 	"mythinkingpal/server/internal/projectmemory"
 	"mythinkingpal/server/internal/search"
+	"mythinkingpal/server/internal/llm"
 	"mythinkingpal/server/internal/storage"
 	"mythinkingpal/server/internal/storage/fsdoc"
 	"mythinkingpal/server/internal/storage/memory"
@@ -57,6 +58,12 @@ func main() {
 	syncH := syncsvc.NewHandler(docStore, account, origins...)
 	sttH := stt.NewHandler(buildUpstream(cfg), origins...)
 	searchH := search.NewHandler(search.NewTavily(cfg.TavilyAPIKey), search.NewURLMetaClient())
+	llmH := llm.NewHandler(llm.Config{
+		APIKey:        cfg.DeepSeekAPIKey,
+		BaseURL:       cfg.DeepSeekBaseURL,
+		ListenerModel: cfg.DeepSeekListener,
+		ThinkerModel:  cfg.DeepSeekThinker,
+	})
 
 	handler := httpapi.New(httpapi.Deps{
 		Auth:          authH,
@@ -66,6 +73,7 @@ func main() {
 		Sync:          syncH,
 		STT:           sttH,
 		Search:        searchH,
+		LLM:           llmH,
 		CORSOrigin:    cfg.CORSOrigin,
 	})
 
