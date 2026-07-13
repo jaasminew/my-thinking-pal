@@ -236,6 +236,26 @@ describe('ApiClient documents', () => {
   })
 })
 
+describe('ApiClient workspace', () => {
+  it('gets and puts the workspace tree', async () => {
+    const tree = [{ id: 's1', kind: 'space', name: 'A', docId: 'd1' }]
+    const { client, tokens } = makeClient(async (url, init) => {
+      if (url.endsWith('/workspace') && init?.method === 'GET') {
+        return jsonResponse(200, { tree: [], updatedAt: '' })
+      }
+      if (url.endsWith('/workspace') && init?.method === 'PUT') {
+        expect(JSON.parse(String(init?.body))).toEqual({ tree })
+        return jsonResponse(200, { tree, updatedAt: '2026-01-01T00:00:00Z' })
+      }
+      return jsonResponse(500, { error: 'unexpected ' + url })
+    })
+    tokens.save(pair)
+    expect(await client.getWorkspace()).toEqual({ tree: [], updatedAt: '' })
+    const put = await client.putWorkspace(tree as any)
+    expect(put.tree).toEqual(tree)
+  })
+})
+
 describe('wsUrl', () => {
   it('converts http->ws and appends token', () => {
     expect(wsUrl('https://api.test', '/sync/d1', 'tok en')).toBe('wss://api.test/sync/d1?token=tok%20en')

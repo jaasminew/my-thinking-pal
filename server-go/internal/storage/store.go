@@ -6,6 +6,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -36,6 +37,14 @@ type Document struct {
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Workspace is the account-scoped sidebar tree (projects + idea spaces). Tree is
+// opaque JSON owned by the client; the server only persists and returns it.
+// Document ids for sync rooms live inside space nodes (docId), not here.
+type Workspace struct {
+	Tree      json.RawMessage `json:"tree"`
+	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
 // ProjectMemoryFile is a knowledge-base file scoped by (owner, scopeKind, scopeId).
@@ -82,6 +91,10 @@ type AccountStore interface {
 	UpdateDocumentTitle(ctx context.Context, id, title string) error
 	DeleteDocument(ctx context.Context, id string) error
 	CanAccess(ctx context.Context, userID, docID string) (bool, error)
+
+	// Workspace — one LWW blob per owner (sidebar tree + embedded space.docId).
+	GetWorkspace(ctx context.Context, ownerID string) (Workspace, error) // ErrNotFound when never saved
+	PutWorkspace(ctx context.Context, ownerID string, tree json.RawMessage) (Workspace, error)
 
 	// Project Memory — dumb persistence mirroring the browser local store. All
 	// reads/writes are owner-scoped; a mismatched owner looks like "not found".

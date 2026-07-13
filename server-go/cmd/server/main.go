@@ -22,6 +22,7 @@ import (
 	"mythinkingpal/server/internal/storage/sqlite"
 	"mythinkingpal/server/internal/stt"
 	syncsvc "mythinkingpal/server/internal/sync"
+	"mythinkingpal/server/internal/workspace"
 )
 
 func main() {
@@ -49,12 +50,13 @@ func main() {
 
 	authH := auth.NewHandler(account, []byte(cfg.AccessSecret), []byte(cfg.RefreshSecret), cfg.AccessTTL, cfg.RefreshTTL)
 	docsH := documents.NewHandler(account)
+	wsH := workspace.NewHandler(account)
 	pmH := projectmemory.NewHandler(account, cfg.ProjectMemoryPath)
 	origins := websocketOrigins(cfg.CORSOrigin)
 	syncH := syncsvc.NewHandler(docStore, account, origins...)
 	sttH := stt.NewHandler(buildUpstream(cfg), origins...)
 
-	handler := httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, ProjectMemory: pmH, Sync: syncH, STT: sttH, CORSOrigin: cfg.CORSOrigin})
+	handler := httpapi.New(httpapi.Deps{Auth: authH, Documents: docsH, Workspace: wsH, ProjectMemory: pmH, Sync: syncH, STT: sttH, CORSOrigin: cfg.CORSOrigin})
 
 	srv := &http.Server{
 		Addr:              cfg.Host + ":" + cfg.Port,

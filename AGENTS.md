@@ -75,8 +75,8 @@ Active files:
 - CRDT persistence: `packages/core/doc/{schema,board}.ts`, `apps/web/src/board-persistence.ts`
 - LLM (client-direct, tested): `packages/core/llm/*`, `services/llm/{client,cocreate,command-chat,provider-config,web-search}.ts`
 - Minimal backend relay (dev): `server/api-plugin.ts`, `server/search.ts`, `server/url-meta.ts`, `server/proxy.ts`
-- Go backend: `server-go/` (auth/JWT, SQLite AccountStore, `/documents`, `/sync` CRDT relay, `/stt` proxy). Tests: `cd server-go && make test`.
-- Backend wiring (frontend, gated by `VITE_API_URL`): `services/api/*` (auth+documents client), `services/sync/board-sync.ts` (Yjs provider), `services/stt/backend.ts` (STT via `/stt`), `apps/web/src/{backend.ts,AuthPanel.tsx,DocumentsPanel.tsx}`.
+- Go backend: `server-go/` (auth/JWT, SQLite AccountStore, `/documents`, `/workspace`, `/sync` CRDT relay, `/stt` proxy). Tests: `cd server-go && make test`.
+- Backend wiring (frontend, gated by `VITE_API_URL`): `services/api/*` (auth+documents+workspace client), `services/sync/board-sync.ts` (Yjs provider), `services/stt/backend.ts` (STT via `/stt`), `apps/web/src/{backend.ts,AuthPanel.tsx}`.
 
 Tests: `npm test` (Vitest). Run it (plus `npm run build`) before handing off.
 

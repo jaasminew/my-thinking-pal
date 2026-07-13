@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient } from '../../../services/api/client'
 import { apiBaseUrl, apiEnabled, wsUrl } from '../../../services/api/config'
 import { sharedTokenStore } from '../../../services/api/tokens'
-import type { DocumentMeta, User } from '../../../services/api/types'
+import type { User, WorkspaceTreeNode } from '../../../services/api/types'
 import { loadJSON, saveJSON } from './persist'
 
 export interface SyncParams {
@@ -10,6 +10,8 @@ export interface SyncParams {
   token: string
   docId: string
 }
+
+export type { WorkspaceTreeNode }
 
 export interface Backend {
   enabled: boolean
@@ -28,25 +30,68 @@ export interface Backend {
   /** Force-refresh auth before opening non-HTTP transports such as /stt. */
   refreshAuth: () => Promise<boolean>
 
-  /** The user's server documents (loaded when signed in). */
-  documents: DocumentMeta[]
-  /** True once the document list has been fetched at least once (so callers can
-   *  avoid auto-creating duplicates on a device that already has documents). */
-  docsLoaded: boolean
-  refreshDocuments: () => Promise<void>
+  /** True once workspace has been pulled/pushed after sign-in (or local-only). */
+  workspaceReady: boolean
+  /** App calls this after finishing login-time workspace bootstrap. */
+  markWorkspaceReady: () => void
+  /** Fetch the account workspace (tree + updatedAt). */
+  getWorkspace: () => Promise<{ tree: WorkspaceTreeNode[]; updatedAt: string }>
+  /** Replace the account workspace tree (LWW); returns server updatedAt. */
+  putWorkspace: (tree: WorkspaceTreeNode[]) => Promise<{ updatedAt: string }>
   /** The server document id currently bound to a local space (or undefined). */
   docIdFor: (spaceId: string) => string | undefined
-  /** Bind a local space to a server document. adopt=true means take the doc's
-   *  content (existing/blank) rather than seeding it from this device's canvas. */
+  /** Bind a local space to a server document. adopt=true → take server content. */
   bindDoc: (spaceId: string, docId: string, adopt?: boolean) => void
+  /** Replace the whole space→doc map (e.g. after applying a server workspace tree). */
+  replaceDocMap: (map: Record<string, string>, adoptAll?: boolean) => void
   /** Whether a space adopted its doc (so the board should NOT seed from local). */
   isAdopted: (spaceId: string) => boolean
-  createDoc: (title: string) => Promise<DocumentMeta | null>
+  createDoc: (title: string) => Promise<{ id: string; title: string } | null>
   renameDoc: (docId: string, title: string) => Promise<void>
   deleteDoc: (docId: string) => Promise<void>
 }
 
 const DOCMAP_KEY = 'tp.docmap' // spaceId -> server document id
+
+/** Collect spaceId → docId from a workspace tree. */
+export function docMapFromTree(tree: WorkspaceTreeNode[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  const walk = (nodes: WorkspaceTreeNode[]) => {
+    for (const n of nodes) {
+      if (n.kind === 'space' && n.docId) out[n.id] = n.docId
+      if (n.children?.length) walk(n.children)
+    }
+  }
+  walk(tree)
+  return out
+}
+
+/** Stamp docIds from a map onto space nodes (immutable). */
+export function stampDocIds(tree: WorkspaceTreeNode[], map: Record<string, string>): WorkspaceTreeNode[] {
+  return tree.map((n) => {
+    if (n.kind === 'space') {
+      const docId = map[n.id] ?? n.docId
+      return docId ? { ...n, docId } : { ...n }
+    }
+    return {
+      ...n,
+      children: n.children ? stampDocIds(n.children, map) : n.children
+    }
+  })
+}
+
+/** List every space node (depth-first). */
+export function listSpaces(tree: WorkspaceTreeNode[]): WorkspaceTreeNode[] {
+  const out: WorkspaceTreeNode[] = []
+  const walk = (nodes: WorkspaceTreeNode[]) => {
+    for (const n of nodes) {
+      if (n.kind === 'space') out.push(n)
+      if (n.children?.length) walk(n.children)
+    }
+  }
+  walk(tree)
+  return out
+}
 
 // Central hook for backend auth + per-space document mapping. When the backend
 // isn't configured (VITE_API_URL empty) everything is inert and the app stays in
@@ -62,8 +107,8 @@ export function useBackend(): Backend {
   const [ready, setReady] = useState(!enabled)
   const [error, setError] = useState('')
   const [docMap, setDocMap] = useState<Record<string, string>>(() => loadJSON(DOCMAP_KEY, {}))
-  const [documents, setDocuments] = useState<DocumentMeta[]>([])
-  const [docsLoaded, setDocsLoaded] = useState(false)
+  const [workspaceReady, setWorkspaceReady] = useState(!enabled)
+  const [adopted, setAdopted] = useState<Record<string, boolean>>({})
   const inflight = useRef<Map<string, Promise<string | null>>>(new Map())
 
   useEffect(() => saveJSON(DOCMAP_KEY, docMap), [docMap])
@@ -81,6 +126,19 @@ export function useBackend(): Backend {
       cancelled = true
     }
   }, [client])
+
+  // Reset workspace readiness whenever the signed-in user changes.
+  useEffect(() => {
+    if (!enabled) {
+      setWorkspaceReady(true)
+      return
+    }
+    if (!user) {
+      setWorkspaceReady(true)
+      return
+    }
+    setWorkspaceReady(false)
+  }, [enabled, user?.id])
 
   const login = useCallback(
     async (email: string, password: string) => {
@@ -116,26 +174,30 @@ export function useBackend(): Backend {
     if (!client) return
     await client.logout()
     setUser(null)
-    setDocuments([])
-    setDocsLoaded(false)
-    setDocMap({}) // mapping is per-account; drop it so the next user starts clean
+    setWorkspaceReady(true)
+    setDocMap({})
+    setAdopted({})
   }, [client])
 
-  const refreshDocuments = useCallback(async () => {
-    if (!client || !user) return
-    try {
-      setDocuments(await client.listDocuments())
-    } catch {
-      /* leave the previous list on transient failures */
-    } finally {
-      setDocsLoaded(true)
+  const markWorkspaceReady = useCallback(() => setWorkspaceReady(true), [])
+
+  const getWorkspace = useCallback(async (): Promise<{ tree: WorkspaceTreeNode[]; updatedAt: string }> => {
+    if (!client || !user) return { tree: [], updatedAt: '' }
+    const ws = await client.getWorkspace()
+    return {
+      tree: Array.isArray(ws.tree) ? ws.tree : [],
+      updatedAt: ws.updatedAt || ''
     }
   }, [client, user])
 
-  // Keep the document list fresh whenever a user is present.
-  useEffect(() => {
-    if (user) void refreshDocuments()
-  }, [user, refreshDocuments])
+  const putWorkspace = useCallback(
+    async (tree: WorkspaceTreeNode[]): Promise<{ updatedAt: string }> => {
+      if (!client || !user) return { updatedAt: '' }
+      const ws = await client.putWorkspace(tree)
+      return { updatedAt: ws.updatedAt || '' }
+    },
+    [client, user]
+  )
 
   const ensureDoc = useCallback(
     async (spaceId: string, title: string): Promise<string | null> => {
@@ -185,7 +247,6 @@ export function useBackend(): Backend {
     return !!me
   }, [client])
 
-  const [adopted, setAdopted] = useState<Record<string, boolean>>({})
   const docIdFor = useCallback((spaceId: string) => docMap[spaceId], [docMap])
   const isAdopted = useCallback((spaceId: string) => !!adopted[spaceId], [adopted])
 
@@ -194,13 +255,21 @@ export function useBackend(): Backend {
     setAdopted((a) => ({ ...a, [spaceId]: adopt }))
   }, [])
 
+  const replaceDocMap = useCallback((map: Record<string, string>, adoptAll = false) => {
+    setDocMap(map)
+    if (adoptAll) {
+      const next: Record<string, boolean> = {}
+      for (const spaceId of Object.keys(map)) next[spaceId] = true
+      setAdopted(next)
+    }
+  }, [])
+
   const createDoc = useCallback(
-    async (title: string): Promise<DocumentMeta | null> => {
+    async (title: string): Promise<{ id: string; title: string } | null> => {
       if (!client || !user) return null
       try {
         const doc = await client.createDocument(title || 'Untitled')
-        setDocuments((d) => [doc, ...d])
-        return doc
+        return { id: doc.id, title: doc.title }
       } catch {
         return null
       }
@@ -212,7 +281,6 @@ export function useBackend(): Backend {
     async (docId: string, title: string) => {
       if (!client || !user) return
       await client.patchDocument(docId, title)
-      setDocuments((d) => d.map((x) => (x.id === docId ? { ...x, title } : x)))
     },
     [client, user]
   )
@@ -221,8 +289,6 @@ export function useBackend(): Backend {
     async (docId: string) => {
       if (!client || !user) return
       await client.deleteDocument(docId)
-      setDocuments((d) => d.filter((x) => x.id !== docId))
-      // Unbind any local space that pointed at the now-deleted document.
       setDocMap((m) => {
         const next: Record<string, string> = {}
         for (const [space, id] of Object.entries(m)) if (id !== docId) next[space] = id
@@ -232,10 +298,6 @@ export function useBackend(): Backend {
     [client, user]
   )
 
-  // Memoize so the returned object is a STABLE reference across renders unless
-  // its actual contents change. Consumers that (incorrectly) depend on the whole
-  // `backend` object in an effect then won't spin — see the /documents refresh
-  // loop this originally caused.
   return useMemo(
     () => ({
       enabled,
@@ -249,11 +311,13 @@ export function useBackend(): Backend {
       syncFor,
       sttUrl,
       refreshAuth,
-      documents,
-      docsLoaded,
-      refreshDocuments,
+      workspaceReady,
+      markWorkspaceReady,
+      getWorkspace,
+      putWorkspace,
       docIdFor,
       bindDoc,
+      replaceDocMap,
       isAdopted,
       createDoc,
       renameDoc,
@@ -271,11 +335,13 @@ export function useBackend(): Backend {
       syncFor,
       sttUrl,
       refreshAuth,
-      documents,
-      docsLoaded,
-      refreshDocuments,
+      workspaceReady,
+      markWorkspaceReady,
+      getWorkspace,
+      putWorkspace,
       docIdFor,
       bindDoc,
+      replaceDocMap,
       isAdopted,
       createDoc,
       renameDoc,

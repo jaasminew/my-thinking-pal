@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ type Store struct {
 	byEmail        map[string]string                      // lower(email) -> id
 	refresh        map[string]storage.RefreshToken        // tokenHash -> token
 	documents      map[string]storage.Document            // id -> document
+	workspaces     map[string]storage.Workspace           // ownerID -> workspace
 	pmFiles        map[string]storage.ProjectMemoryFile   // id -> file
 	pmTexts        map[string]pmTextEntry                 // fileID -> {text, truncated}
 	pmInstructions map[string]storage.ProjectInstructions // "owner|kind|id" -> ins
@@ -36,6 +38,7 @@ func New() *Store {
 		byEmail:        map[string]string{},
 		refresh:        map[string]storage.RefreshToken{},
 		documents:      map[string]storage.Document{},
+		workspaces:     map[string]storage.Workspace{},
 		pmFiles:        map[string]storage.ProjectMemoryFile{},
 		pmTexts:        map[string]pmTextEntry{},
 		pmInstructions: map[string]storage.ProjectInstructions{},
@@ -174,6 +177,34 @@ func (s *Store) CanAccess(_ context.Context, userID, docID string) (bool, error)
 		return false, storage.ErrNotFound
 	}
 	return d.OwnerID == userID, nil
+}
+
+func (s *Store) GetWorkspace(_ context.Context, ownerID string) (storage.Workspace, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ws, ok := s.workspaces[ownerID]
+	if !ok {
+		return storage.Workspace{}, storage.ErrNotFound
+	}
+	// Copy tree bytes so callers can't mutate the store's map value.
+	out := storage.Workspace{UpdatedAt: ws.UpdatedAt}
+	if ws.Tree != nil {
+		out.Tree = append(json.RawMessage(nil), ws.Tree...)
+	}
+	return out, nil
+}
+
+func (s *Store) PutWorkspace(_ context.Context, ownerID string, tree json.RawMessage) (storage.Workspace, error) {
+	if len(tree) == 0 {
+		tree = json.RawMessage("[]")
+	}
+	cp := append(json.RawMessage(nil), tree...)
+	ws := storage.Workspace{Tree: cp, UpdatedAt: time.Now().UTC()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workspaces[ownerID] = ws
+	out := storage.Workspace{UpdatedAt: ws.UpdatedAt, Tree: append(json.RawMessage(nil), ws.Tree...)}
+	return out, nil
 }
 
 // --- Project Memory ---

@@ -2,12 +2,14 @@ import { useState, type ReactNode } from 'react'
 import { useLocale } from './locale'
 
 // One node in the sidebar nav tree: a project (folder that holds idea spaces)
-// or an idea space (an infinite canvas). Persisted as plain JSON.
+// or an idea space (an infinite canvas). Persisted as plain JSON; when signed
+// in, space.docId is the internal /sync room id (not shown in the UI).
 export type TreeNode = {
   id: string
   kind: 'project' | 'space'
   name: string
   children?: TreeNode[]
+  docId?: string
 }
 
 // ---- stroke icons (match the light hand-drawn chrome of the mock) ----

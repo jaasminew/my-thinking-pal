@@ -49,8 +49,8 @@ STT_PROVIDER=mock ACCOUNT_STORE=sqlite ACCOUNT_DSN="file:data/accounts.db" make 
 VITE_API_URL=http://127.0.0.1:8080 npm run dev
 ```
 
-- 侧边栏出现 **Sign in**;注册/登录后每个画布可映射一个 server 文档,`BoardSync` 挂上 `/sync` 实时同步。
-- **Documents** 面板:跨设备打开/新建/重命名/删除文档;在第二台设备用「Open here」接入同一个同步房间。
+- 侧边栏出现 **Sign in**;登录后自动同步整份 Workspace：左侧树（项目 / 灵感空间）+ 每个画布的内容（`BoardSync` → `/sync`）。
+- 第二台设备只需登录同一账号，侧栏树与画布内容会自动对齐；无需 Documents 面板或「Open here」。
 - 登录后 Transcript 自动改用 `BackendSTT` 经后端 `/stt` 转发(key 只在后端)。
 - 真机 STT 用 `STT_PROVIDER=soniox` 并在后端设 `SONIOX_API_KEY`;`mock` 用于无 key 联调。
 
@@ -141,7 +141,7 @@ npm run build:desktop   # 生产桌面安装包 → apps/desktop/release/
 - **CORS**:客户端直连 LLM / 访问后端时,后端 `CORS_ORIGIN` 需允许前端源(dev 用 `*`)。
 - **WebSocket `/sync`、`/stt`**:后端已让日志中间件 `statusRecorder` 实现 `Hijack()`,否则升级会 501。
 - **sqlite DSN**:`modernc.org/sqlite` 对 DSN 参数敏感;后端已在 `Open` 里净化 DSN、显式跑 PRAGMA(含 WAL)。
-- **跨设备同步没接上**:每台设备 `docMap` 存在各自浏览器 localStorage。第二台设备要用 **Documents → Open here** 绑定到已有文档,才会进同一 `/sync` 房间;新账号(零文档)才会自动建档,避免重复空档。
+- **跨设备同步没接上**:登录后应自动 `GET /workspace` 拉侧栏树，并为每个 space 的 `docId` 挂上 `/sync`。若第二台设备仍是空树，检查是否已登录同一账号、后端 `GET /workspace` 是否返回非空 tree，以及浏览器是否拦了 WebSocket。
 - **STT 无 key 报错**:本地模式需 `.env` 的 `SONIOX_API_KEY`;或登录用后端 `/stt`(`STT_PROVIDER=mock` 可无 key 联调)。
 - **构建前自查**:改动交付前跑 `npm run build` + `npm test`(后端另跑 `make test`)。
 
@@ -151,7 +151,7 @@ npm run build:desktop   # 生产桌面安装包 → apps/desktop/release/
 apps/web/          React renderer(Vite root 仍是仓库根,入口 apps/web/src/main.tsx)
 apps/desktop/      Electron 壳(main.cjs / preload.cjs / electron-builder.yml)
 packages/core/     共享:CRDT doc(schema/board)、LLM 解析、设置
-services/          浏览器客户端库:api(auth/documents)、sync(BoardSync)、stt、llm、dev-keys
+services/          浏览器客户端库:api(auth/documents/workspace)、sync(BoardSync)、stt、llm、dev-keys
 server/            dev 中间件 + 可独立构建的生产搜索/URL 元数据中继
 server-go/         Go 后端:auth/JWT、documents、/sync 中继、/stt 转发(cmd + internal + Makefile)
 docs/              技术方案与模块文档(见 technical-plan.md)
