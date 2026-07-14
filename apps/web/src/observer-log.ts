@@ -5,7 +5,7 @@
 // dropping the oldest first when the cap is exceeded. `load` runs once at
 // construction; every `append` persists the full (capped) array via `save`.
 //
-// See docs/observer/contract.md §2.5 and §4 (OBSERVER_LOG_CAP = 500).
+// Ring buffer for observer debug events (cap 500).
 
 import type { ObserverLogRecord } from '../../../packages/core/llm/observer-types'
 

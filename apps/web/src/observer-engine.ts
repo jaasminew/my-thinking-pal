@@ -5,7 +5,7 @@
 // network, DOM, and storage. pushSignals is fire-and-forget: it runs gates
 // synchronously, and on pass kicks an internal async cycle that never throws.
 //
-// See docs/observer/contract.md §2.3 (signature) and §3 (gate semantics).
+// See docs/modules/07-cothinking-agent.md (Observer).
 
 import type {
   ObserverEngineDeps,

@@ -1,7 +1,7 @@
 // H4 — Backend API client (transport only).
 //
 // Thin fetch wrapper implementing the MemoryClient interface against the routes
-// in PROJECT_MEMORY_CONTRACTS.md. Upload uses multipart/form-data. The auth
+// in docs/modules/09-project-memory.md. Upload uses multipart/form-data. The auth
 // header is attached the same way the existing API client does
 // (Authorization: Bearer <token> from getToken()). No retries, no caching, no
 // retrieval, no AI selection — transport only. Non-2xx surfaces as MemoryApiError.

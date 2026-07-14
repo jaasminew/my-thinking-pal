@@ -5,8 +5,9 @@ Rapid iteration loop for the ambient co-creation prompt
 
 Every run sends the fixture cases in [cases.ts](cases.ts) through the **real**
 pipeline — `COCREATE_SYSTEM` (+ `SEARCH_INSTRUCTION`), `buildCocreateContext`,
-and the app's own response parsers — against the real Codex CLI, using the same
-`codex exec` invocation the desktop app uses.
+and the app's own response parsers — against the Codex CLI (`codex exec`). This
+is a prompt-iteration harness; the shipped web app’s default path is MaaS
+(BYOK / Groq / hosted `/llm`), not this CLI.
 
 There are two front-ends over the same engine ([engine.ts](engine.ts)):
 

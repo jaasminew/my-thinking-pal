@@ -2,7 +2,7 @@
 // one-at-a-time reveal. Pure plumbing: it never inspects what an event means.
 // No React, no DOM, no I/O. Timers are injectable so tests drive time.
 //
-// See AI_CURSOR_PLAN.md §6 for the full behavioral contract.
+// AI cursor reveal queue (one activity at a time under the cursor).
 
 import type { RevealScheduler, BufferedFireEvent } from './ai-cursor-types'
 import { AI_REVEAL_CHUNK_MS, AI_REVEAL_MAX_DRAIN_MS } from './ai-cursor-types'

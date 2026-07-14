@@ -6,9 +6,9 @@
  * fetch client, React props/hook) live in `services/project-memory/types.ts`,
  * which re-exports everything here.
  *
- * Design (see PROJECT_MEMORY_LEAD_PLAN.md): the server is a dumb store — it
- * never calls AI and never holds an API key. Title/description generation and
- * file selection run in the browser with the user's own provider settings.
+ * Design (see docs/modules/09-project-memory.md): the server is a dumb store —
+ * it never calls AI and never holds an API key. Title/description generation
+ * and file selection run in the browser with the user's own provider settings.
  */
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ export type StageASelection = {
 }
 
 // ---------------------------------------------------------------------------
-// Caps (locked in PROJECT_MEMORY_LEAD_PLAN.md §1)
+// Caps (see docs/modules/09-project-memory.md)
 // ---------------------------------------------------------------------------
 
 export const PM_MAX_UPLOAD_BYTES = 20 * 1024 * 1024 // 20 MB per file

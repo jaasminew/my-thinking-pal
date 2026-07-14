@@ -12,6 +12,9 @@ apps/desktop/build/
 # Prompt sandbox run outputs
 sandbox/cocreate/runs/
 
+# Accidental Go cwd at repo root
+data/
+
 # Go backend
 server-go/data/
 server-go/bin/
