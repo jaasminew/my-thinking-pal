@@ -435,6 +435,7 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
 }
 .transcript {
   flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
   padding: 26px 20px 26px 8px; overflow-y: auto;
   font-size: 16px; line-height: 1.85; color: #5b5b60;
   user-select: text;
@@ -513,6 +514,30 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
 .transcript .status-caption.done { font-style: normal; color: var(--muted); }
 .transcript .placeholder { color: var(--muted); font-size: 14px; line-height: 1.6; }
 .transcript .placeholder.err { color: #c0461d; }
+/* Live raw STT strip: sticky above the record dock so recognition always
+   reads as "working" while highlights crystallize above on a slower cadence. */
+.transcript .live-transcript {
+  position: sticky;
+  bottom: 88px;
+  z-index: 1;
+  margin-top: auto;
+  padding: 12px 0 4px;
+  border-top: 1px dashed var(--line);
+  background: linear-gradient(to top, #fff 65%, rgba(255, 255, 255, 0.85) 100%);
+  max-width: 480px;
+  width: 100%;
+}
+.transcript .live-transcript-scroll {
+  max-height: 7.5em;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #a8a8ae;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.transcript .live-transcript .live-finals { color: #a8a8ae; }
+.transcript .live-transcript .interim { color: #c8c8cc; }
 
 /* ---- AI "thinking" shimmer: a soft light sweep across processing status
    text (Listening… / Extracting… / Organizing… / Thinking…), like the

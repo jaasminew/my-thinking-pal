@@ -76,6 +76,8 @@ const DEFAULT_TRANSCRIPT_WIDTH = 400
 const MIN_TRANSCRIPT_WIDTH = 260
 const MAX_TRANSCRIPT_WIDTH = 720
 const MIN_CANVAS_WIDTH = 320
+/** Cap live final STT segments kept in the sidebar strip (DOM / memory). */
+const LIVE_FINALS_CAP = 40
 
 function clampTranscriptWidth(width: number, panelWidth: number): number {
   const availableMax = Math.min(MAX_TRANSCRIPT_WIDTH, Math.max(MIN_TRANSCRIPT_WIDTH, panelWidth - MIN_CANVAS_WIDTH))
@@ -224,6 +226,9 @@ export function Transcript({
   const [captureAttempt, setCaptureAttempt] = useState(0)
   const captureIssueRef = useRef<CaptureIssue | null>(captureIssue)
   captureIssueRef.current = captureIssue
+  // Live raw STT strip (session-only feedback). Finals append; interim overwrites.
+  const [liveFinals, setLiveFinals] = useState<string[]>([])
+  const [interimText, setInterimText] = useState('')
   const [editing, setEditing] = useState<EditTarget>(null)
   // Bumped when an edit ends so the section remounts and React re-owns the DOM
   // the browser mutated while it was contentEditable.
@@ -234,6 +239,7 @@ export function Transcript({
   const engineRef = useRef<SignalEngine | null>(null)
   const sttRef = useRef<STTProvider | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
+  const liveScrollRef = useRef<HTMLDivElement | null>(null)
   const onRawFinalRef = useRef(onRawFinal)
   useEffect(() => {
     onRawFinalRef.current = onRawFinal
@@ -346,11 +352,17 @@ export function Transcript({
   // leave the engine running until the user can press stop (button stays enabled
   // while recording). Capture below bails out when blocked.
   useEffect(() => {
-    if (!recording) return
+    if (!recording) {
+      setLiveFinals([])
+      setInterimText('')
+      return
+    }
     setEverRecorded(true)
     silenceDismissedRef.current = false
     silenceShownRef.current = false
     tabDegradedRef.current = null
+    setLiveFinals([])
+    setInterimText('')
     engineRef.current?.resetCapture()
     setEditing(null)
     setErr('')
@@ -363,6 +375,8 @@ export function Transcript({
         }
         await engineRef.current?.stop()
       })()
+      setLiveFinals([])
+      setInterimText('')
       setCaptureState('idle')
       setCaptureIssue(null)
       tabDegradedRef.current = null
@@ -501,8 +515,19 @@ export function Transcript({
         })
         if (ev.isFinal) {
           engineRef.current?.pushFinal(ev.text, ev.speaker)
-          if (ev.text.trim()) onRawFinalRef.current?.(ev.text.trim(), Date.now())
-        } else engineRef.current?.pushInterim(ev.text)
+          const trimmed = ev.text.trim()
+          if (trimmed) {
+            onRawFinalRef.current?.(trimmed, Date.now())
+            setLiveFinals((prev) => {
+              const next = [...prev, trimmed]
+              return next.length > LIVE_FINALS_CAP ? next.slice(-LIVE_FINALS_CAP) : next
+            })
+            setInterimText('')
+          }
+        } else {
+          engineRef.current?.pushInterim(ev.text)
+          setInterimText(ev.text)
+        }
       })
       try {
         await stt.start({ lang: 'auto', stream: captureStream })
@@ -649,7 +674,13 @@ export function Transcript({
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [frozen, tail, status])
+  }, [frozen, tail, status, liveFinals, interimText])
+
+  // Keep the live STT strip scrolled to the newest recognition.
+  useEffect(() => {
+    const el = liveScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [liveFinals, interimText])
 
   // Focus the section once it turns contentEditable so the caret starts blinking
   // right where the user double-clicked (the browser keeps that selection).
@@ -776,6 +807,7 @@ export function Transcript({
   }
 
   const hasContent = frozen.length > 0 || tail.length > 0
+  const hasLive = liveFinals.length > 0 || !!interimText.trim()
   // Capture and signal processing are independent: audio remains live while
   // highlights are extracted/organized, so the Listening cue is rendered
   // separately and must not be replaced by the capture-state pill.
@@ -964,7 +996,9 @@ export function Transcript({
         {!hasContent && !stopped && (
           <div className="placeholder">
             {recording
-              ? tr('Highlights appear every ~2 minutes as you talk.', '说话过程中，每约 2 分钟会出现一次要点。')
+              ? hasLive
+                ? tr('Highlights will appear here every ~2 minutes.', '要点会在此每约 2 分钟出现一次。')
+                : tr('Highlights appear every ~2 minutes as you talk. Live speech shows below.', '说话过程中，每约 2 分钟会出现一次要点。实时识别显示在下方。')
               : tr('Press ●, allow the mic, and start talking. Key signals — judgments, questions, decisions — appear here, organized into sections.', '点击 ●，允许麦克风访问后开始说话。判断、问题和决定等关键内容会在这里按分区整理。')}
           </div>
         )}
@@ -977,6 +1011,19 @@ export function Transcript({
           <div className={`stt-notice ${captureState}`} role={captureState === 'error' ? 'alert' : 'status'}>
             <span>{captureNotice.message}</span>
             {captureNotice.action && <button type="button" onClick={onCaptureAction}>{captureNotice.action}</button>}
+          </div>
+        )}
+
+        {recording && hasLive && (
+          <div className="live-transcript" aria-live="polite" aria-label={tr('Live transcript', '实时转写')}>
+            <div className="live-transcript-scroll" ref={liveScrollRef}>
+              {liveFinals.length > 0 && (
+                <span className="live-finals">{liveFinals.join(' ')}</span>
+              )}
+              {interimText.trim() && (
+                <span className="interim">{liveFinals.length > 0 ? ' ' : ''}{interimText.trim()}</span>
+              )}
+            </div>
           </div>
         )}
       </aside>
