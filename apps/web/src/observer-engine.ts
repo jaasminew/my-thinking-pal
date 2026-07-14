@@ -55,6 +55,9 @@ export class ObserverEngine {
   private running = false
   private enabled = false
   private evaluating = false
+  // Generation currently inside the contributor phase. Recording stop may let
+  // this one phase drain, while evaluator-only work is still invalidated.
+  private contributingGen: number | null = null
   private lastEvaluatorStartedAt: number | undefined
   // Bumped on reset() so late async results can't write stale state (same
   // pattern as SignalEngine.gen — see apps/web/src/signal-engine.ts:96).
@@ -81,8 +84,14 @@ export class ObserverEngine {
     this.running = true
   }
 
-  stop(): void {
+  stop(options: { drainInFlightContribution?: boolean } = {}): void {
     this.running = false
+    // A recording stop preserves only an already-started contributor. If the
+    // cycle is still evaluating (or idle), invalidate it so it cannot begin a
+    // new contribution after recording has ended.
+    if (options.drainInFlightContribution && this.contributingGen !== this.gen) {
+      this.reset()
+    }
   }
 
   // Canvas switch: bump generation, clear volatile progress, drop late results.
@@ -269,6 +278,7 @@ export class ObserverEngine {
         ...(ctx.dominantLanguage ? { dominantLanguage: ctx.dominantLanguage } : {})
       }
 
+      this.contributingGen = gen
       this.onContributeStart()
       contribStarted = true
 
@@ -348,6 +358,9 @@ export class ObserverEngine {
       // Only clear the flag if this cycle still owns the current generation.
       if (gen === this.gen) {
         this.evaluating = false
+      }
+      if (this.contributingGen === gen) {
+        this.contributingGen = null
       }
       // onContributeSettled fires exactly once on every exit path after
       // contribute started — covers throw, stale, null, error, dup-title,

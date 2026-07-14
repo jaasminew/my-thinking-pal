@@ -72,6 +72,16 @@ const snapTail = (t: Line[]): Line[] => t.map((l) => ({ ...l }))
 
 type EditTarget = { kind: 'section'; sid: string } | { kind: 'tail' } | null
 type CaptureState = 'idle' | 'connecting' | 'live' | 'degraded' | 'reconnecting' | 'error'
+const DEFAULT_TRANSCRIPT_WIDTH = 400
+const MIN_TRANSCRIPT_WIDTH = 260
+const MAX_TRANSCRIPT_WIDTH = 720
+const MIN_CANVAS_WIDTH = 320
+
+function clampTranscriptWidth(width: number, panelWidth: number): number {
+  const availableMax = Math.min(MAX_TRANSCRIPT_WIDTH, Math.max(MIN_TRANSCRIPT_WIDTH, panelWidth - MIN_CANVAS_WIDTH))
+  return Math.min(availableMax, Math.max(MIN_TRANSCRIPT_WIDTH, width))
+}
+
 type CaptureIssue =
   | 'permission'
   | 'no-mic'
@@ -178,9 +188,25 @@ export function Transcript({
 }) {
   const { tr, chinese } = useLocale()
   const collapseKey = `transcript-collapsed${storageSuffix}`
+  const widthKey = `transcript-width${storageSuffix}`
   const [collapsed, setCollapsed] = useState(() => loadJSON(collapseKey, false))
+  const [paneWidth, setPaneWidth] = useState(() => {
+    const saved = loadJSON<number>(widthKey, DEFAULT_TRANSCRIPT_WIDTH)
+    return Number.isFinite(saved)
+      ? Math.min(MAX_TRANSCRIPT_WIDTH, Math.max(MIN_TRANSCRIPT_WIDTH, saved))
+      : DEFAULT_TRANSCRIPT_WIDTH
+  })
+  const [resizing, setResizing] = useState(false)
+  const resizeRef = useRef<{ left: number; panelWidth: number } | null>(null)
+  const paneRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => saveJSON(collapseKey, collapsed), [collapseKey, collapsed])
+  useEffect(() => saveJSON(widthKey, paneWidth), [widthKey, paneWidth])
+  useEffect(() => {
+    if (!resizing) return
+    document.body.classList.add('transcript-resizing')
+    return () => document.body.classList.remove('transcript-resizing')
+  }, [resizing])
   const k = (key: string) => key + storageSuffix
   // Restored from localStorage so the cleaned transcript survives refreshes.
   // New recording sessions append to this content instead of replacing it.
@@ -828,31 +854,106 @@ export function Transcript({
     degraded: tr('Recording with an issue', '录音异常'), reconnecting: tr('Reconnecting…', '重连中…'), error: tr('Recording paused', '录音已暂停')
   }
 
-  const onRecordClick = () => {
-    if (collapsed) {
-      setCollapsed(false)
-      if (!recording) onToggleRecord()
-      return
-    }
-    onToggleRecord()
+  const resizeTo = (clientX: number) => {
+    const drag = resizeRef.current
+    if (!drag) return
+    setPaneWidth(clampTranscriptWidth(clientX - drag.left, drag.panelWidth))
   }
 
+  const onResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (collapsed) return
+    const pane = paneRef.current
+    const panel = pane?.parentElement
+    if (!pane || !panel) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    resizeRef.current = {
+      left: pane.getBoundingClientRect().left,
+      panelWidth: panel.getBoundingClientRect().width
+    }
+    setResizing(true)
+    resizeTo(e.clientX)
+  }
+
+  const onResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeRef.current) return
+    e.preventDefault()
+    resizeTo(e.clientX)
+  }
+
+  const finishResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeRef.current) return
+    resizeRef.current = null
+    setResizing(false)
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  const onResizeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (collapsed || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+    e.preventDefault()
+    const panelWidth = paneRef.current?.parentElement?.getBoundingClientRect().width ?? MAX_TRANSCRIPT_WIDTH + MIN_CANVAS_WIDTH
+    const delta = e.key === 'ArrowLeft' ? -16 : 16
+    setPaneWidth((width) => clampTranscriptWidth(width + delta, panelWidth))
+  }
+
+  const paneStyle = { '--transcript-width': `${paneWidth}px` } as React.CSSProperties
+
   return (
-    <div className={`transcript-pane${collapsed ? ' collapsed' : ''}`}>
-      <button
-        className="transcript-collapse"
-        type="button"
-        aria-label={collapsed ? tr('Expand transcription', '展开转写') : tr('Collapse transcription', '收起转写')}
-        title={collapsed ? tr('Expand transcription', '展开转写') : tr('Collapse transcription', '收起转写')}
-        aria-expanded={!collapsed}
-        onClick={() => setCollapsed((value) => !value)}
-      >
-        {collapsed ? '›' : '‹'}
-      </button>
+    <div
+      ref={paneRef}
+      className={`transcript-pane${collapsed ? ' collapsed' : ''}${resizing ? ' resizing' : ''}`}
+      style={paneStyle}
+    >
+      {collapsed ? (
+        <div className="transcript-collapsed-controls">
+          <button
+            className={`transcript-collapsed-mic${recording ? ' recording' : ''}`}
+            type="button"
+            aria-label={recording ? tr('Stop recording', '停止录音') : tr('Start recording', '开始录音')}
+            title={
+              recording
+                ? tr('Stop recording', '停止录音')
+                : sttBlocked
+                  ? tr('Sign in to enable transcription', '请登录以启用转写')
+                  : tr('Start recording', '开始录音')
+            }
+            aria-pressed={recording}
+            onClick={onToggleRecord}
+            disabled={sttBlocked && !recording}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6" />
+            </svg>
+          </button>
+          <button
+            className="transcript-collapse"
+            type="button"
+            aria-label={tr('Expand transcription', '展开转写')}
+            title={tr('Expand transcription', '展开转写')}
+            aria-expanded={false}
+            onClick={() => setCollapsed(false)}
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4l6 6-6 6" /></svg>
+          </button>
+        </div>
+      ) : (
+        <button
+          className="transcript-collapse"
+          type="button"
+          aria-label={tr('Collapse transcription', '收起转写')}
+          title={tr('Collapse transcription', '收起转写')}
+          aria-expanded={true}
+          onClick={() => setCollapsed(true)}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M13 4l-6 6 6 6" /></svg>
+        </button>
+      )}
       <aside className="transcript" ref={scrollRef} onDragStart={attachDragTs}>
         <div className="hint">
           {recording
-            ? tr('Speak freely — key signals are distilled from the conversation and organized into sections as you go. Select any text and drag it onto the canvas. Double-click a section to edit it.', '自由说出你的想法——关键内容会从对话中提炼出来并分区整理。选择任意文字并拖到画布上；双击分区即可编辑。')
+            ? tr('Select any text and drag it onto the canvas. Double-click a section to edit it.', '选择拖动任意内容到画布上即可开始记录，双击转写内容以修改')
             : ''}
         </div>
 
@@ -883,7 +984,7 @@ export function Transcript({
       {/* Recording control: bottom-center of the transcript pane, on a white
           gradient (solid at the bottom, fading to transparent) so it reads
           clearly over scrolled-up text without a hard edge. */}
-      <div className="transcript-record-dock">
+      {!collapsed && <div className="transcript-record-dock">
         {recording && (captureIssue === 'silence' ? (
           <div className="stt-state-pill silence" role="status">
             <span>{tr('Not hearing anything — is your mic muted?', '没有检测到声音——麦克风是否静音？')}</span>
@@ -911,15 +1012,29 @@ export function Transcript({
                 ? tr('Sign in to enable transcription', '请登录以启用转写')
                 : tr('Start recording', '开始录音')
           }
-          onClick={onRecordClick}
+          onClick={onToggleRecord}
           disabled={sttBlocked && !recording}
         >
-          {collapsed && <span className="record-label">{tr('Record', '录音')}</span>}
           {captureState === 'live' || captureState === 'degraded'
             ? <span className="stop-sq" />
             : <span className="rec-dot" />}
         </button>
-      </div>
+      </div>}
+      <div
+        className="transcript-resize-handle"
+        role="separator"
+        aria-label={tr('Resize transcription section', '调整转写区域宽度')}
+        aria-orientation="vertical"
+        aria-valuemin={MIN_TRANSCRIPT_WIDTH}
+        aria-valuemax={MAX_TRANSCRIPT_WIDTH}
+        aria-valuenow={Math.round(paneWidth)}
+        tabIndex={collapsed ? -1 : 0}
+        onPointerDown={onResizePointerDown}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={finishResize}
+        onPointerCancel={finishResize}
+        onKeyDown={onResizeKeyDown}
+      />
     </div>
   )
 }

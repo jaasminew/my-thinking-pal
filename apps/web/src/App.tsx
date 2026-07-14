@@ -58,6 +58,7 @@ import { createRevealScheduler } from './ai-reveal'
 import { initialAiCursorState, type AiCursorState, type BufferedFireEvent, type RevealScheduler, type WorldPoint } from './ai-cursor-types'
 import { AiCursorOverlay } from './AiCursorOverlay'
 import { useLocale } from './locale'
+import { insetAdjustedPanelWidth, PANEL_HANDLE_WIDTH, resolvePanelWidths } from './panel-stack'
 
 // DEV-only pretty-printer for observer decisions — see engine.onLog wiring.
 // Every gate skip, evaluation, emission, and error prints one clear line so a
@@ -2110,15 +2111,22 @@ function CanvasSpace({
   }, [])
 
   // Lifecycle: enabled follows the AI switch; running follows active+recording,
-  // gated by a Listener pre-flight. No usable Listener → visible notice + a
-  // listener-unavailable log record, and the engine never starts (contract §3).
+  // gated by a Listener pre-flight. Stopping recording drains an observer
+  // contribution that has already started, but evaluator-only work is discarded
+  // and no new signals are accepted. Canvas switches / AI-off remain hard stops.
+  // No usable Listener → visible notice + a listener-unavailable log record,
+  // and the engine never starts (contract §3).
   useEffect(() => {
     const engine = observerRef.current
     if (!engine) return
     engine.setEnabled(aiEnabled)
-    if (!(isActive && recording && aiEnabled)) {
+    if (!isActive || !aiEnabled) {
       engine.reset()
       engine.stop()
+      return
+    }
+    if (!recording) {
+      engine.stop({ drainInFlightContribution: true })
       return
     }
     let cancelled = false
@@ -2489,7 +2497,7 @@ const insertAfter = (arr: TreeNode[], afterId: string, newNode: TreeNode): TreeN
 
 // Handle = the spine strip on a panel's top-left (drag it to slide/resize).
 // Its width is what an open-but-buried canvas always keeps visible.
-const HANDLE = 44
+const HANDLE = PANEL_HANDLE_WIDTH
 const MAX_OPEN = 2
 
 // Overlapping paper-stack model (Obsidian-like): every open canvas pins its
@@ -2499,7 +2507,7 @@ const MAX_OPEN = 2
 // sheet's handle visible: a sheet stays at least one HANDLE narrower than the
 // sheet beneath it and one HANDLE wider than the sheet on top of it. So the
 // widest a sheet can get is workspace − (sheets beneath it × HANDLE).
-type OpenPanels = { ids: string[]; fracs: number[] } // fracs: width ÷ workspace width
+type OpenPanels = { ids: string[]; fracs: number[] } // fracs: width ÷ inset-adjusted panel area
 
 export function App() {
   const { tr } = useLocale()
@@ -2838,23 +2846,25 @@ export function App() {
     if (open.ids.length && !open.ids.includes(activeId)) setActiveId(open.ids[open.ids.length - 1])
   }, [open, activeId])
 
-  // Track the workspace's real width — panel fractions are resolved against it.
+  // Track the width panels can actually occupy. CSS pins every sheet inside
+  // --workspace-inset on BOTH sides, so using the raw workspace width here
+  // would make adjacent left edges only HANDLE - 2*inset apart at maximum.
   useEffect(() => {
     const el = workspaceRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => setWw(el.clientWidth))
+    const measure = () => {
+      const inset = Number.parseFloat(getComputedStyle(el).getPropertyValue('--workspace-inset')) || 0
+      setWw(insetAdjustedPanelWidth(el.clientWidth, inset))
+    }
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
-    setWw(el.clientWidth)
+    measure()
     return () => ro.disconnect()
   }, [])
 
   // Resolve fractions to px and enforce the stack invariant: each sheet at
   // least one HANDLE narrower than the one beneath, never below one HANDLE.
-  const widths = open.fracs.map((f) => f * ww)
-  for (let i = 0; i < widths.length; i++) {
-    const max = i === 0 ? ww : widths[i - 1] - HANDLE
-    widths[i] = Math.max(HANDLE, Math.min(widths[i], max))
-  }
+  const widths = resolvePanelWidths(open.fracs, ww, HANDLE)
 
   // Open an idea space as a canvas panel: already open → just activate; room
   // left → a new sheet slides in on top (right edge pinned, one HANDLE

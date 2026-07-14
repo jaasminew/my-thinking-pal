@@ -472,6 +472,56 @@ describe('reset mid-evaluate discards late result', () => {
   })
 })
 
+describe('recording stop drains only an in-flight contribution', () => {
+  it('allows an already-started contributor to emit after stop', async () => {
+    let resolveContrib!: (v: ObserverContributionResult) => void
+    const contribPromise = new Promise<ObserverContributionResult>((r) => { resolveContrib = r })
+    const deps = makeDeps({
+      evaluate: async () => makeDecision({ topic: 'x' }),
+      contribute: () => contribPromise,
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    const { emissions } = wire(engine)
+    const settles: boolean[] = []
+    engine.onContributeSettled = (emitted) => settles.push(emitted)
+
+    engine.pushSignals([sig('a', 10)])
+    await flush() // evaluator resolved; contributor is now in flight
+    engine.stop({ drainInFlightContribution: true })
+    resolveContrib(makeResult({ keyword: 'Finished Topic' }))
+    await flush()
+
+    expect(emissions).toHaveLength(1)
+    expect(emissions[0].result.keyword).toBe('Finished Topic')
+    expect(settles).toEqual([true])
+
+    engine.pushSignals([sig('later', 20)])
+    expect(engine.getState().lastEvaluatedSignalTs).toBe(10)
+  })
+
+  it('discards evaluator-only work so it cannot start contributing after stop', async () => {
+    let resolveEval!: (v: ObserverDecision | null) => void
+    const evalPromise = new Promise<ObserverDecision | null>((r) => { resolveEval = r })
+    const contribute = vi.fn(async () => makeResult())
+    const deps = makeDeps({
+      evaluate: () => evalPromise,
+      contribute,
+      now: () => 100000
+    })
+    const engine = makeEngine(deps)
+    const { emissions } = wire(engine)
+
+    engine.pushSignals([sig('a', 10)])
+    engine.stop({ drainInFlightContribution: true })
+    resolveEval(makeDecision({ topic: 'late' }))
+    await flush()
+
+    expect(contribute).not.toHaveBeenCalled()
+    expect(emissions).toHaveLength(0)
+  })
+})
+
 // ---- error handling -------------------------------------------------------
 
 describe('error handling — null / error results', () => {
