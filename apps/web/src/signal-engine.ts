@@ -153,7 +153,8 @@ export class SignalEngine {
     this.pendingRaw += (this.pendingRaw ? ' ' : '') + tag + chunk
   }
 
-  // Raw interim STT is deliberately hidden — it never appears in the surface.
+  // Raw interim STT does not enter highlights. Transcript.tsx shows it in a
+  // separate live strip for "system is listening" feedback.
   pushInterim(_text: string) {}
 
   // --- user edits: a hand-edited line is LOCKED — the organize pass may regroup
