@@ -12,7 +12,7 @@ import {
 } from '../../packages/core/llm'
 import { TEST_PROVIDER, sseResponse, mockFetchRouter } from '../../packages/core/llm/__mocks__/mock-provider'
 
-// Prompt-assembly order is contractual (PROJECT_MEMORY_LEAD_PLAN.md §6):
+// Prompt-assembly order is contractual (docs/modules/09-project-memory.md):
 //   system  = base + formatProjectInstructions(...) + searchInstruction
 //   user    = memory block (untrusted-data framing) BEFORE transcript/notes.
 

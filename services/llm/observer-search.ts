@@ -2,7 +2,7 @@
 //
 // Pure mapping from the resolved Thinker-category provider id + relay
 // availability to a SearchPath. No config import, no network, no side effects.
-// See docs/observer/contract.md §2.2.
+// Observer search helper (see docs/modules/07-cothinking-agent.md).
 
 import type { SearchPath } from '../../packages/core/llm/observer-types'
 

@@ -2,7 +2,7 @@
 // space. Constant pixel size at any zoom; travels smoothly between notes on
 // target change; pans/zooms instantly (no travel animation). Never interactive.
 //
-// See AI_CURSOR_PLAN.md §7.
+// Canvas overlay for the AI pal cursor.
 import { useEffect, useRef, useState } from 'react'
 import type { AiCursorState } from './ai-cursor-types'
 import { AI_CURSOR_NAME } from './ai-cursor-types'

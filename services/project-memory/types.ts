@@ -96,7 +96,7 @@ export type ExtractTextBrowser = (blob: Blob, name: string, mimeType: string) =>
 // H4 — MemoryClient (backend transport, signed-in persistence)
 // ---------------------------------------------------------------------------
 //
-// Thin fetch wrapper over the routes in PROJECT_MEMORY_CONTRACTS.md. No AI, no
+// Thin fetch wrapper over Go /project-memory routes (docs/modules/09-project-memory.md). No AI, no
 // retrieval, no retries, no caching. Non-2xx surfaces as MemoryApiError.
 
 export interface MemoryClientDeps {

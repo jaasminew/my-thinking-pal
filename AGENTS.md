@@ -46,7 +46,10 @@ npm run build
 
 ## Environment
 
-Do not commit `.env`.
+Do not commit `.env`. Never put real API keys, JWT secrets, or production server
+IP addresses into docs, code comments, issues, or commits — use env var *names*
+and placeholders only. The deploy host address stays in GitHub/deployment
+secrets (see `deploy/README.md`).
 
 Common variables:
 
@@ -80,8 +83,8 @@ Active files:
 - CRDT persistence: `packages/core/doc/{schema,board}.ts`, `apps/web/src/board-persistence.ts`
 - LLM (client-direct + hosted transport): `packages/core/llm/*`, `services/llm/{client,cocreate,command-chat,provider-config,web-search,llm-transport,model-roles}.ts`
 - Minimal local relay (dev): `server/api-plugin.ts`, `server/search.ts`, `server/url-meta.ts`, `server/proxy.ts`
-- Go backend: `server-go/` (auth/JWT, SQLite AccountStore, `/documents`, `/workspace`, `/sync` CRDT relay, `/stt` proxy, `/search` + `/url-meta`, `/llm`). Tests: `cd server-go && make test`.
-- Backend wiring (frontend, gated by `VITE_API_URL`): `services/api/*` (auth+documents+workspace+search client), `services/sync/board-sync.ts` (Yjs provider), `services/stt/backend.ts` (STT via `/stt`), `apps/web/src/{backend.ts,AuthPanel.tsx}`.
+- Go backend: `server-go/` (auth/JWT, SQLite AccountStore, `/documents`, `/workspace`, `/sync` CRDT relay, `/stt` proxy, `/search` + `/url-meta`, `/llm`, `/project-memory`). Tests: `cd server-go && make test`.
+- Backend wiring (frontend, gated by `VITE_API_URL`): `services/api/*` (auth+documents+workspace+search client), `services/sync/board-sync.ts` (Yjs provider), `services/stt/backend.ts` (STT via `/stt`), `services/project-memory/*`, `apps/web/src/{backend.ts,AuthPanel.tsx}`.
 
 Tests: `npm test` (Vitest). Run it (plus `npm run build`) before handing off.
 
@@ -94,8 +97,8 @@ Behavior:
 - Rejected ideas are removed and remembered as negative signals.
 - URL cards come only from real search.
 
-Do not claim the canvas uses tldraw in active code. The dependency is installed, but
-the current prototype uses a custom positioned-note canvas.
+The canvas is a custom positioned-note UI (not tldraw). Architecture modules:
+[`docs/technical-plan.md`](docs/technical-plan.md) (index 01–10).
 
 ## GitHub Publishing
 

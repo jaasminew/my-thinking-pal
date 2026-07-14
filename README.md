@@ -1,8 +1,8 @@
 # Thinking Pal Canvas
 
-Prototype for **My Thinking Pal**, a real-time thinking workspace for creators.
-This is not production architecture; it is a test rig for canvas interaction feel,
-model choice, search cards, latency, and prompt behavior.
+Prototype for **My Thinking Pal**, a real-time thinking workspace for creators
+(not a meeting-notes app). AI extends human thought beside the canvas; it does
+not overwrite human-authored content.
 
 ## Quick Start
 
@@ -12,71 +12,51 @@ cp .env.example .env
 npm run dev
 ```
 
-Open:
+Open http://127.0.0.1:5173/
 
-- Canvas co-creation: http://127.0.0.1:5173/
-
-Validation:
+Full guide (local / backend / desktop, env vars, tests): [`docs/BUILD_AND_DEBUG.md`](docs/BUILD_AND_DEBUG.md).  
+Architecture index: [`docs/technical-plan.md`](docs/technical-plan.md).
 
 ```bash
+npm test
 npm run build
+```
+
+Desktop (Electron) reuses `apps/web`:
+
+```bash
+npm run dev            # terminal 1
+npm run dev:desktop    # terminal 2
 ```
 
 ## Environment
 
-Fill only the providers you are testing in `.env`. Do not commit `.env`; it is
-intentionally gitignored.
+Do not commit `.env`. Never document real API keys or production server IPs —
+env var names and placeholders only.
 
-Common variables:
+Common variables (see `.env.example` and `AGENTS.md`):
 
-- `CLAUDE_CODE_OAUTH_TOKEN`: Claude Code subscription route via local CLI.
-- `TAVILY_API_KEY`: web-search inspiration cards.
-- `GROQ_API_KEY`: hosted open-model backend for `Open + Tavily`.
-- `CEREBRAS_API_KEY`: optional hosted open-model backend.
-- `OLLAMA_BASE_URL` / `OLLAMA_MODEL`: local open-model backend.
-- `HTTPS_PROXY`: hosted API proxy when needed.
-- `AGENT_PROXY`: proxy override for Claude/Codex CLI calls.
+- `GROQ_API_KEY` — local-only / BYOK LLM fallback (dev inject in `npm run dev`)
+- `TAVILY_API_KEY` — web-search cards (Vite `/api/search` locally; Go `/search` when signed in)
+- `DEEPSEEK_*` — hosted LLM on Go (`POST /llm/chat/completions`)
+- `SONIOX_*` — STT (browser-direct locally; Go `/stt` when signed in)
+- `VITE_API_URL` — optional Go backend; **empty = local-only**
+- `HTTPS_PROXY` — outbound proxy when needed
 
-## Canvas Co-Creation
+## Canvas behavior
 
-The app is a working canvas interaction prototype:
+- Drag transcript phrases onto the canvas; blank click creates a note.
+- Human bullets are editable and kept; AI suggestions are pending until keep/reject.
+- Custom positioned-note canvas (not tldraw).
 
-- Static transcript on the left.
-- Canvas on the right.
-- Drag highlighted transcript phrases onto the canvas.
-- Click blank canvas to create a freeform note.
-- Human notes are editable and always treated as kept.
-- AI appends adjacent suggestions, never overwrites human text.
-- Hover AI suggestions or URL cards for keep / reject.
-- Bottom command bar tests explicit commands and web-search inspiration.
-
-Available backends:
-
-- `Claude Code`: subscription route via local Claude CLI.
-- `Codex`: subscription route via local Codex CLI.
-- `Open + Tavily`: Groq / Ollama + Tavily search.
-
-The active prototype uses a custom absolute-positioned canvas UI. `tldraw` is
-installed, but the app is not wired to tldraw yet.
-
-## Project Layout
+## Layout
 
 ```text
-apps/
-  web/src/App.tsx      Canvas co-creation renderer (Vite root stays the repo root)
-packages/
-  core/                Shared: CRDT doc schema/board, LLM parsing, settings
-services/
-  api/ sync/ stt/ llm/ Browser clients: auth+documents, BoardSync, STT, LLM
-server/
-  api-plugin.ts        Dev-only Vite middleware: Tavily search + og:image relay
-  search.ts            Tavily search bridge
-server-go/             Optional Go backend (auth, /sync, /stt) — opt-in via VITE_API_URL
-index.html             App entry (loads /apps/web/src/main.tsx)
+apps/web/          React renderer
+apps/desktop/      Electron shell
+packages/core/     CRDT + LLM parsing + settings
+services/          api / sync / stt / llm / project-memory
+server/            Dev Vite relay (search, url-meta, local-ai)
+server-go/         Optional Go backend
+docs/              Architecture modules + build guide
 ```
-
-## Notes For Partners
-
-- This repo intentionally keeps the prototype simple: Vite serves frontend and local API routes in one process.
-- Browser code should not read provider keys directly; hosted model keys stay in the local API layer.
-- AI suggestions should remain adjacent, visually distinct, and keep/reject-able.

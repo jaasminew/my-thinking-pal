@@ -5,7 +5,7 @@
 // or surrounded by prose; the evaluator parser extracts the first balanced
 // `{...}` block. The contributor parser speaks a small line protocol.
 //
-// See docs/observer/contract.md §1.1 / §1.2 for the frozen wire formats.
+// Wire formats for evaluator/contributor model output.
 
 import type { ObserverDecision, ObserverContribution, ObserverOpportunityType } from './observer-types'
 

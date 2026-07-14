@@ -7,7 +7,7 @@
 // are exhausted, the note drops below the bottom-most existing rect.
 //
 // Pure: no DOM, no app state, no randomness. Same inputs → same output.
-// See docs/observer/contract.md §2.4 and §4 for the frozen geometry.
+// Observer note placement geometry.
 
 // Contract §4 — geometry constants, exported so tests can reference them.
 export const DEFAULT_NOTE_W = 260

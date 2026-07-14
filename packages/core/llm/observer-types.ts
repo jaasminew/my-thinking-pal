@@ -1,6 +1,6 @@
 // ============================================================================
 // CONTRACTS FROZEN — do not edit.
-// Observer feature contract (docs/observer/contract.md is the companion spec).
+// Observer feature types (see docs/modules/07-cothinking-agent.md).
 // Every observer task — Lead's and Implementer's — implements these shapes
 // exactly. If a type or signature you need is missing, STOP and ask the Lead;
 // do not invent one here or anywhere else.

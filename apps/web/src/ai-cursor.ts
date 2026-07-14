@@ -2,7 +2,7 @@
 // React — time rides on every event. Returns the SAME reference when nothing
 // changed so React can bail out of re-rendering.
 //
-// See AI_CURSOR_PLAN.md §5 for the five rules (one test case each).
+// Pure AI-cursor state machine (see docs/modules/07-cothinking-agent.md).
 
 import type {
   AiCursorState,
