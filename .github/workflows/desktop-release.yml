@@ -103,6 +103,9 @@ jobs:
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job only downloads artifacts — no checkout — so gh needs an
+          # explicit repo; otherwise it tries `git` and fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
         run: |
           mapfile -t files < <(find release-artifacts -type f | sort)
           if [[ "${#files[@]}" -eq 0 ]]; then
