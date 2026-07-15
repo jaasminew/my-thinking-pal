@@ -16,7 +16,7 @@ import { runLocalCommandChat, type LocalRuntime } from './local-runtime'
 export interface CommandChatHandlers {
   /** Streamed chat text delta — append to the live assistant message. */
   onText: (text: string) => void
-  /** A proposed canvas action — render as a button, never auto-apply. */
+  /** A validated canvas action — proposed or auto-applied according to apply. */
   onAction?: (action: CommandChatAction) => void
   /** A validated uploaded-file or web-search source used by the response. */
   onSource?: (source: CommandChatSource) => void
@@ -74,24 +74,37 @@ export async function requestCommandChat(
   const userText = prependMemoryBlock(prompt, req.projectMemory?.block)
 
   let actionCount = 0
+  const noteRefPattern = /^n\d+$/
+  const itemRefPattern = /^n\d+\.\d+$/
+  const applyFlag = (a: any) => (a?.apply === true ? { apply: true as const } : {})
+  const actionTarget = (a: any): { noteId: string } | { ref: string } | Record<string, never> | null => {
+    if (a?.ref !== undefined) {
+      return typeof a.ref === 'string' && noteRefPattern.test(a.ref) ? { ref: a.ref } : null
+    }
+    // No target named: selection sessions inject the source note id; open-canvas
+    // sessions pass the action through LOOSE (no noteId/ref) — the client
+    // salvages a home for it rather than silently losing the content.
+    return sourceNoteId ? { noteId: sourceNoteId } : {}
+  }
   // append-image actions defer until after the stream (need og:image resolved).
-  const pendingImages: { caption: string; url: string; title?: string }[] = []
+  const pendingImages: { caption: string; url: string; title?: string; apply?: true }[] = []
   const emittedSourceKeys = new Set<string>()
 
   const handleActionJson = (raw: string) => {
-    if (actionCount >= 6) return
+    if (actionCount >= 10) return
     let a: any
     try {
       a = JSON.parse(raw)
     } catch {
       return // malformed protocol line — never shown to the user
     }
-    if (a?.type === 'insert-bullet' && sourceNoteId && typeof a.text === 'string' && a.text.trim()) {
+    const target = actionTarget(a)
+    if (a?.type === 'insert-bullet' && target && typeof a.text === 'string' && a.text.trim()) {
       actionCount++
-      handlers.onAction?.({ type: 'insert-bullet', noteId: sourceNoteId, text: a.text.trim() })
+      handlers.onAction?.({ type: 'insert-bullet', ...target, text: a.text.trim(), ...applyFlag(a) })
     } else if (
       a?.type === 'add-card' &&
-      sourceNoteId &&
+      target &&
       typeof a.title === 'string' &&
       typeof a.url === 'string' &&
       /^https?:\/\//.test(a.url)
@@ -99,10 +112,11 @@ export async function requestCommandChat(
       actionCount++
       handlers.onAction?.({
         type: 'add-card',
-        noteId: sourceNoteId,
+        ...target,
         title: a.title,
         url: a.url,
-        snippet: typeof a.snippet === 'string' ? a.snippet : undefined
+        snippet: typeof a.snippet === 'string' ? a.snippet : undefined,
+        ...applyFlag(a)
       })
     } else if (
       a?.type === 'append-image' &&
@@ -112,14 +126,41 @@ export async function requestCommandChat(
       /^https?:\/\//.test(a.url)
     ) {
       actionCount++
-      pendingImages.push({ caption: a.caption, url: a.url, title: typeof a.title === 'string' ? a.title : undefined })
+      pendingImages.push({
+        caption: a.caption,
+        url: a.url,
+        title: typeof a.title === 'string' ? a.title : undefined,
+        ...applyFlag(a)
+      })
     } else if (a?.type === 'create-note' && typeof a.keyword === 'string' && a.keyword.trim() && Array.isArray(a.bullets)) {
       actionCount++
       handlers.onAction?.({
         type: 'create-note',
         keyword: a.keyword.trim(),
-        bullets: a.bullets.filter((b: any) => typeof b === 'string' && b.trim())
+        bullets: a.bullets.filter((b: any) => typeof b === 'string' && b.trim()),
+        ...applyFlag(a)
       })
+    } else if (
+      a?.type === 'edit-bullet' &&
+      typeof a.ref === 'string' &&
+      itemRefPattern.test(a.ref) &&
+      typeof a.text === 'string' &&
+      a.text.trim()
+    ) {
+      actionCount++
+      handlers.onAction?.({ type: 'edit-bullet', ref: a.ref, text: a.text.trim() })
+    } else if (a?.type === 'remove-item' && typeof a.ref === 'string' && itemRefPattern.test(a.ref)) {
+      actionCount++
+      handlers.onAction?.({ type: 'remove-item', ref: a.ref })
+    } else if (
+      a?.type === 'edit-note' &&
+      typeof a.ref === 'string' &&
+      noteRefPattern.test(a.ref) &&
+      typeof a.keyword === 'string' &&
+      a.keyword.trim()
+    ) {
+      actionCount++
+      handlers.onAction?.({ type: 'edit-note', ref: a.ref, keyword: a.keyword.trim() })
     }
   }
 
@@ -206,8 +247,14 @@ export async function requestCommandChat(
   for (const im of pendingImages) {
     if (!sourceNoteId) break
     const src = await resolveOgImage(im.url, doFetch)
-    if (src) handlers.onAction?.({ type: 'append-image', noteId: sourceNoteId, src, sourceUrl: im.url, title: im.title, caption: im.caption })
-    else handlers.onAction?.({ type: 'add-card', noteId: sourceNoteId, title: im.title || im.caption, url: im.url })
+    if (src) handlers.onAction?.({
+      type: 'append-image', noteId: sourceNoteId, src, sourceUrl: im.url,
+      title: im.title, caption: im.caption, ...(im.apply ? { apply: true } : {})
+    })
+    else handlers.onAction?.({
+      type: 'add-card', noteId: sourceNoteId, title: im.title || im.caption,
+      url: im.url, ...(im.apply ? { apply: true } : {})
+    })
   }
 
   return { model: provider?.model ?? req.model, provider: req.provider }

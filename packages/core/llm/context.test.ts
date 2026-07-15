@@ -56,6 +56,29 @@ describe('buildCommandChatPrompt', () => {
     expect(out).toContain('You: it is X')
     expect(out.trim().endsWith('Respond to the last user message now.')).toBe(true)
   })
+
+  it('labels transcript context according to whether a source note exists', () => {
+    const fromNote = buildCommandChatPrompt(
+      [{ role: 'user', text: 'help' }],
+      { transcriptWindow: 'note speech', sourceNote: { keyword: 'Topic' } }
+    )
+    const fromCanvas = buildCommandChatPrompt(
+      [{ role: 'user', text: 'help' }],
+      { transcriptWindow: 'recent speech' }
+    )
+    expect(fromNote).toContain('Spoken transcript around this note (1 min):')
+    expect(fromCanvas).toContain('Spoken transcript (last 1 min):')
+  })
+
+  it('orients open-canvas sessions and includes the session-only alias ledger', () => {
+    const out = buildCommandChatPrompt(
+      [{ role: 'user', text: 'shorten the second line' }],
+      { sessionCanvas: '[n1] Note "Ideas"\n  [n1.1] First\n  [n1.2] Second' }
+    )
+    expect(out).toContain('open canvas — no note is selected')
+    expect(out).toContain('the only canvas content you may edit')
+    expect(out).toContain('[n1.2] Second')
+  })
 })
 
 describe('buildExtractSignalsUserText', () => {

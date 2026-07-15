@@ -57,6 +57,82 @@ describe('requestCommandChat (client-direct)', () => {
     ])
   })
 
+  it('passes through apply and accepts alias-addressed create/edit actions without a source note', async () => {
+    const actions: CommandChatAction[] = []
+    const mock = mockFetchRouter([{
+      match: (u) => u.includes('/chat/completions'),
+      respond: () => sseResponse([
+        'Done.\n',
+        'ACTION: {"type":"create-note","keyword":"Findings","bullets":["One"],"apply":true}\n',
+        'ACTION: {"type":"insert-bullet","ref":"n1","text":"Two","apply":true}\n',
+        'ACTION: {"type":"add-card","ref":"n1","title":"Source","url":"https://example.com","apply":true}\n',
+        'ACTION: {"type":"edit-bullet","ref":"n1.1","text":"Shorter"}\n',
+        'ACTION: {"type":"remove-item","ref":"n1.2"}\n',
+        'ACTION: {"type":"edit-note","ref":"n1","keyword":"Key findings"}\n',
+        'ACTION: {"type":"insert-bullet","text":"Loose bullet","apply":true}\n',
+        'ACTION: {"type":"add-card","title":"Loose card","url":"https://example.com/x"}\n'
+      ])
+    }])
+    await requestCommandChat(
+      { provider: 'open', openSub: 'groq', messages: [{ role: 'user', text: 'write it' }], context: {} },
+      { onText: () => {}, onAction: (action) => actions.push(action) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(actions).toEqual([
+      { type: 'create-note', keyword: 'Findings', bullets: ['One'], apply: true },
+      { type: 'insert-bullet', ref: 'n1', text: 'Two', apply: true },
+      { type: 'add-card', ref: 'n1', title: 'Source', url: 'https://example.com', snippet: undefined, apply: true },
+      { type: 'edit-bullet', ref: 'n1.1', text: 'Shorter' },
+      { type: 'remove-item', ref: 'n1.2' },
+      { type: 'edit-note', ref: 'n1', keyword: 'Key findings' },
+      // Loose (target-less) creation actions pass through for client salvage.
+      { type: 'insert-bullet', text: 'Loose bullet', apply: true },
+      { type: 'add-card', title: 'Loose card', url: 'https://example.com/x', snippet: undefined }
+    ])
+  })
+
+  it('rejects malformed aliases and keeps append-image source-note-only', async () => {
+    const actions: CommandChatAction[] = []
+    const mock = mockFetchRouter([{
+      match: (u) => u.includes('/chat/completions'),
+      respond: () => sseResponse([
+        'ACTION: {"type":"insert-bullet","ref":"note-1","text":"bad"}\n',
+        'ACTION: {"type":"add-card","ref":"n1.2","title":"bad","url":"https://example.com"}\n',
+        'ACTION: {"type":"edit-bullet","ref":"n1","text":"bad"}\n',
+        'ACTION: {"type":"remove-item","ref":"n1"}\n',
+        'ACTION: {"type":"edit-note","ref":"n1.1","keyword":"bad"}\n',
+        'ACTION: {"type":"append-image","caption":"image","url":"https://example.com/page"}\n'
+      ])
+    }])
+    await requestCommandChat(
+      { provider: 'open', openSub: 'groq', messages: [{ role: 'user', text: 'bad refs' }], context: {} },
+      { onText: () => {}, onAction: (action) => actions.push(action) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(actions).toEqual([])
+    expect(mock.calls.some((call) => call.url.includes('/api/url-meta'))).toBe(false)
+  })
+
+  it('caps actions at ten per reply', async () => {
+    const actions: CommandChatAction[] = []
+    const lines = Array.from({ length: 12 }, (_, i) =>
+      `ACTION: {"type":"create-note","keyword":"Note ${i + 1}","bullets":[]}\n`
+    )
+    const mock = mockFetchRouter([{
+      match: (u) => u.includes('/chat/completions'),
+      respond: () => sseResponse(lines)
+    }])
+    await requestCommandChat(
+      { provider: 'open', openSub: 'groq', messages: [{ role: 'user', text: 'many notes' }], context: {} },
+      { onText: () => {}, onAction: (action) => actions.push(action) },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    expect(actions).toHaveLength(10)
+  })
+
   it('rejects an empty message list', async () => {
     const res = await requestCommandChat(
       { provider: 'open', messages: [], context: {} } as any,

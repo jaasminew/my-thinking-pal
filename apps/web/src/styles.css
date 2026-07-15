@@ -983,9 +983,10 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
 }
 .cmd-msg.user { align-self: flex-end; max-width: 85%; }
 .cmd-msg.user .cmd-msg-text {
-  background: #f2f2f0; border-radius: 10px; padding: 8px 12px;
+  background: #f2f2f0; border-radius: 10px; padding: 12px;
   font-size: 13.5px; white-space: pre-wrap;
 }
+.cmd-msg.user .cmd-msg-text p { margin: 0; }
 .cmd-msg.assistant { align-self: stretch; }
 .cmd-msg.assistant .cmd-msg-text { font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; }
 .cmd-msg.assistant .cmd-msg-text > :first-child { margin-top: 0; }
