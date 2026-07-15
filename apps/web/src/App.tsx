@@ -9,10 +9,13 @@ import { requestCommandChat } from '../../../services/llm/command-chat'
 import { InlineCommandBubble } from './InlineCommandBubble'
 import { CommandSidePanel } from './CommandSidePanel'
 import {
-  applyAction,
+  actionAutoApplies,
+  applySessionAction,
   buildTurnContext,
   paintContextHighlight,
   clearContextHighlight,
+  freeCreateSpot,
+  salvageLooseAction,
   type SelectionSnapshot,
   type CommandSession,
   type CommandMessage
@@ -268,9 +271,16 @@ const settledCommandSession = (s: CommandSession | null): CommandSession | null 
   s
     ? {
         ...s,
+        origin: s.origin ?? (s.source ? 'selection' : 'canvas'),
+        canvasRefs: s.canvasRefs ?? [],
+        createdNoteCount: s.createdNoteCount ?? 0,
         messages: s.messages.map((m) => (m.pending ? { ...m, pending: false } : m))
       }
     : null
+
+type BubbleState =
+  | { kind: 'selection'; snapshot: SelectionSnapshot }
+  | { kind: 'canvas'; x: number; y: number }
 
 // URLs the user types/pastes into a bullet get pulled out into inline cards.
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
@@ -555,11 +565,9 @@ function CanvasSpace({
   const [aiEnabled, setAiEnabled] = useState(aiReady)
 
   // ---- Tier-3 command sessions: select text → bubble → side-panel chat ----
-  // bubbleSel is the FROZEN SelectionSnapshot the bubble was opened from; the
-  // live browser selection collapsing afterwards is expected and ignored. One
-  // session at a time (demo scope), restored per idea space so local backups
-  // include the right-side AI chat.
-  const [bubbleSel, setBubbleSel] = useState<SelectionSnapshot | null>(null)
+  // Selection bubbles retain a frozen snapshot; canvas bubbles retain only a
+  // viewport-space click point. One session at a time, restored per idea space.
+  const [bubble, setBubble] = useState<BubbleState | null>(null)
   const [session, setSession] = useState<CommandSession | null>(() =>
     settledCommandSession(loadJSON<CommandSession | null>(k('command-session'), null))
   )
@@ -970,7 +978,7 @@ function CanvasSpace({
       // Pan/zoom moves the canvas under the bubble's frozen screen-space rect —
       // dismiss it rather than let it float over the wrong spot. (The context
       // HIGHLIGHT lives on the text itself, so it moves correctly and stays.)
-      setBubbleSel(null)
+      setBubble(null)
       setView((v) => {
         if (e.ctrlKey || e.metaKey) {
           const cx = e.clientX - rect.left, cy = e.clientY - rect.top
@@ -1352,7 +1360,7 @@ function CanvasSpace({
   // after every notes render (React replaces the DOM nodes). It lives on the
   // real text, so pan/zoom/drag move it for free. Clears when the conversation
   // officially ends (panel close / bubble dismissed without submitting).
-  const activeSnapshot = session?.source ?? bubbleSel
+  const activeSnapshot = session?.source ?? (bubble?.kind === 'selection' ? bubble.snapshot : null)
   useEffect(() => {
     if (!activeSnapshot) {
       clearContextHighlight()
@@ -1366,22 +1374,55 @@ function CanvasSpace({
   // pointerdown from reaching the document). No session started → the
   // highlight clears with it via the effect above.
   useEffect(() => {
-    if (!bubbleSel) return
+    if (!bubble) return
     // Belt and braces: the bubble already stops its own pointerdown from
     // bubbling, but ALSO check the target — event-order quirks (touch,
     // synthetic events) must never let a click INSIDE the bubble dismiss it.
     const onDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement | null)?.closest?.('.cmd-bubble')) return
-      setBubbleSel(null)
+      setBubble(null)
     }
     document.addEventListener('pointerdown', onDown)
     return () => document.removeEventListener('pointerdown', onDown)
-  }, [bubbleSel])
+  }, [bubble])
 
   // A settled text selection inside a note summons the bubble (already
   // snapshot-shaped — freezing IS receiving it).
   const onNoteTextSelection = useCallback((sel: SelectionSnapshot) => {
-    setBubbleSel(sel)
+    setBubble({ kind: 'selection', snapshot: sel })
+  }, [])
+
+  // One guarded path for streamed auto-applies and clicked proposal actions.
+  // It resolves only session aliases and records every id it creates, so later
+  // turns can edit pending session output without ever seeing real canvas ids.
+  const applyCommandAction = useCallback((action: Parameters<typeof applySessionAction>[2], sessionId?: string) => {
+    const cur = sessionRef.current
+    if (!cur || (sessionId && cur.id !== sessionId)) return false
+
+    let createAt = { x: 80, y: 80 }
+    const src = cur.source ? notesRef.current.find((n) => n.id === cur.source!.noteId) : undefined
+    if (src) {
+      createAt = { x: src.x + 340, y: src.y }
+    } else if (canvasRef.current) {
+      const r = canvasRef.current.getBoundingClientRect()
+      const v = viewRef.current
+      const anchor = { x: (r.width * 0.35 - v.x) / v.scale, y: (r.height * 0.3 - v.y) / v.scale }
+      // Scan grid slots against ALL live notes (earlier sessions' output and
+      // the user's own included), so a fresh note never stacks on one.
+      createAt = freeCreateSpot(
+        anchor,
+        notesRef.current,
+        action.type === 'create-note' ? action.bullets.length : 3
+      )
+    }
+
+    const result = applySessionAction(notesRef.current, cur, action, createAt)
+    if (!result.applied) return false
+    notesRef.current = result.notes
+    sessionRef.current = result.session
+    setNotes(result.notes)
+    setSession(result.session)
+    return true
   }, [])
 
   // One chat turn: append the user message + a streaming assistant message,
@@ -1411,13 +1452,13 @@ function CanvasSpace({
     const fireId = uid('cf')
     firesRef.current.set(fireId, { controller, isCommand: true })
 
-    const patchAsst = (fn: (m: CommandMessage) => CommandMessage) =>
-      setSession((s) => {
-        if (!s) return s
-        const upd = { ...s, messages: s.messages.map((m) => (m.id === asstMsg.id ? fn(m) : m)) }
-        sessionRef.current = upd
-        return upd
-      })
+    const patchAsst = (fn: (m: CommandMessage) => CommandMessage) => {
+      const live = sessionRef.current
+      if (!live || live.id !== cur.id) return
+      const upd = { ...live, messages: live.messages.map((m) => (m.id === asstMsg.id ? fn(m) : m)) }
+      sessionRef.current = upd
+      setSession(upd)
+    }
 
     // Project Memory: select against the user's message + selected text (the
     // chat's primary referents). Null on empty catalog; never throws.
@@ -1462,13 +1503,27 @@ function CanvasSpace({
         projectMemory: memory ?? undefined,
         ...thinkerReq,
         messages: history.map((m) => ({ role: m.role, text: m.text })),
-        context: buildTurnContext(note, cur.source, transcriptWindow)
+        context: buildTurnContext(note, cur.source, transcriptWindow, cur, notesRef.current)
       },
       {
         onText: (t) => patchAsst((m) => ({ ...m, text: m.text + t })),
         onSource: (source) => patchAsst((m) => ({ ...m, sources: [...(m.sources || []), source] })),
-        onAction: (action) =>
+        onAction: (raw) => {
+          // Loose actions (no target) get a home via the live ledger BEFORE
+          // routing, so buttons stored here are always appliable on click.
+          const live = sessionRef.current
+          const action = live && live.id === cur.id ? salvageLooseAction(raw, live) : null
+          if (!action) return
+          if (actionAutoApplies(action)) {
+            if (!applyCommandAction(action, cur.id)) return
+            patchAsst((m) => ({
+              ...m,
+              actions: [...(m.actions || []), { id: uid('a'), action, applied: true }]
+            }))
+            return
+          }
           patchAsst((m) => ({ ...m, actions: [...(m.actions || []), { id: uid('a'), action }] }))
+        }
       },
       controller.signal,
       { provider: thinkerRes.provider }
@@ -1482,17 +1537,26 @@ function CanvasSpace({
       pending: false,
       text: result.error ? (m.text ? `${m.text}\n⚠ ${result.error}` : `⚠ ${result.error}`) : m.text
     }))
-  }, [memorySelectionCall, transcriptSlice])
+  }, [applyCommandAction, memorySelectionCall, transcriptSlice])
 
   // Open a session from the bubble (snapshot) or the bottom bar (null source),
   // replacing any previous one — its stream is aborted, its highlight replaced.
   const openCommandSession = useCallback((source: SelectionSnapshot | null, firstCommand: string) => {
     chatAbortRef.current?.abort()
     const title = firstCommand.length > 42 ? firstCommand.slice(0, 42) + '…' : firstCommand
-    const s: CommandSession = { id: uid('cs'), source, title, messages: [], createdAt: Date.now() }
+    const s: CommandSession = {
+      id: uid('cs'),
+      source,
+      origin: source ? 'selection' : 'canvas',
+      title,
+      messages: [],
+      createdAt: Date.now(),
+      canvasRefs: [],
+      createdNoteCount: 0
+    }
     sessionRef.current = s
     setSession(s)
-    setBubbleSel(null)
+    setBubble(null)
     void sendTurn(firstCommand)
   }, [sendTurn])
 
@@ -1512,19 +1576,9 @@ function CanvasSpace({
     const msg = cur?.messages.find((m) => m.id === messageId)
     const pa = msg?.actions?.find((a) => a.id === actionId)
     if (!cur || !pa || pa.applied) return
-    // Where a create-note action lands: beside the source note, else at a
-    // visible spot in the current view.
-    const src = cur.source ? notesRef.current.find((n) => n.id === cur.source!.noteId) : undefined
-    let createAt = { x: 80, y: 80 }
-    if (src) createAt = { x: src.x + 340, y: src.y }
-    else if (canvasRef.current) {
-      const r = canvasRef.current.getBoundingClientRect()
-      const v = viewRef.current
-      createAt = { x: (r.width * 0.35 - v.x) / v.scale, y: (r.height * 0.3 - v.y) / v.scale }
-    }
-    setNotes((ns) => applyAction(ns, pa.action, createAt))
+    if (!applyCommandAction(pa.action, cur.id)) return
     setSession((s) => {
-      if (!s) return s
+      if (!s || s.id !== cur.id) return s
       const upd = {
         ...s,
         messages: s.messages.map((m) =>
@@ -1536,7 +1590,7 @@ function CanvasSpace({
       sessionRef.current = upd
       return upd
     })
-  }, [])
+  }, [applyCommandAction])
 
   // ---- canvas: drag blank = marquee-select (框选); plain click = new note ----
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
@@ -1748,6 +1802,12 @@ function CanvasSpace({
     setSelectedIds(new Set([id]))
     setNoteMenu({ id, x: e.clientX, y: e.clientY })
   }
+
+  const onCanvasContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setNoteMenu(null)
+    setBubble({ kind: 'canvas', x: e.clientX, y: e.clientY })
+  }, [])
 
   // Clone a note with fresh ids (note + every item) so it doesn't collide with
   // the original in localStorage, offset a bit so the copy is visibly distinct,
@@ -2247,6 +2307,7 @@ function CanvasSpace({
         className="canvas"
           ref={canvasRef}
           onPointerDown={onCanvasPointerDown}
+          onContextMenu={onCanvasContextMenu}
           onDrop={onDrop}
           onPaste={onPaste}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
@@ -2368,12 +2429,17 @@ function CanvasSpace({
         </div>
       )}
 
-      {/* Tier-3: inline AI bubble at the frozen selection (viewport-space) */}
-      {bubbleSel && (
+      {/* Tier-3: inline AI bubble at a frozen selection or canvas click. */}
+      {bubble && (
         <InlineCommandBubble
-          snapshot={bubbleSel}
-          onSubmit={(cmd) => openCommandSession(bubbleSel, cmd)}
-          onDismiss={() => setBubbleSel(null)}
+          anchor={bubble.kind === 'selection'
+            ? bubble.snapshot.screenRect
+            : { top: bubble.y, left: bubble.x, width: 0, height: 0 }}
+          placeholder={bubble.kind === 'selection'
+            ? tr('Ask AI about this…', '向 AI 提问…')
+            : tr('Ask AI anything…', '问 AI 任何问题…')}
+          onSubmit={(cmd) => openCommandSession(bubble.kind === 'selection' ? bubble.snapshot : null, cmd)}
+          onDismiss={() => setBubble(null)}
         />
       )}
 

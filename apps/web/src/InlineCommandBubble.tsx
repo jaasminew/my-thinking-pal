@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SelectionSnapshot } from './command-session'
 import { isImeEvent } from './ime'
 import { useLocale } from './locale'
 
@@ -10,11 +9,13 @@ import { useLocale } from './locale'
 // handled by the canvas via a document listener — this root only marks itself
 // so that listener can recognize inside-clicks.
 export function InlineCommandBubble({
-  snapshot,
+  anchor,
+  placeholder,
   onSubmit,
   onDismiss
 }: {
-  snapshot: SelectionSnapshot
+  anchor: { top: number; left: number; width: number; height: number }
+  placeholder: string
   onSubmit: (command: string) => void
   onDismiss: () => void
 }) {
@@ -22,9 +23,15 @@ export function InlineCommandBubble({
   const [value, setValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Focus on open AND on reposition (a second right-click moves the mounted
+  // bubble without remounting it). The 0-timeout retake matters for real right
+  // clicks: contextmenu fires DURING mousedown, so the browser's mousedown
+  // default focus action runs after this effect and would steal focus back.
   useEffect(() => {
     inputRef.current?.focus()
-  }, [])
+    const t = setTimeout(() => inputRef.current?.focus(), 0)
+    return () => clearTimeout(t)
+  }, [anchor.left, anchor.top])
 
   const submit = () => {
     const v = value.trim()
@@ -34,8 +41,8 @@ export function InlineCommandBubble({
 
   // Below the selection, clamped into the viewport (384px wide, see CSS).
   const W = 384
-  const left = Math.max(8, Math.min(snapshot.screenRect.left, window.innerWidth - W - 8))
-  const top = Math.min(snapshot.screenRect.top + snapshot.screenRect.height + 10, window.innerHeight - 64)
+  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - W - 8))
+  const top = Math.min(anchor.top + anchor.height + 10, window.innerHeight - 64)
 
   return (
     <div
@@ -55,7 +62,7 @@ export function InlineCommandBubble({
       <input
         ref={inputRef}
         value={value}
-        placeholder={tr('Ask AI about this…', '向 AI 提问…')}
+        placeholder={placeholder}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (isImeEvent(e)) return

@@ -82,6 +82,7 @@ export interface CommandChatContext {
   transcriptWindow?: string
   selectedText?: string
   sourceNoteId?: string
+  sessionCanvas?: string
   sourceNote?: {
     keyword?: string
     humanBullets?: string[]
@@ -99,7 +100,10 @@ export function buildCommandChatPrompt(
 ): string {
   const parts: string[] = []
   if (typeof context?.transcriptWindow === 'string' && context.transcriptWindow.trim()) {
-    parts.push(`Spoken transcript around this note (1 min):\n${context.transcriptWindow.trim()}`)
+    const label = context?.sourceNote
+      ? 'Spoken transcript around this note (1 min):'
+      : 'Spoken transcript (last 1 min):'
+    parts.push(`${label}\n${context.transcriptWindow.trim()}`)
   }
   const sn = context?.sourceNote
   if (sn && typeof sn === 'object') {
@@ -122,6 +126,15 @@ export function buildCommandChatPrompt(
   }
   if (typeof context?.selectedText === 'string' && context.selectedText.trim()) {
     parts.push(`SELECTED TEXT (the user summoned you about this):\n"${context.selectedText.trim()}"`)
+  }
+  if (!context?.sourceNote && !context?.selectedText?.trim()) {
+    parts.push('The user summoned you from the open canvas — no note is selected.')
+  }
+  if (typeof context?.sessionCanvas === 'string' && context.sessionCanvas.trim()) {
+    parts.push(
+      `Canvas content YOU created this session (alias-addressed; the only canvas content you may edit):\n` +
+        context.sessionCanvas.trim()
+    )
   }
   const hist = messages
     .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${String(m.text ?? '')}`)

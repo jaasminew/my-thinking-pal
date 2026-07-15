@@ -46,12 +46,22 @@ export type CommandMessage = {
   sources?: CommandChatSource[]
 }
 
+export type SessionCanvasRef = {
+  alias: string
+  /** Real ids stay client-side and never enter the model prompt. */
+  noteId: string
+  items: { alias: string; itemId: string }[]
+}
+
 export type CommandSession = {
   id: string
-  source: SelectionSnapshot | null // null = opened from the bottom command bar
+  source: SelectionSnapshot | null
+  origin: 'selection' | 'canvas'
   title: string
   messages: CommandMessage[]
   createdAt: number
+  canvasRefs: SessionCanvasRef[]
+  createdNoteCount: number
 }
 
 // ---- per-turn context capture --------------------------------------------------
@@ -61,7 +71,9 @@ export type CommandSession = {
 export function buildTurnContext(
   note: KeywordNote | undefined,
   snapshot: SelectionSnapshot | null,
-  transcriptWindow: string | undefined
+  transcriptWindow: string | undefined,
+  session: CommandSession,
+  notes: KeywordNote[]
 ): CommandChatRequest['context'] {
   const ctx: CommandChatRequest['context'] = {}
   if (snapshot?.selectedText) ctx.selectedText = snapshot.selectedText
@@ -81,6 +93,23 @@ export function buildTurnContext(
     }
   }
   if (transcriptWindow) ctx.transcriptWindow = transcriptWindow
+  const sessionCanvas = session.canvasRefs
+    .map((ref) => {
+      const liveNote = notes.find((n) => n.id === ref.noteId)
+      if (!liveNote) return null
+      const lines = ref.items
+        .map(({ alias, itemId }) => {
+          const item = liveNote.items.find((i) => i.id === itemId)
+          if (!item || item.status !== 'pending') return null
+          const text = isBullet(item) ? item.text : isCard(item) ? item.title : '(image)'
+          return `  [${alias}] ${text}`
+        })
+        .filter((line): line is string => !!line)
+      return `[${ref.alias}] Note "${liveNote.keyword}"${lines.length ? `\n${lines.join('\n')}` : ' (no editable lines left)'}`
+    })
+    .filter((block): block is string => !!block)
+    .join('\n')
+  if (sessionCanvas) ctx.sessionCanvas = sessionCanvas
   return ctx
 }
 
@@ -97,25 +126,42 @@ const pendingBullet = (text: string, image?: BulletItem['image']): BulletItem =>
   ...(image ? { image } : {})
 })
 
-const appendToNote = (notes: KeywordNote[], noteId: string, items: NoteItem[]): KeywordNote[] =>
-  notes.map((n) => (n.id === noteId ? { ...n, items: [...n.items, ...items] } : n))
+const appendToNote = (
+  notes: KeywordNote[],
+  noteId: string,
+  items: NoteItem[]
+): { notes: KeywordNote[]; created?: { noteId: string; itemIds: string[] } } => {
+  if (!notes.some((n) => n.id === noteId)) return { notes }
+  return {
+    notes: notes.map((n) => (n.id === noteId ? { ...n, items: [...n.items, ...items] } : n)),
+    created: { noteId, itemIds: items.map((item) => item.id) }
+  }
+}
+
+export type ApplyActionResult = {
+  notes: KeywordNote[]
+  created?: { noteId: string; itemIds: string[] }
+}
 
 export function applyAction(
   notes: KeywordNote[],
   action: CommandChatAction,
   /** World-space spot for a created note (near the source note / view center). */
   createAt: { x: number; y: number }
-): KeywordNote[] {
+): ApplyActionResult {
   switch (action.type) {
-    case 'insert-bullet':
+    case 'insert-bullet': {
+      if (!action.noteId) return { notes }
       return appendToNote(notes, action.noteId, [pendingBullet(action.text)])
+    }
     case 'append-image':
       // Always a pending BULLET carrying the image — standalone image items
       // have no keep/reject UI, so the image rides its caption's ✓/✕.
       return appendToNote(notes, action.noteId, [
         pendingBullet(action.caption, { src: action.src, sourceUrl: action.sourceUrl, title: action.title })
       ])
-    case 'add-card':
+    case 'add-card': {
+      if (!action.noteId) return { notes }
       return appendToNote(notes, action.noteId, [
         {
           kind: 'card',
@@ -128,13 +174,15 @@ export function applyAction(
           image: action.image
         }
       ])
+    }
     case 'create-note': {
       const keyword = action.keyword.trim()
       const words = keyword ? keyword.split(/\s+/).length : 0
-      return [
-        ...notes,
-        {
-          id: uid('n'),
+      const noteId = uid('n')
+      const items = action.bullets.filter((t) => t.trim()).map((t) => pendingBullet(t.trim()))
+      return {
+        notes: [...notes, {
+          id: noteId,
           x: createAt.x,
           y: createAt.y,
           keyword,
@@ -144,16 +192,198 @@ export function applyAction(
           rejected: [],
           // Pre-set so the ambient every-20 trigger doesn't double-fire on it.
           lastFiredWords: words,
-          items: action.bullets.filter((t) => t.trim()).map((t) => pendingBullet(t.trim()))
-        }
-      ]
+          items
+        }],
+        created: { noteId, itemIds: items.map((item) => item.id) }
+      }
     }
+    case 'edit-bullet':
+    case 'remove-item':
+    case 'edit-note':
+      return { notes }
   }
 }
 
+export type ApplySessionActionResult = {
+  notes: KeywordNote[]
+  session: CommandSession
+  applied: boolean
+}
+
+const withRegisteredItems = (
+  session: CommandSession,
+  refAlias: string,
+  itemIds: string[]
+): CommandSession => ({
+  ...session,
+  canvasRefs: session.canvasRefs.map((ref) => {
+    if (ref.alias !== refAlias) return ref
+    const start = ref.items.length
+    return {
+      ...ref,
+      items: [
+        ...ref.items,
+        ...itemIds.map((itemId, i) => ({ alias: `${ref.alias}.${start + i + 1}`, itemId }))
+      ]
+    }
+  })
+})
+
+/** Apply one validated action through the session-only alias ledger. */
+export function applySessionAction(
+  notes: KeywordNote[],
+  session: CommandSession,
+  action: CommandChatAction,
+  createAt: { x: number; y: number }
+): ApplySessionActionResult {
+  if (action.type === 'create-note') {
+    const result = applyAction(notes, action, createAt)
+    if (!result.created) return { notes, session, applied: false }
+    const alias = `n${session.canvasRefs.length + 1}`
+    const ref: SessionCanvasRef = {
+      alias,
+      noteId: result.created.noteId,
+      items: result.created.itemIds.map((itemId, i) => ({ alias: `${alias}.${i + 1}`, itemId }))
+    }
+    return {
+      notes: result.notes,
+      session: {
+        ...session,
+        canvasRefs: [...session.canvasRefs, ref],
+        createdNoteCount: session.createdNoteCount + 1
+      },
+      applied: true
+    }
+  }
+
+  if (action.type === 'insert-bullet' || action.type === 'add-card') {
+    const targetRef = action.ref ? session.canvasRefs.find((ref) => ref.alias === action.ref) : undefined
+    const noteId = targetRef?.noteId ?? action.noteId
+    if (!noteId || (action.ref && !targetRef)) return { notes, session, applied: false }
+    const result = applyAction(notes, { ...action, noteId, ref: undefined }, createAt)
+    if (!result.created) return { notes, session, applied: false }
+    return {
+      notes: result.notes,
+      session: targetRef
+        ? withRegisteredItems(session, targetRef.alias, result.created.itemIds)
+        : session,
+      applied: true
+    }
+  }
+
+  if (action.type === 'append-image') {
+    const result = applyAction(notes, action, createAt)
+    return { notes: result.notes, session, applied: !!result.created }
+  }
+
+  if (action.type === 'edit-note') {
+    const ref = session.canvasRefs.find((entry) => entry.alias === action.ref)
+    const liveNote = ref ? notes.find((n) => n.id === ref.noteId) : undefined
+    if (!ref || !liveNote) return { notes, session, applied: false }
+    // A removed/rejected line no longer exists and must not block a rename;
+    // only a line the user KEPT locks the note's identity.
+    const anyKept = ref.items.some(({ itemId }) => {
+      const item = liveNote.items.find((i) => i.id === itemId)
+      return !!item && item.status !== 'pending'
+    })
+    if (anyKept) return { notes, session, applied: false }
+    return {
+      notes: notes.map((n) => (n.id === liveNote.id ? { ...n, keyword: action.keyword.trim() } : n)),
+      session,
+      applied: true
+    }
+  }
+
+  const itemRef = session.canvasRefs
+    .flatMap((entry) => entry.items.map((item) => ({ entry, item })))
+    .find(({ item }) => item.alias === action.ref)
+  if (!itemRef) return { notes, session, applied: false }
+  const liveNote = notes.find((n) => n.id === itemRef.entry.noteId)
+  const liveItem = liveNote?.items.find((item) => item.id === itemRef.item.itemId)
+  if (!liveNote || !liveItem || liveItem.status !== 'pending') return { notes, session, applied: false }
+
+  if (action.type === 'edit-bullet') {
+    if (!isBullet(liveItem)) return { notes, session, applied: false }
+    return {
+      notes: notes.map((n) => n.id === liveNote.id
+        ? { ...n, items: n.items.map((item) => item.id === liveItem.id ? { ...item, text: action.text } : item) }
+        : n),
+      session,
+      applied: true
+    }
+  }
+
+  return {
+    notes: notes.map((n) => n.id === liveNote.id
+      ? { ...n, items: n.items.filter((item) => item.id !== liveItem.id) }
+      : n),
+    session,
+    applied: true
+  }
+}
+
+export const spreadCreateAt = (anchor: { x: number; y: number }, index: number) => ({
+  x: anchor.x + (index % 3) * 340,
+  y: anchor.y + Math.floor(index / 3) * 320
+})
+
+// Rough world-space footprint of a note: width from CSS, height estimated from
+// line count (wrapped bullets undercount a little, which the 320px row pitch
+// absorbs). Good enough to tell an occupied grid slot from a free one.
+const NOTE_W = 320
+const noteWorldBox = (n: KeywordNote) => ({ x: n.x, y: n.y, w: NOTE_W, h: 72 + 28 * n.items.length })
+const boxesOverlap = (
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number }
+) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+
+/**
+ * First grid slot (spreadCreateAt order) whose footprint hits no existing
+ * note — so auto-created notes never stack on earlier sessions' output or the
+ * user's own notes near the view center.
+ */
+export function freeCreateSpot(
+  anchor: { x: number; y: number },
+  notes: KeywordNote[],
+  bulletCount = 3
+): { x: number; y: number } {
+  const occupied = notes.map(noteWorldBox)
+  const h = 72 + 28 * Math.max(1, bulletCount)
+  for (let k = 0; k < 60; k++) {
+    const spot = spreadCreateAt(anchor, k)
+    if (!occupied.some((b) => boxesOverlap({ x: spot.x, y: spot.y, w: NOTE_W, h }, b))) return spot
+  }
+  return spreadCreateAt(anchor, 60) // pathological density — just go far down
+}
+
+// A LOOSE action (insert-bullet / add-card with neither noteId nor ref) has
+// nowhere to land by itself — models sometimes emit these for "create/add …"
+// asks on the open canvas. Instead of losing the content, give it a home: the
+// model's most recent session note, else (bullets only) a fresh note titled
+// from the bullet's first words. Selection sessions never produce loose
+// actions (the service injects the source note id).
+export function salvageLooseAction(
+  action: CommandChatAction,
+  session: CommandSession
+): CommandChatAction | null {
+  if (action.type !== 'insert-bullet' && action.type !== 'add-card') return action
+  if (action.noteId || action.ref) return action
+  const last = session.canvasRefs[session.canvasRefs.length - 1]
+  if (last) return { ...action, ref: last.alias }
+  if (action.type === 'insert-bullet') {
+    const keyword = action.text.split(/\s+/).slice(0, 4).join(' ')
+    return { type: 'create-note', keyword, bullets: [action.text], ...(action.apply ? { apply: true as const } : {}) }
+  }
+  return null // a loose card with no note to hold it — nothing sane to do
+}
+
+export const actionAutoApplies = (action: CommandChatAction): boolean =>
+  action.type === 'edit-bullet' || action.type === 'remove-item' || action.type === 'edit-note' ||
+  ('apply' in action && action.apply === true)
+
 /** Which note an action lands in (create-note has none). */
 export const actionNoteId = (a: CommandChatAction): string | undefined =>
-  a.type === 'create-note' ? undefined : a.noteId
+  'noteId' in a ? a.noteId : undefined
 
 /** Short human label for an action button. */
 export function actionLabel(a: CommandChatAction): string {
@@ -166,6 +396,12 @@ export function actionLabel(a: CommandChatAction): string {
       return `Add link card: ${a.title}`
     case 'create-note':
       return `New note: ${a.keyword}`
+    case 'edit-bullet':
+      return `Edited: ${a.text.length > 40 ? a.text.slice(0, 40) + '…' : a.text}`
+    case 'remove-item':
+      return 'Removed a line'
+    case 'edit-note':
+      return `Renamed note: ${a.keyword}`
   }
 }
 
