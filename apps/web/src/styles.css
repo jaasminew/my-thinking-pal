@@ -717,6 +717,7 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
   font-size: 15px;
   line-height: 1.5;
 }
+.bullet:not(.bulleted) { gap: 0; }
 .bullet .dot {
   width: var(--bullet-marker-width);
   color: var(--ink);
@@ -754,6 +755,7 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
   user-select: text; -webkit-user-select: text;
   white-space: pre-wrap; word-break: break-word;
 }
+.bullet-text span { white-space: pre-wrap; }
 /* An empty editable line has no text, so no baseline: the dot (baseline-aligned)
    and the caret drift apart until the first character lands. A zero-width-space
    strut gives the empty line a real baseline without entering innerText. */
@@ -771,7 +773,7 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
 }
 .bullet.ai.pending .bullet-img { opacity: 0.75; }          /* dimmed with its pending text */
 
-/* ---- expanded image previewer (click an inline image) ----
+/* ---- expanded image previewer (double-click any image) ----
    Spec: scrim #E9E9E9 @ 50% + 20px backdrop blur; source line under the image:
    favicon, #000 text, underline #a4a4a4. */
 .img-preview {
@@ -886,16 +888,118 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
   animation: caret-blink 1.1s steps(2, start) infinite;
 }
 
-/* A standalone floating image on the canvas (dropped onto blank space) — no note
-   wrapper, no header. Draggable/selectable/deletable like a note. */
-.canvas-image {
-  position: absolute; display: block;
-  max-width: 320px; max-height: 320px;
-  border-radius: 12px; object-fit: contain;
-  cursor: zoom-in; user-select: none; /* click to expand — same as inline images */
-  box-shadow: 0 1px 5px rgba(0, 0, 0, .14);
+/* ---- shared image frame: standalone, in-note, and AI inline images ---- */
+.editable-image {
+  position: relative; display: inline-block; max-width: 100%;
+  line-height: 0; user-select: none; border-radius: 12px;
 }
-.canvas-image.selected { outline: 1px solid var(--focus); outline-offset: 2px; }
+/* A standalone floating image must opt back out of inline flow. Keep this rule
+   after .editable-image so the shared relative-position rule cannot override
+   its canvas coordinates. */
+.editable-image.canvas-image { position: absolute; }
+.editable-image > img {
+  display: block; width: 100%; height: auto;
+  border-radius: 12px; object-fit: contain; cursor: pointer;
+  background: #e4e4e2; box-shadow: 0 1px 5px rgba(0, 0, 0, .14);
+}
+.editable-image.selected { outline: 1px solid var(--focus); outline-offset: 2px; }
+.note-image .editable-image, .bullet-body .editable-image { margin: 4px 0 2px; }
+.image-toolbar {
+  position: absolute; z-index: 20; right: 0; bottom: calc(100% + 8px);
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px; border-radius: 8px; background: #161616; color: #fff;
+  box-shadow: 0 4px 14px #0000002e;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform-origin: 100% 100%;
+  transform: scale(calc(1 / var(--canvas-scale, 1)));
+  transition: opacity .12s ease, visibility 0s linear .12s;
+}
+.image-toolbar::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 10px;
+}
+.editable-image:hover .image-toolbar,
+.editable-image:focus-within .image-toolbar {
+  opacity: 1; visibility: visible; pointer-events: auto; transition-delay: 0s;
+}
+.image-toolbar > button, .selection-tool {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 30px; border: 0; border-radius: 6px;
+  background: transparent; color: #fff; cursor: pointer; padding: 6px;
+}
+.image-toolbar > button:hover, .image-toolbar > button.active,
+.selection-tool:hover, .selection-tool.active { background: #ffffff20; }
+.image-toolbar svg, .selection-tool svg {
+  width: 18px; height: 18px; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+.image-link-editor {
+  position: absolute; left: 0; top: calc(100% + 7px);
+  display: flex; align-items: center; gap: 6px; width: 280px;
+  padding: 7px; border-radius: 9px; background: #161616; color: #fff;
+  font-size: 12px; line-height: 1.2; box-shadow: 0 4px 14px #00000035;
+}
+.image-link-editor input {
+  min-width: 0; flex: 1; height: 27px; border: 1px solid #ffffff35;
+  border-radius: 6px; outline: none; padding: 0 8px;
+  background: #2b2b2b; color: #fff;
+}
+.image-link-editor input.invalid { border-color: #ef6a61; }
+.image-link-editor span {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.image-link-editor button {
+  border: 0; border-radius: 6px; padding: 6px 8px;
+  background: #fff; color: #111; cursor: pointer; font-size: 12px;
+}
+.image-resize {
+  position: absolute; z-index: 14; width: 10px; height: 10px;
+  background: #fff; border: 1.5px solid var(--focus);
+  opacity: 0; visibility: hidden; transition: opacity .12s ease;
+}
+.image-resize::after {
+  content: ''; position: absolute; inset: -9px;
+}
+.editable-image:hover .image-resize, .editable-image.selected .image-resize {
+  opacity: 1; visibility: visible;
+}
+.image-resize.tl { left: -6px; top: -6px; cursor: nwse-resize; }
+.image-resize.tr { right: -6px; top: -6px; cursor: nesw-resize; }
+.image-resize.bl { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.image-resize.br { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.image-resize-edge {
+  position: absolute; z-index: 13; background: transparent;
+}
+.image-resize-edge.top, .image-resize-edge.bottom {
+  left: 12px; right: 12px; height: 16px; cursor: ns-resize;
+}
+.image-resize-edge.left, .image-resize-edge.right {
+  top: 12px; bottom: 12px; width: 16px; cursor: ew-resize;
+}
+.image-resize-edge.top { top: -8px; }
+.image-resize-edge.right { right: -8px; }
+.image-resize-edge.bottom { bottom: -8px; }
+.image-resize-edge.left { left: -8px; }
+
+/* Delayed compact labels shared by both black editing toolbars. */
+.tooltip-target::after {
+  content: attr(data-tooltip);
+  position: absolute; z-index: 30; left: 50%; bottom: calc(100% + 8px);
+  transform: translateX(-50%); width: max-content; max-width: 180px;
+  padding: 4px 7px; border-radius: 5px;
+  background: #161616; color: #fff; font-size: 11px; line-height: 1.25;
+  box-shadow: 0 2px 8px #00000030;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .1s ease .4s, visibility 0s linear .5s;
+}
+.tooltip-target::before {
+  content: ''; position: absolute; z-index: 31; left: 50%; bottom: calc(100% + 3px);
+  transform: translateX(-50%); border: 5px solid transparent; border-top-color: #161616;
+  opacity: 0; visibility: hidden; transition: opacity .1s ease .4s, visibility 0s linear .5s;
+}
+.tooltip-target:hover::after, .tooltip-target:hover::before,
+.tooltip-target:focus-visible::after, .tooltip-target:focus-visible::before {
+  opacity: 1; visibility: visible;
+}
 
 /* ---- recording control (used in the transcript's bottom dock) ---- */
 .record {
@@ -918,8 +1022,32 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
    survives the native selection collapsing when the bubble input takes focus,
    and clears only when the conversation is officially closed. */
 ::highlight(cmd-ctx) { background: #f6c9e8; color: var(--ink); }
+.cmd-context-highlight-layer {
+  position: fixed; z-index: 1190; pointer-events: none;
+  border-radius: 2px; background: rgba(246, 201, 232, .6);
+}
 
 /* ---- Tier-3: inline command bubble ---- */
+.selection-toolbar {
+  position: fixed; z-index: 1200;
+  display: flex; align-items: center; gap: 2px; width: max-content;
+  padding: 4px; border-radius: 9px; background: #161616; color: #fff;
+  box-shadow: 0 5px 18px #00000035;
+}
+.selection-picker {
+  position: absolute; left: 0; top: calc(100% + 7px);
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px; border-radius: 8px; background: #161616;
+  box-shadow: 0 4px 14px #00000035;
+}
+.color-picker button {
+  width: 20px; height: 20px; border: 2px solid #fff; border-radius: 50%; cursor: pointer;
+}
+.option-picker button {
+  border: 0; border-radius: 5px; padding: 5px 8px;
+  background: transparent; color: #fff; cursor: pointer; white-space: nowrap;
+}
+.option-picker button:hover { background: #ffffff20; }
 .cmd-bubble {
   position: fixed; z-index: 1200;
   display: grid; grid-template-columns: 20px minmax(0, 1fr) 30px; align-items: center; column-gap: 8px;

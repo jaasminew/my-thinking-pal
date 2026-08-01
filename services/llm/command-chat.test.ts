@@ -4,6 +4,29 @@ import type { CommandChatAction, CommandChatSource } from './command-chat-types'
 import { TEST_PROVIDER, sseResponse, rawJsonResponse, mockFetchRouter } from '../../packages/core/llm/__mocks__/mock-provider'
 
 describe('requestCommandChat (client-direct)', () => {
+  it('sends a selected canvas image as multimodal context', async () => {
+    const mock = mockFetchRouter([{
+      match: (u) => u.includes('/chat/completions'),
+      respond: () => sseResponse(['Looks useful.'])
+    }])
+    await requestCommandChat(
+      {
+        provider: 'open',
+        openSub: 'groq',
+        messages: [{ role: 'user', text: 'analyze this' }],
+        images: ['data:image/png;base64,AA'],
+        context: { hasSelectedImage: true }
+      },
+      { onText: () => {} },
+      undefined,
+      { provider: TEST_PROVIDER, fetchImpl: mock.fetch }
+    )
+    const content = mock.calls[0].body.messages[1].content
+    expect(content).toEqual(expect.arrayContaining([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }
+    ]))
+  })
+
   it('separates prose from ACTION lines and injects the source note id', async () => {
     const text: string[] = []
     const actions: CommandChatAction[] = []

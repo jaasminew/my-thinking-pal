@@ -14,7 +14,7 @@ const fullNote: PlainNote = {
   sourceText: 'modular blocks',
   originSignalType: 'decision',
   items: [
-    { kind: 'bullet', id: 'b1', origin: 'human', text: 'top', status: 'kept', indent: 0 },
+    { kind: 'bullet', id: 'b1', origin: 'human', text: 'top', status: 'kept', indent: 0, bulleted: true, runs: [{ start: 0, end: 3, weight: 700 }] },
     {
       kind: 'bullet',
       id: 'b2',
@@ -25,10 +25,10 @@ const fullNote: PlainNote = {
       fireLine: 0,
       diagnosis: 'needs case',
       indent: 1,
-      image: { src: 'https://x/i.png', sourceUrl: 'https://x', title: 'X' }
+      image: { src: 'https://x/i.png', sourceUrl: 'https://x', title: 'X', w: 260, offsetX: -20, offsetY: -10 }
     },
     { kind: 'card', id: 'c1', title: 'Notion', url: 'https://notion.so', snippet: 's', image: 'https://img', origin: 'ai', status: 'pending', diagnosis: 'd' },
-    { kind: 'image', id: 'i1', src: 'data:...', sourceUrl: 'https://y', title: 'pic', origin: 'human', status: 'kept' }
+    { kind: 'image', id: 'i1', src: 'data:...', sourceUrl: 'https://y', title: 'pic', w: 220, offsetX: 4, offsetY: -8, origin: 'human', status: 'kept' }
   ]
 }
 
@@ -63,7 +63,7 @@ describe('schema round-trip', () => {
   })
 
   it('round-trips a canvas image and defaults missing numeric fields', () => {
-    const img = { id: 'g1', x: 1, y: 2, src: 'data:pic', w: 300 }
+    const img = { id: 'g1', x: 1, y: 2, src: 'data:pic', w: 300, url: 'https://example.com' }
     const y = inDoc(() => canvasImageToY(img))
     expect(yToCanvasImage(y)).toEqual(img)
   })

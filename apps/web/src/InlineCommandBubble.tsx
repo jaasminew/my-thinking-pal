@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { isImeEvent } from './ime'
 import { useLocale } from './locale'
 
-// Floating AI command input, anchored just below the frozen selection rect.
+// Floating AI command input, anchored above contextual selections/images and
+// below ordinary canvas-origin clicks.
 // Viewport-space (position: fixed) — it lives OUTSIDE the scaled canvas layer,
 // so pan/zoom transforms never distort it (the canvas dismisses it on any view
 // change instead). Enter submits, Escape dismisses; click-outside dismissal is
@@ -10,11 +11,13 @@ import { useLocale } from './locale'
 // so that listener can recognize inside-clicks.
 export function InlineCommandBubble({
   anchor,
+  placement = 'below',
   placeholder,
   onSubmit,
   onDismiss
 }: {
   anchor: { top: number; left: number; width: number; height: number }
+  placement?: 'above' | 'below'
   placeholder: string
   onSubmit: (command: string) => void
   onDismiss: () => void
@@ -39,10 +42,17 @@ export function InlineCommandBubble({
     onSubmit(v)
   }
 
-  // Below the selection, clamped into the viewport (384px wide, see CSS).
+  // Contextual bubbles occupy the toolbar's position above the source. Canvas
+  // right-click bubbles retain their below-the-click placement.
   const W = 384
-  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - W - 8))
-  const top = Math.min(anchor.top + anchor.height + 10, window.innerHeight - 64)
+  const H = 46
+  const preferredLeft = placement === 'above'
+    ? anchor.left + anchor.width / 2 - W / 2
+    : anchor.left
+  const left = Math.max(8, Math.min(preferredLeft, window.innerWidth - W - 8))
+  const below = Math.min(anchor.top + anchor.height + 10, window.innerHeight - H - 8)
+  const above = anchor.top - H - 10
+  const top = placement === 'above' && above >= 8 ? above : below
 
   return (
     <div

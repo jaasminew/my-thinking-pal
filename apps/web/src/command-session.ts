@@ -29,6 +29,21 @@ export type SelectionSnapshot = {
   screenRect: { top: number; left: number; width: number; height: number }
 }
 
+export type ImageSelectionSnapshot = {
+  kind: 'image'
+  imageId: string
+  src: string
+  url?: string
+  noteId?: string
+  x?: number
+  y?: number
+  screenRect: { top: number; left: number; width: number; height: number }
+}
+
+export type CommandContextSource = SelectionSnapshot | ImageSelectionSnapshot
+export const isImageSelection = (source: CommandContextSource | null | undefined): source is ImageSelectionSnapshot =>
+  !!source && 'kind' in source && source.kind === 'image'
+
 // ---- session -----------------------------------------------------------------
 
 export type ProposedAction = {
@@ -55,8 +70,8 @@ export type SessionCanvasRef = {
 
 export type CommandSession = {
   id: string
-  source: SelectionSnapshot | null
-  origin: 'selection' | 'canvas'
+  source: CommandContextSource | null
+  origin: 'selection' | 'image' | 'canvas'
   title: string
   messages: CommandMessage[]
   createdAt: number
@@ -70,13 +85,17 @@ export type CommandSession = {
 // they may still be rejected, so they aren't part of the note yet.
 export function buildTurnContext(
   note: KeywordNote | undefined,
-  snapshot: SelectionSnapshot | null,
+  snapshot: CommandContextSource | null,
   transcriptWindow: string | undefined,
   session: CommandSession,
   notes: KeywordNote[]
 ): CommandChatRequest['context'] {
   const ctx: CommandChatRequest['context'] = {}
-  if (snapshot?.selectedText) ctx.selectedText = snapshot.selectedText
+  if (snapshot && !isImageSelection(snapshot) && snapshot.selectedText) ctx.selectedText = snapshot.selectedText
+  if (isImageSelection(snapshot)) {
+    ctx.hasSelectedImage = true
+    if (snapshot.url) ctx.selectedImageUrl = snapshot.url
+  }
   if (note) {
     ctx.sourceNoteId = note.id
     ctx.sourceNote = {
@@ -413,6 +432,11 @@ export function actionLabel(a: CommandChatAction): string {
 // objects go stale). Styled via ::highlight(cmd-ctx) in styles.css.
 
 const HIGHLIGHT_NAME = 'cmd-ctx'
+const HIGHLIGHT_LAYER_CLASS = 'cmd-context-highlight-layer'
+
+const clearHighlightLayer = () => {
+  document.querySelectorAll(`.${HIGHLIGHT_LAYER_CLASS}`).forEach((el) => el.remove())
+}
 
 /** Build a Range over chars [start, end) of a bullet-text host element. */
 const rangeOver = (host: HTMLElement, start: number, end: number): Range | null => {
@@ -440,10 +464,10 @@ const rangeOver = (host: HTMLElement, start: number, end: number): Range | null 
 
 export function paintContextHighlight(snapshot: SelectionSnapshot, note: KeywordNote | undefined) {
   const hl = (CSS as any).highlights as Map<string, unknown> | undefined
-  if (!hl || typeof (window as any).Highlight !== 'function') return // unsupported browser: degrade silently
   const noteEl = document.querySelector(`[data-noteid="${snapshot.noteId}"]`)
   if (!noteEl || !note) {
-    hl.delete(HIGHLIGHT_NAME)
+    hl?.delete(HIGHLIGHT_NAME)
+    clearHighlightLayer()
     return
   }
   const ranges: Range[] = []
@@ -460,10 +484,31 @@ export function paintContextHighlight(snapshot: SelectionSnapshot, note: Keyword
     const r = rangeOver(host, seg.start, seg.end)
     if (r && !r.collapsed) ranges.push(r)
   }
-  if (ranges.length) hl.set(HIGHLIGHT_NAME, new (window as any).Highlight(...ranges))
-  else hl.delete(HIGHLIGHT_NAME)
+  if (hl && typeof (window as any).Highlight === 'function') {
+    if (ranges.length) hl.set(HIGHLIGHT_NAME, new (window as any).Highlight(...ranges))
+    else hl.delete(HIGHLIGHT_NAME)
+  }
+
+  // The overlay keeps the context visibly highlighted in embedded browsers
+  // that register custom highlights but stop painting them when the input
+  // takes focus. The prompt closes before canvas movement, so fixed viewport
+  // rectangles remain aligned for their complete lifetime.
+  clearHighlightLayer()
+  for (const range of ranges) {
+    Array.from(range.getClientRects()).forEach((rect) => {
+      if (!rect.width || !rect.height) return
+      const mark = document.createElement('span')
+      mark.className = HIGHLIGHT_LAYER_CLASS
+      mark.style.left = `${rect.left}px`
+      mark.style.top = `${rect.top}px`
+      mark.style.width = `${rect.width}px`
+      mark.style.height = `${rect.height}px`
+      document.body.appendChild(mark)
+    })
+  }
 }
 
 export function clearContextHighlight() {
   ;((CSS as any).highlights as Map<string, unknown> | undefined)?.delete(HIGHLIGHT_NAME)
+  clearHighlightLayer()
 }

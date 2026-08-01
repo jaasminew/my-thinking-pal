@@ -38,4 +38,19 @@ describe('InlineCommandBubble', () => {
     fireEvent.keyDown(screen.getByPlaceholderText('Ask AI about this…'), { key: 'Escape' })
     expect(onDismiss).toHaveBeenCalledOnce()
   })
+
+  it('centers a contextual bubble above its source', () => {
+    const { container } = render(
+      <InlineCommandBubble
+        anchor={{ top: 120, left: 400, width: 100, height: 30 }}
+        placement="above"
+        placeholder="Ask AI about this…"
+        onSubmit={vi.fn()}
+        onDismiss={vi.fn()}
+      />
+    )
+    const bubble = container.querySelector<HTMLElement>('.cmd-bubble')!
+    expect(bubble.style.left).toBe('258px')
+    expect(bubble.style.top).toBe('64px')
+  })
 })

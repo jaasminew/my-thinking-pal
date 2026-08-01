@@ -211,8 +211,9 @@ export async function requestCommandChat(
         {
           system,
           userText,
-          // Selected memory images ride as multimodal parts.
-          images: req.projectMemory?.images?.map((im) => im.dataUrl),
+          // The explicitly selected canvas image and selected memory images
+          // ride as multimodal parts in the same request.
+          images: [...(req.images ?? []), ...(req.projectMemory?.images?.map((im) => im.dataUrl) ?? [])],
           onText: (t) => filter.push(t),
           fetchImpl: doFetch,
           signal

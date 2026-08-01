@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { actionLabel, type CommandSession } from './command-session'
+import { actionLabel, isImageSelection, type CommandSession } from './command-session'
 import { isImeEvent } from './ime'
 import { useLocale } from './locale'
 
@@ -82,10 +82,13 @@ export function CommandSidePanel({
         <button className="cmd-panel-close" title={tr('Close conversation', '关闭对话')} onClick={onClose}>×</button>
       </header>
 
-      {session.source?.selectedText && (
+      {session.source && !isImageSelection(session.source) && session.source.selectedText && (
         <div className="cmd-context-chip" title={session.source.selectedText}>
           “{session.source.selectedText}”
         </div>
+      )}
+      {isImageSelection(session.source) && (
+        <div className="cmd-context-chip">{tr('Selected image', '所选图片')}</div>
       )}
 
       <div className="cmd-msgs" ref={scrollRef}>

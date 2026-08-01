@@ -81,6 +81,8 @@ export interface CommandChatMessage {
 export interface CommandChatContext {
   transcriptWindow?: string
   selectedText?: string
+  selectedImageUrl?: string
+  hasSelectedImage?: boolean
   sourceNoteId?: string
   sessionCanvas?: string
   sourceNote?: {
@@ -127,7 +129,13 @@ export function buildCommandChatPrompt(
   if (typeof context?.selectedText === 'string' && context.selectedText.trim()) {
     parts.push(`SELECTED TEXT (the user summoned you about this):\n"${context.selectedText.trim()}"`)
   }
-  if (!context?.sourceNote && !context?.selectedText?.trim()) {
+  if (context?.hasSelectedImage) {
+    parts.push(
+      `SELECTED IMAGE (the user summoned you about this visual).` +
+      (context.selectedImageUrl ? `\nAttached URL: ${context.selectedImageUrl}` : '')
+    )
+  }
+  if (!context?.sourceNote && !context?.selectedText?.trim() && !context?.hasSelectedImage) {
     parts.push('The user summoned you from the open canvas — no note is selected.')
   }
   if (typeof context?.sessionCanvas === 'string' && context.sessionCanvas.trim()) {

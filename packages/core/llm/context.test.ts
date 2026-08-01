@@ -79,6 +79,16 @@ describe('buildCommandChatPrompt', () => {
     expect(out).toContain('the only canvas content you may edit')
     expect(out).toContain('[n1.2] Second')
   })
+
+  it('describes a selected image and its one attached URL', () => {
+    const out = buildCommandChatPrompt(
+      [{ role: 'user', text: 'what should I notice?' }],
+      { hasSelectedImage: true, selectedImageUrl: 'https://example.com/case' }
+    )
+    expect(out).toContain('SELECTED IMAGE')
+    expect(out).toContain('Attached URL: https://example.com/case')
+    expect(out).not.toContain('no note is selected')
+  })
 })
 
 describe('buildExtractSignalsUserText', () => {

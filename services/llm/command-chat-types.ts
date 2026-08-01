@@ -44,9 +44,13 @@ export interface CommandChatRequest {
   webSearch?: boolean
   /** Full history, oldest first — the server is stateless and flattens it. */
   messages: { role: 'user' | 'assistant'; text: string }[]
+  /** Canvas image explicitly selected when the user summoned AI. */
+  images?: string[]
   /** Recomputed by the client on EVERY turn (fresh note state each time). */
   context: {
     selectedText?: string
+    selectedImageUrl?: string
+    hasSelectedImage?: boolean
     /** Server echoes this into every action's noteId. */
     sourceNoteId?: string
     /** Pending canvas output created in this session, exposed only by aliases. */
