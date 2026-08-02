@@ -649,9 +649,15 @@ export function KeywordNoteView({
               title={b.image.title}
               width={b.image.w ?? 230}
               scale={viewScale}
+              dataImageId={b.id}
               aiPromptActive={activeImageAiId === b.id}
               style={{ transform: `translate(${b.image.offsetX ?? 0}px, ${b.image.offsetY ?? 0}px)` }}
               onOpen={(rect) => onOpenImage({ ...b.image!, originRect: rect })}
+              onMove={(shiftX, shiftY) => onBulletImageChange(b.id, {
+                offsetX: (b.image?.offsetX ?? 0) + shiftX,
+                offsetY: (b.image?.offsetY ?? 0) + shiftY
+              })}
+              onMoveStart={onImageEditStart}
               onResize={(w, shiftX, shiftY) => onBulletImageChange(b.id, {
                 w,
                 offsetX: (b.image?.offsetX ?? 0) + shiftX,
@@ -760,9 +766,15 @@ export function KeywordNoteView({
         title={im.title}
         width={im.w ?? 230}
         scale={viewScale}
+        dataImageId={im.id}
         aiPromptActive={activeImageAiId === im.id}
         style={{ transform: `translate(${im.offsetX ?? 0}px, ${im.offsetY ?? 0}px)` }}
         onOpen={(rect) => onOpenImage({ src: im.src, sourceUrl: im.sourceUrl, title: im.title, originRect: rect })}
+        onMove={(shiftX, shiftY) => onImageChange(im.id, {
+          offsetX: (im.offsetX ?? 0) + shiftX,
+          offsetY: (im.offsetY ?? 0) + shiftY
+        })}
+        onMoveStart={onImageEditStart}
         onResize={(w, shiftX, shiftY) => onImageChange(im.id, {
           w,
           offsetX: (im.offsetX ?? 0) + shiftX,

@@ -899,7 +899,7 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
 .editable-image.canvas-image { position: absolute; }
 .editable-image > img {
   display: block; width: 100%; height: auto;
-  border-radius: 12px; object-fit: contain; cursor: pointer;
+  border-radius: 12px; object-fit: contain; cursor: move;
   background: #e4e4e2; box-shadow: 0 1px 5px rgba(0, 0, 0, .14);
 }
 .editable-image.selected { outline: 1px solid var(--focus); outline-offset: 2px; }

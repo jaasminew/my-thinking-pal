@@ -95,6 +95,8 @@ export function EditableImage({
   dataImageId,
   onPointerDownImage,
   onOpen,
+  onMove,
+  onMoveStart,
   onResize,
   onResizeStart,
   getMagneticHeights,
@@ -116,6 +118,9 @@ export function EditableImage({
   dataImageId?: string
   onPointerDownImage?: (e: React.PointerEvent<HTMLImageElement>) => void
   onOpen: (rect: DOMRect) => void
+  /** Pointer movement from drag start in world coordinates. */
+  onMove?: (shiftX: number, shiftY: number) => void
+  onMoveStart?: () => void
   /** New width plus the X/Y shift from drag start that keeps the opposite anchor fixed. */
   onResize: (width: number, shiftX: number, shiftY: number) => void
   onResizeStart?: () => void
@@ -169,7 +174,10 @@ export function EditableImage({
     const startW = rect.width / (scale || 1)
     const startH = rect.height / (scale || 1)
     const ratio = startH > 0 ? startW / startH : 1
-    const magneticHeights = getMagneticHeights?.() ?? []
+    const magneticHeights = getMagneticHeights?.() ?? [...(frame.closest('.canvas-layer')?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+      .filter((element) => element !== frame)
+      .map((element) => element.getBoundingClientRect().height / (scale || 1))
+      .filter((height) => height > 0)
     const magneticRadius = MAGNET_RADIUS_PX / (scale || 1)
     const move = (ev: PointerEvent) => {
       const raw = proportionalImageResize(
@@ -211,8 +219,34 @@ export function EditableImage({
         onPointerDown={(e) => {
           suppressClickRef.current = false
           const sx = e.clientX, sy = e.clientY
+          const frame = frameRef.current
+          const startRect = frame?.getBoundingClientRect()
+          const otherRects = frame
+            ? [...(frame.closest('.canvas-layer')?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+                .filter((element) => element !== frame)
+                .map((element) => element.getBoundingClientRect())
+            : []
+          if (onMove) onMoveStart?.()
           const move = (ev: PointerEvent) => {
-            if (Math.abs(ev.clientX - sx) > 4 || Math.abs(ev.clientY - sy) > 4) suppressClickRef.current = true
+            const pointerDx = ev.clientX - sx
+            const pointerDy = ev.clientY - sy
+            if (Math.abs(pointerDx) > 4 || Math.abs(pointerDy) > 4) suppressClickRef.current = true
+            if (!onMove || !startRect) return
+            const magneticLeft = applyMagneticResistance(
+              startRect.left + pointerDx,
+              otherRects.map((rect) => rect.left),
+              MAGNET_RADIUS_PX
+            )
+            const magneticTop = applyMagneticResistance(
+              startRect.top + pointerDy,
+              otherRects.map((rect) => rect.top),
+              MAGNET_RADIUS_PX
+            )
+            const safeScale = scale || 1
+            onMove(
+              (magneticLeft - startRect.left) / safeScale,
+              (magneticTop - startRect.top) / safeScale
+            )
           }
           const up = () => {
             document.removeEventListener('pointermove', move)

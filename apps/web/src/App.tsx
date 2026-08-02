@@ -2622,10 +2622,6 @@ function CanvasSpace({
                 ? { ...item, w, x: im.x + shiftX, y: im.y + shiftY }
                 : item))}
               onResizeStart={checkpointCanvas}
-              getMagneticHeights={() => [...(layerRef.current?.querySelectorAll<HTMLElement>('.editable-image.canvas-image') ?? [])]
-                .filter((element) => element.dataset.imageid !== im.id)
-                .map((element) => element.getBoundingClientRect().height / viewRef.current.scale)
-                .filter((height) => height > 0)}
               onUrlChange={(url) => {
                 checkpointCanvas()
                 setImages((items) => items.map((item) => item.id === im.id ? { ...item, url } : item))

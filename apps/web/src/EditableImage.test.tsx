@@ -108,6 +108,51 @@ describe('EditableImage', () => {
     expect(onOpen).toHaveBeenCalledOnce()
   })
 
+  it('moves an in-note image and adds continuous top/left magnetic resistance', () => {
+    const onMove = vi.fn()
+    const { container } = render(
+      <div className="canvas-layer">
+        <EditableImage
+          className="moving-image"
+          src="data:image/png;base64,AA"
+          width={200}
+          scale={1}
+          onOpen={vi.fn()}
+          onMove={onMove}
+          onResize={vi.fn()}
+          onUrlChange={vi.fn()}
+          onSummon={vi.fn()}
+        />
+        <div className="editable-image alignment-candidate" />
+      </div>
+    )
+    const frame = container.querySelector<HTMLElement>('.moving-image')!
+    const candidate = container.querySelector<HTMLElement>('.alignment-candidate')!
+    frame.getBoundingClientRect = () => ({
+      x: 100, y: 100, left: 100, top: 100, right: 300, bottom: 200,
+      width: 200, height: 100, toJSON: () => ({})
+    } as DOMRect)
+    candidate.getBoundingClientRect = () => ({
+      x: 150, y: 400, left: 150, top: 400, right: 350, bottom: 500,
+      width: 200, height: 100, toJSON: () => ({})
+    } as DOMRect)
+
+    const image = frame.querySelector('img')!
+    fireEvent.pointerDown(image, { clientX: 120, clientY: 120 })
+    fireEvent.pointerMove(document, { clientX: 169, clientY: 150 })
+    const [magneticX, rawY] = onMove.mock.calls.at(-1) as [number, number]
+    expect(magneticX).toBeGreaterThan(49)
+    expect(magneticX).toBeLessThan(50)
+    expect(rawY).toBe(30)
+
+    // Moving beyond the aligned left edge is resisted, never locked.
+    fireEvent.pointerMove(document, { clientX: 171, clientY: 150 })
+    const [releasedX] = onMove.mock.calls.at(-1) as [number, number]
+    expect(releasedX).toBeGreaterThan(50)
+    expect(releasedX).toBeLessThan(51)
+    fireEvent.pointerUp(document)
+  })
+
   it('replaces the black toolbar while this image AI prompt is active', () => {
     render(
       <EditableImage
