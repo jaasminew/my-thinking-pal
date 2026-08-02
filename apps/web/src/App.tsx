@@ -2363,7 +2363,7 @@ function CanvasSpace({
 
   // Drag a set of canvas objects (notes and/or images) together, world-space.
   // When the drag starts on a standalone image, only its top/left coordinates
-  // receive a subtle magnetic detent against the other standalone images.
+  // receive a subtle magnetic detent against every other canvas image.
   const beginDrag = (dragIds: string[], startX: number, startY: number, magneticImageId?: string) => {
     const origins = dragIds.flatMap((i) => {
       const n = notesRef.current.find((x) => x.id === i)
@@ -2372,27 +2372,37 @@ function CanvasSpace({
       return im ? [{ i, ox: im.x, oy: im.y }] : []
     })
     const primary = magneticImageId ? origins.find((origin) => origin.i === magneticImageId) : undefined
-    const otherImages = primary
-      ? imagesRef.current.filter((image) => !dragIds.includes(image.id))
+    const magneticFrame = primary
+      ? [...(layerRef.current?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+          .find((element) => element.dataset.imageid === magneticImageId)
+      : undefined
+    const primaryRect = magneticFrame?.getBoundingClientRect()
+    const otherImageRects = primaryRect
+      ? [...(layerRef.current?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+          .filter((element) => {
+            if (element === magneticFrame || dragIds.includes(element.dataset.imageid ?? '')) return false
+            const noteId = element.closest<HTMLElement>('[data-noteid]')?.dataset.noteid
+            return !noteId || !dragIds.includes(noteId)
+          })
+          .map((element) => element.getBoundingClientRect())
       : []
     const move = (ev: PointerEvent) => {
       const s = viewRef.current.scale
       let dx = (ev.clientX - startX) / s
       let dy = (ev.clientY - startY) / s
-      if (primary) {
-        const magneticRadius = MAGNET_RADIUS_PX / s
-        const magneticX = applyMagneticResistance(
-          primary.ox + dx,
-          otherImages.map((image) => image.x),
-          magneticRadius
+      if (primary && primaryRect) {
+        const magneticLeft = applyMagneticResistance(
+          primaryRect.left + ev.clientX - startX,
+          otherImageRects.map((rect) => rect.left),
+          MAGNET_RADIUS_PX
         )
-        const magneticY = applyMagneticResistance(
-          primary.oy + dy,
-          otherImages.map((image) => image.y),
-          magneticRadius
+        const magneticTop = applyMagneticResistance(
+          primaryRect.top + ev.clientY - startY,
+          otherImageRects.map((rect) => rect.top),
+          MAGNET_RADIUS_PX
         )
-        dx = magneticX - primary.ox
-        dy = magneticY - primary.oy
+        dx = (magneticLeft - primaryRect.left) / s
+        dy = (magneticTop - primaryRect.top) / s
       }
       const shift = <T extends { id: string; x: number; y: number }>(o: T): T => {
         const org = origins.find((g) => g.i === o.id)

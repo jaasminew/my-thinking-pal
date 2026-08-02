@@ -1,5 +1,5 @@
-export const MAGNET_RADIUS_PX = 8
-export const MAGNET_RESISTANCE = 0.4
+export const MAGNET_RADIUS_PX = 16
+export const MAGNET_RESISTANCE = 0.25
 
 /**
  * A continuous magnetic curve: movement begins immediately, but is damped near

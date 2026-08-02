@@ -124,7 +124,7 @@ export function EditableImage({
   /** New width plus the X/Y shift from drag start that keeps the opposite anchor fixed. */
   onResize: (width: number, shiftX: number, shiftY: number) => void
   onResizeStart?: () => void
-  /** Standalone-image heights in world coordinates, captured when resize starts. */
+  /** Other canvas-image heights in world coordinates, captured when resize starts. */
   getMagneticHeights?: () => number[]
   onUrlChange: (url?: string) => void
   onUrlChangeStart?: () => void

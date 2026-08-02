@@ -204,8 +204,8 @@ describe('EditableImage', () => {
     expect(resistedWidth).toBeLessThan(242)
 
     // At the magnetic radius, movement is back to 1:1.
-    fireEvent.pointerMove(document, { clientX: 100, clientY: 128 })
-    expect(onResize).toHaveBeenLastCalledWith(256, -28, 0)
+    fireEvent.pointerMove(document, { clientX: 100, clientY: 136 })
+    expect(onResize).toHaveBeenLastCalledWith(272, -36, 0)
     fireEvent.pointerUp(document)
   })
 })
