@@ -5,6 +5,7 @@ import type { ObserverOpportunityType } from '../../../packages/core/llm/observe
 // card is an inline line in the flow (arrow keys walk onto it, Enter continues
 // below it), not an appendix at the bottom. The whole note is draggable.
 export type Origin = 'human' | 'ai'
+export type MediaType = 'image' | 'gif' | 'video'
 
 export interface TextStyleRun {
   start: number
@@ -33,7 +34,7 @@ export interface BulletItem {
    * Inline image, PART OF the bullet (no ✓/✕ of its own — it lives and dies
    * with its text). src is the cited page's own og:image, resolved server-side.
    */
-  image?: { src: string; sourceUrl?: string; title?: string; w?: number; offsetX?: number; offsetY?: number }
+  image?: { src: string; sourceUrl?: string; title?: string; mediaType?: MediaType; w?: number; offsetX?: number; offsetY?: number }
   indent?: number // outline depth (0 = top level); Tab/Shift+Tab moves it. Cards never indent.
   /** Body lines are plain by default; this opt-in renders the line as a list item. */
   bulleted?: boolean
@@ -61,6 +62,8 @@ export interface ImageItem {
   kind: 'image'
   id: string
   src: string // data URL (dropped/pasted file) or remote url
+  /** Missing on older saved boards and treated as a still image. */
+  mediaType?: MediaType
   /** The image's single attached destination URL. */
   sourceUrl?: string
   title?: string
@@ -82,6 +85,8 @@ export interface CanvasImage {
   x: number
   y: number
   src: string
+  /** Missing on older saved boards and treated as a still image. */
+  mediaType?: MediaType
   w?: number // natural display width in world coordinates (set once the image loads)
   /** Exactly one attached URL; absent means the image is unlinked. */
   url?: string

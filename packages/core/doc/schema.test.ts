@@ -28,7 +28,7 @@ const fullNote: PlainNote = {
       image: { src: 'https://x/i.png', sourceUrl: 'https://x', title: 'X', w: 260, offsetX: -20, offsetY: -10 }
     },
     { kind: 'card', id: 'c1', title: 'Notion', url: 'https://notion.so', snippet: 's', image: 'https://img', origin: 'ai', status: 'pending', diagnosis: 'd' },
-    { kind: 'image', id: 'i1', src: 'data:...', sourceUrl: 'https://y', title: 'pic', w: 220, offsetX: 4, offsetY: -8, origin: 'human', status: 'kept' }
+    { kind: 'image', id: 'i1', src: 'data:video/mp4;base64,...', mediaType: 'video', sourceUrl: 'https://y', title: 'clip', w: 220, offsetX: 4, offsetY: -8, origin: 'human', status: 'kept' }
   ]
 }
 
@@ -63,7 +63,7 @@ describe('schema round-trip', () => {
   })
 
   it('round-trips a canvas image and defaults missing numeric fields', () => {
-    const img = { id: 'g1', x: 1, y: 2, src: 'data:pic', w: 300, url: 'https://example.com' }
+    const img = { id: 'g1', x: 1, y: 2, src: 'data:image/gif;base64,...', mediaType: 'gif' as const, w: 300, url: 'https://example.com' }
     const y = inDoc(() => canvasImageToY(img))
     expect(yToCanvasImage(y)).toEqual(img)
   })
