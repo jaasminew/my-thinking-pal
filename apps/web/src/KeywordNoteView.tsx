@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { isBullet, isImage, type BulletItem, type CardItem, type ImageItem, type KeywordNote, type TextStyleRun } from './canvas-types'
+import { isBullet, isImage, type BulletItem, type CardItem, type ImageItem, type KeywordNote, type MediaType, type TextStyleRun } from './canvas-types'
 import type { SelectionSnapshot } from './command-session'
 import { isImeEvent } from './ime'
 import { useLocale } from './locale'
@@ -377,9 +377,9 @@ export function KeywordNoteView({
   onRemoveCard: (cardId: string) => void
   onRemoveImage: (imageId: string) => void
   onInsertAfter: (itemId: string) => void
-  onOpenImage: (img: { src: string; sourceUrl?: string; title?: string; originRect?: DOMRect }) => void
-  onImageChange: (imageId: string, patch: { sourceUrl?: string; w?: number; offsetX?: number; offsetY?: number }) => void
-  onBulletImageChange: (bulletId: string, patch: { sourceUrl?: string; w?: number; offsetX?: number; offsetY?: number }) => void
+  onOpenImage: (img: { src: string; mediaType?: MediaType; sourceUrl?: string; title?: string; originRect?: DOMRect }) => void
+  onImageChange: (imageId: string, patch: { sourceUrl?: string; mediaType?: MediaType; w?: number; offsetX?: number; offsetY?: number }) => void
+  onBulletImageChange: (bulletId: string, patch: { sourceUrl?: string; mediaType?: MediaType; w?: number; offsetX?: number; offsetY?: number }) => void
   onSummonImage: (img: { id: string; src: string; url?: string; rect: DOMRect; noteId: string }) => void
   onImageEditStart: () => void
   activeImageAiId?: string
@@ -645,6 +645,7 @@ export function KeywordNoteView({
           {b.image && (
             <EditableImage
               src={b.image.src}
+              mediaType={b.image.mediaType}
               url={b.image.sourceUrl}
               title={b.image.title}
               width={b.image.w ?? 230}
@@ -762,6 +763,7 @@ export function KeywordNoteView({
     >
       <EditableImage
         src={im.src}
+        mediaType={im.mediaType}
         url={im.sourceUrl}
         title={im.title}
         width={im.w ?? 230}
@@ -769,7 +771,7 @@ export function KeywordNoteView({
         dataImageId={im.id}
         aiPromptActive={activeImageAiId === im.id}
         style={{ transform: `translate(${im.offsetX ?? 0}px, ${im.offsetY ?? 0}px)` }}
-        onOpen={(rect) => onOpenImage({ src: im.src, sourceUrl: im.sourceUrl, title: im.title, originRect: rect })}
+        onOpen={(rect) => onOpenImage({ src: im.src, mediaType: im.mediaType, sourceUrl: im.sourceUrl, title: im.title, originRect: rect })}
         onMove={(shiftX, shiftY) => onImageChange(im.id, {
           offsetX: (im.offsetX ?? 0) + shiftX,
           offsetY: (im.offsetY ?? 0) + shiftY

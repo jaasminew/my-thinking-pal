@@ -8,6 +8,7 @@ import * as Y from 'yjs'
 
 export type Origin = 'human' | 'ai'
 export type ItemStatus = 'pending' | 'kept'
+export type MediaType = 'image' | 'gif' | 'video'
 
 export interface PlainBullet {
   kind: 'bullet'
@@ -18,7 +19,7 @@ export interface PlainBullet {
   fireId?: string
   fireLine?: number
   diagnosis?: string
-  image?: { src: string; sourceUrl?: string; title?: string; w?: number; offsetX?: number; offsetY?: number }
+  image?: { src: string; sourceUrl?: string; title?: string; mediaType?: MediaType; w?: number; offsetX?: number; offsetY?: number }
   indent?: number
   bulleted?: boolean
   runs?: Array<{
@@ -46,6 +47,7 @@ export interface PlainImage {
   kind: 'image'
   id: string
   src: string
+  mediaType?: MediaType
   sourceUrl?: string
   title?: string
   w?: number
@@ -76,6 +78,7 @@ export interface PlainCanvasImage {
   x: number
   y: number
   src: string
+  mediaType?: MediaType
   w?: number
   url?: string
 }
@@ -155,6 +158,7 @@ export function yToCanvasImage(m: Y.Map<unknown>): PlainCanvasImage {
     x: typeof o.x === 'number' ? o.x : 0,
     y: typeof o.y === 'number' ? o.y : 0,
     src: typeof o.src === 'string' ? o.src : '',
+    mediaType: o.mediaType === 'gif' || o.mediaType === 'video' || o.mediaType === 'image' ? o.mediaType : undefined,
     w: typeof o.w === 'number' ? o.w : undefined,
     url: typeof o.url === 'string' ? o.url : undefined
   }

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocale } from './locale'
+import type { MediaType } from './canvas-types'
+import { mediaTypeForSource } from './image-drop-placement'
 import {
   applyMagneticResistance,
   MAGNET_RADIUS_PX
@@ -13,6 +15,16 @@ const LinkIcon = (
 const SparkIcon = (
   <svg viewBox="0 0 20 20" aria-hidden="true">
     <path d="M10 2c.5 4.1 1.9 5.5 6 6-4.1.5-5.5 1.9-6 6-.5-4.1-1.9-5.5-6-6 4.1-.5 5.5-1.9 6-6Z" />
+  </svg>
+)
+const PlayIcon = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M9 7.5v9l7-4.5-7-4.5Z" />
+  </svg>
+)
+const PauseIcon = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M9 8v8M15 8v8" />
   </svg>
 )
 
@@ -84,6 +96,7 @@ export function safeImageUrl(raw: string): string | null {
 
 export function EditableImage({
   src,
+  mediaType,
   url,
   title,
   width,
@@ -106,6 +119,7 @@ export function EditableImage({
   onError
 }: {
   src: string
+  mediaType?: MediaType
   url?: string
   title?: string
   width?: number
@@ -116,7 +130,7 @@ export function EditableImage({
   className?: string
   style?: React.CSSProperties
   dataImageId?: string
-  onPointerDownImage?: (e: React.PointerEvent<HTMLImageElement>) => void
+  onPointerDownImage?: (e: React.PointerEvent<HTMLElement>) => void
   onOpen: (rect: DOMRect) => void
   /** Pointer movement from drag start in world coordinates. */
   onMove?: (shiftX: number, shiftY: number) => void
@@ -129,17 +143,22 @@ export function EditableImage({
   onUrlChange: (url?: string) => void
   onUrlChangeStart?: () => void
   onSummon: (rect: DOMRect) => void
-  onError?: (e: React.SyntheticEvent<HTMLImageElement>) => void
+  onError?: (e: React.SyntheticEvent<HTMLElement>) => void
 }) {
   const { tr } = useLocale()
   const frameRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [linkOpen, setLinkOpen] = useState(false)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState(false)
   const [selfSelected, setSelfSelected] = useState(false)
   const suppressClickRef = useRef(false)
+  const [videoPaused, setVideoPaused] = useState(true)
+  const resolvedMediaType = mediaTypeForSource(src, mediaType)
+  const isVideo = resolvedMediaType === 'video'
   const shownSelected = selected ?? selfSelected
+  useEffect(() => setVideoPaused(true), [src, isVideo])
   useEffect(() => {
     if (selected !== undefined || !selfSelected) return
     const clear = (e: PointerEvent) => {
@@ -204,6 +223,66 @@ export function EditableImage({
     document.addEventListener('pointerup', up)
   }
 
+  const beginMediaPointerDown = (e: React.PointerEvent<HTMLImageElement | HTMLVideoElement>) => {
+    suppressClickRef.current = false
+    const sx = e.clientX, sy = e.clientY
+    const frame = frameRef.current
+    const startRect = frame?.getBoundingClientRect()
+    const otherRects = frame
+      ? [...(frame.closest('.canvas-layer')?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+          .filter((element) => element !== frame)
+          .map((element) => element.getBoundingClientRect())
+      : []
+    if (onMove) onMoveStart?.()
+    const move = (ev: PointerEvent) => {
+      const pointerDx = ev.clientX - sx
+      const pointerDy = ev.clientY - sy
+      if (Math.abs(pointerDx) > 4 || Math.abs(pointerDy) > 4) suppressClickRef.current = true
+      if (!onMove || !startRect) return
+      const magneticLeft = applyMagneticResistance(
+        startRect.left + pointerDx,
+        otherRects.map((rect) => rect.left),
+        MAGNET_RADIUS_PX
+      )
+      const magneticTop = applyMagneticResistance(
+        startRect.top + pointerDy,
+        otherRects.map((rect) => rect.top),
+        MAGNET_RADIUS_PX
+      )
+      const safeScale = scale || 1
+      onMove(
+        (magneticLeft - startRect.left) / safeScale,
+        (magneticTop - startRect.top) / safeScale
+      )
+    }
+    const up = () => {
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', up)
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', up)
+    onPointerDownImage?.(e as React.PointerEvent<HTMLElement>)
+  }
+
+  const openPreview = (e: React.MouseEvent<HTMLImageElement | HTMLVideoElement>) => {
+    e.stopPropagation()
+    if (suppressClickRef.current) return
+    if (isVideo) videoRef.current?.pause()
+    onOpen(e.currentTarget.getBoundingClientRect())
+  }
+
+  const toggleVideo = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) {
+      try { await video.play() } catch { /* browser can still expose native failure state */ }
+    } else {
+      video.pause()
+    }
+  }
+
   return (
     <div
       ref={frameRef}
@@ -212,59 +291,45 @@ export function EditableImage({
       style={{ ...style, width: width ? `${width}px` : style?.width, '--canvas-scale': scale } as React.CSSProperties}
       onPointerDown={(e) => { e.stopPropagation(); if (selected === undefined) setSelfSelected(true) }}
     >
-      <img
-        src={src}
-        alt={title || ''}
-        draggable={false}
-        onPointerDown={(e) => {
-          suppressClickRef.current = false
-          const sx = e.clientX, sy = e.clientY
-          const frame = frameRef.current
-          const startRect = frame?.getBoundingClientRect()
-          const otherRects = frame
-            ? [...(frame.closest('.canvas-layer')?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
-                .filter((element) => element !== frame)
-                .map((element) => element.getBoundingClientRect())
-            : []
-          if (onMove) onMoveStart?.()
-          const move = (ev: PointerEvent) => {
-            const pointerDx = ev.clientX - sx
-            const pointerDy = ev.clientY - sy
-            if (Math.abs(pointerDx) > 4 || Math.abs(pointerDy) > 4) suppressClickRef.current = true
-            if (!onMove || !startRect) return
-            const magneticLeft = applyMagneticResistance(
-              startRect.left + pointerDx,
-              otherRects.map((rect) => rect.left),
-              MAGNET_RADIUS_PX
-            )
-            const magneticTop = applyMagneticResistance(
-              startRect.top + pointerDy,
-              otherRects.map((rect) => rect.top),
-              MAGNET_RADIUS_PX
-            )
-            const safeScale = scale || 1
-            onMove(
-              (magneticLeft - startRect.left) / safeScale,
-              (magneticTop - startRect.top) / safeScale
-            )
-          }
-          const up = () => {
-            document.removeEventListener('pointermove', move)
-            document.removeEventListener('pointerup', up)
-          }
-          document.addEventListener('pointermove', move)
-          document.addEventListener('pointerup', up)
-          onPointerDownImage?.(e)
-        }}
-        onClick={(e) => {
-          e.stopPropagation()
-        }}
-        onDoubleClick={(e) => {
-          e.stopPropagation()
-          if (!suppressClickRef.current) onOpen(e.currentTarget.getBoundingClientRect())
-        }}
-        onError={onError}
-      />
+      {isVideo ? (
+        <video
+          ref={videoRef}
+          src={src}
+          aria-label={title || tr('Video', '视频')}
+          draggable={false}
+          playsInline
+          preload="metadata"
+          onPointerDown={beginMediaPointerDown}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={openPreview}
+          onPlay={() => setVideoPaused(false)}
+          onPause={() => setVideoPaused(true)}
+          onEnded={() => setVideoPaused(true)}
+          onError={onError}
+        />
+      ) : (
+        <img
+          src={src}
+          alt={title || ''}
+          draggable={false}
+          onPointerDown={beginMediaPointerDown}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={openPreview}
+          onError={onError}
+        />
+      )}
+      {isVideo && (
+        <button
+          type="button"
+          className={`video-play ${videoPaused ? 'paused' : 'playing'}`}
+          aria-label={tr(videoPaused ? 'Play video' : 'Pause video', videoPaused ? '播放视频' : '暂停视频')}
+          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onClick={toggleVideo}
+        >
+          {videoPaused ? PlayIcon : PauseIcon}
+        </button>
+      )}
       {!aiPromptActive && <div className="image-toolbar" onPointerDown={(e) => e.stopPropagation()}>
         <button
           className={`tooltip-target ${linkOpen ? 'active' : ''}`}

@@ -795,6 +795,7 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
   object-fit: contain; cursor: default;
   will-change: transform;
 }
+video.img-preview-pic { background: #000; }
 .img-preview-source {
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 14px; color: #000000; cursor: pointer;
@@ -897,11 +898,23 @@ body.transcript-resizing { cursor: col-resize; user-select: none; }
    after .editable-image so the shared relative-position rule cannot override
    its canvas coordinates. */
 .editable-image.canvas-image { position: absolute; }
-.editable-image > img {
+.editable-image > img, .editable-image > video {
   display: block; width: 100%; height: auto;
   border-radius: 12px; object-fit: contain; cursor: move;
   background: #e4e4e2; box-shadow: 0 1px 5px rgba(0, 0, 0, .14);
 }
+.video-play {
+  position: absolute; z-index: 12; left: 50%; top: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px; padding: 0; border: 0; border-radius: 50%;
+  color: #fff; background: #111b; box-shadow: 0 2px 12px #0005;
+  transform: translate(-50%, -50%) scale(calc(1 / var(--canvas-scale, 1)));
+  cursor: pointer; transition: opacity .15s ease, background .15s ease;
+}
+.video-play svg { width: 28px; height: 28px; fill: currentColor; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.video-play.playing { opacity: 0; }
+.editable-image:hover .video-play.playing, .video-play:focus-visible { opacity: 1; }
+.video-play:hover { background: #111e; }
 .editable-image.selected { outline: 1px solid var(--focus); outline-offset: 2px; }
 .note-image .editable-image, .bullet-body .editable-image { margin: 4px 0 2px; }
 .image-toolbar {

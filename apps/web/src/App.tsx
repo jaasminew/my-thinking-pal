@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Transcript, type TranscriptSync } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
-import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage, type TextStyleRun } from './canvas-types'
+import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage, type MediaType, type TextStyleRun } from './canvas-types'
 import { loadJSON, saveJSON } from './persist'
 import { requestCocreate } from '../../../services/llm/cocreate'
 import type { CocreateProvider } from '../../../services/llm/cocreate-types'
@@ -9,7 +9,7 @@ import { requestCommandChat } from '../../../services/llm/command-chat'
 import { InlineCommandBubble } from './InlineCommandBubble'
 import { SelectionToolbar } from './SelectionToolbar'
 import { EditableImage } from './EditableImage'
-import { loadImageDimensions, placeDroppedImage } from './image-drop-placement'
+import { loadMediaDimensions, mediaTypeForFile, mediaTypeForSource, placeDroppedImage } from './image-drop-placement'
 import {
   applyMagneticResistance,
   MAGNET_RADIUS_PX
@@ -516,10 +516,10 @@ function CanvasSpace({
   // The open/close uses a FLIP transition: the image grows from the clicked
   // thumbnail's screen rect to its centered size (and shrinks back), while the
   // scrim fades — the classic Apple shared-element expand.
-  type PreviewImg = { src: string; sourceUrl?: string; title?: string; originRect?: DOMRect }
+  type PreviewImg = { src: string; mediaType?: MediaType; sourceUrl?: string; title?: string; originRect?: DOMRect }
   const [imgPreview, setImgPreview] = useState<PreviewImg | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false) // drives the scrim fade-in class
-  const previewImgRef = useRef<HTMLImageElement>(null)
+  const previewImgRef = useRef<HTMLImageElement | HTMLVideoElement>(null)
   const previewNaturalRect = useRef<{ top: number; left: number; width: number; height: number } | null>(null)
 
   // PLAY the expand: measure the image's natural (centered) rect, snap it back
@@ -546,8 +546,10 @@ function CanvasSpace({
         el.style.transform = 'none'
       })
     }
-    if (el && (el.complete || !origin)) play()
-    else if (el) el.addEventListener('load', play, { once: true })
+    const isVideo = el instanceof HTMLVideoElement
+    if (el && ((!isVideo && (el as HTMLImageElement).complete) || (isVideo && el.readyState >= 1) || !origin)) play()
+    else if (el) el.addEventListener(isVideo ? 'loadedmetadata' : 'load', play, { once: true })
+    if (isVideo) void el.play().catch(() => { /* controls remain available if autoplay is blocked */ })
     requestAnimationFrame(() => setPreviewOpen(true)) // fade the scrim in
   }, [imgPreview])
 
@@ -555,6 +557,7 @@ function CanvasSpace({
   // scrim out, then unmount once the image transition ends.
   const closeImgPreview = useCallback(() => {
     const el = previewImgRef.current
+    if (el instanceof HTMLVideoElement) el.pause()
     const origin = imgPreview?.originRect
     const nat = previewNaturalRect.current
     setPreviewOpen(false)
@@ -978,25 +981,26 @@ function CanvasSpace({
   // Land an image into a note as its own line item (like a url card): inserted
   // right after the focused item (or at the end). Rendered in the AI inline-
   // image style, but the caret can land on it and Backspace deletes just it.
-  const insertImage = useCallback((noteId: string, src: string, afterItemId?: string) =>
+  const insertImage = useCallback((noteId: string, src: string, mediaType: MediaType = 'image', afterItemId?: string) =>
     patchNote(noteId, (n) => {
-      const img: ImageItem = { kind: 'image', id: uid('img'), src, origin: 'human', status: 'kept' }
+      const img: ImageItem = { kind: 'image', id: uid('img'), src, mediaType, origin: 'human', status: 'kept' }
       const idx = afterItemId ? n.items.findIndex((it) => it.id === afterItemId) : -1
       const at = idx >= 0 ? idx + 1 : n.items.length
       return { ...n, items: [...n.items.slice(0, at), img, ...n.items.slice(at)] }
     }), [patchNote])
 
-  // ⌘V while editing inside a note: if the clipboard holds an image, insert it
+  // ⌘V while editing inside a note: if the clipboard holds supported media, insert it
   // into that note at the caret. No image (plain text/URL paste) → default.
   const onPaste = useCallback(async (e: React.ClipboardEvent) => {
-    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'))
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/') || i.type.startsWith('video/'))
     const file = item?.getAsFile()
-    if (!file) return
+    const mediaType = file ? mediaTypeForFile(file) : null
+    if (!file || !mediaType) return
     const ae = document.activeElement as HTMLElement | null
     const noteId = ae?.closest?.('[data-noteid]')?.getAttribute('data-noteid')
     if (!noteId) return // paste only lands inside a note
     e.preventDefault()
-    insertImage(noteId, await fileToDataUrl(file), focusedItemIn(noteId))
+    insertImage(noteId, await fileToDataUrl(file), mediaType, focusedItemIn(noteId))
   }, [insertImage])
 
   // Native (non-passive) wheel listener: trackpad pinch arrives as a wheel
@@ -1741,12 +1745,13 @@ function CanvasSpace({
     document.addEventListener('pointerup', up)
   }, [])
 
-  // ---- canvas: drop an image file, or a transcript keyword ----
+  // ---- canvas: drop an image/GIF/video file, or a transcript keyword ----
   const onDrop = useCallback(async (e: React.DragEvent) => {
-    // Image file? Land it before the text branch (a file drop carries no
+    // Media file? Land it before the text branch (a file drop carries no
     // text/plain, so the early-return below would let the browser open it).
-    const file = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/'))
-    if (file) {
+    const file = [...(e.dataTransfer.files || [])].find((f) => mediaTypeForFile(f) !== null)
+    const mediaType = file ? mediaTypeForFile(file) : null
+    if (file && mediaType) {
       e.preventDefault()
       // Dropped directly over a note → inline. Blank canvas → standalone,
       // regardless of an unrelated selected note.
@@ -1755,9 +1760,9 @@ function CanvasSpace({
       const dropPoint = toWorld(e.clientX, e.clientY)
       const src = await fileToDataUrl(file)
       if (targetNoteId && notesRef.current.some((n) => n.id === targetNoteId)) {
-        insertImage(targetNoteId, src, focusedItemIn(targetNoteId))
+        insertImage(targetNoteId, src, mediaType, focusedItemIn(targetNoteId))
       } else {
-        const natural = await loadImageDimensions(src)
+        const natural = await loadMediaDimensions(src, mediaType)
         const placed = placeDroppedImage(
           dropPoint.x,
           dropPoint.y,
@@ -1765,7 +1770,7 @@ function CanvasSpace({
           natural.height
         )
         const id = uid('img')
-        setImages((is) => [...is, { id, ...placed, src }])
+        setImages((is) => [...is, { id, ...placed, src, mediaType }])
         setSelectedIds(new Set([id]))
       }
       return
@@ -2618,6 +2623,7 @@ function CanvasSpace({
               dataImageId={im.id}
               className="canvas-image"
               src={im.src}
+              mediaType={im.mediaType}
               url={im.url}
               width={im.w ?? 320}
               selected={selectedIds.has(im.id)}
@@ -2627,7 +2633,7 @@ function CanvasSpace({
               // participate in normal flow, even if shared image CSS changes.
               style={{ position: 'absolute', left: im.x, top: im.y }}
               onPointerDownImage={onImagePointerDown(im.id)}
-              onOpen={(rect) => setImgPreview({ src: im.src, sourceUrl: im.url, originRect: rect })}
+              onOpen={(rect) => setImgPreview({ src: im.src, mediaType: im.mediaType, sourceUrl: im.url, originRect: rect })}
               onResize={(w, shiftX, shiftY) => setImages((items) => items.map((item) => item.id === im.id
                 ? { ...item, w, x: im.x + shiftX, y: im.y + shiftY }
                 : item))}
@@ -2704,10 +2710,28 @@ function CanvasSpace({
         />
       )}
 
-      {/* Expanded image previewer: blurred scrim, image large, source url below. */}
+      {/* Expanded media previewer: blurred scrim, media large, source url below. */}
       {imgPreview && (
         <div className={`img-preview ${previewOpen ? 'open' : ''}`} onClick={closeImgPreview}>
-          <img ref={previewImgRef} className="img-preview-pic" src={imgPreview.src} alt="" onClick={(e) => e.stopPropagation()} />
+          {mediaTypeForSource(imgPreview.src, imgPreview.mediaType) === 'video' ? (
+            <video
+              ref={previewImgRef as React.RefObject<HTMLVideoElement>}
+              className="img-preview-pic"
+              src={imgPreview.src}
+              autoPlay
+              controls
+              playsInline
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <img
+              ref={previewImgRef as React.RefObject<HTMLImageElement>}
+              className="img-preview-pic"
+              src={imgPreview.src}
+              alt=""
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
           {imgPreview.sourceUrl && (
             <a
               className="img-preview-source"

@@ -108,6 +108,61 @@ describe('EditableImage', () => {
     expect(onOpen).toHaveBeenCalledOnce()
   })
 
+  it('renders GIFs as autoplaying image content without video controls', () => {
+    const { container } = render(
+      <EditableImage
+        src="data:image/gif;base64,AA"
+        mediaType="gif"
+        width={200}
+        scale={1}
+        onOpen={vi.fn()}
+        onResize={vi.fn()}
+        onUrlChange={vi.fn()}
+        onSummon={vi.fn()}
+      />
+    )
+    expect(container.querySelector('img')).toBeTruthy()
+    expect(container.querySelector('video')).toBeNull()
+    expect(screen.queryByLabelText('Play video')).toBeNull()
+  })
+
+  it('selects a video on click, plays in place from its overlay, and previews only on double-click', async () => {
+    const onOpen = vi.fn()
+    const { container } = render(
+      <EditableImage
+        src="data:video/mp4;base64,AA"
+        mediaType="video"
+        title="Demo"
+        width={200}
+        scale={1}
+        onOpen={onOpen}
+        onResize={vi.fn()}
+        onUrlChange={vi.fn()}
+        onSummon={vi.fn()}
+      />
+    )
+    const video = container.querySelector('video')!
+    let paused = true
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => paused })
+    video.play = vi.fn(async () => { paused = false; fireEvent.play(video) })
+    video.pause = vi.fn(() => { paused = true; fireEvent.pause(video) })
+
+    fireEvent.pointerDown(video, { clientX: 20, clientY: 20 })
+    fireEvent.pointerUp(document)
+    fireEvent.click(video)
+    expect(container.querySelector('.editable-image')?.classList.contains('selected')).toBe(true)
+    expect(onOpen).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByLabelText('Play video'))
+    expect(video.play).toHaveBeenCalledOnce()
+    expect(onOpen).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Pause video')).toBeTruthy()
+
+    fireEvent.doubleClick(video)
+    expect(video.pause).toHaveBeenCalledOnce()
+    expect(onOpen).toHaveBeenCalledOnce()
+  })
+
   it('moves an in-note image and adds continuous top/left magnetic resistance', () => {
     const onMove = vi.fn()
     const { container } = render(
