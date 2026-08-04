@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { isBullet, isImage, type BulletItem, type CardItem, type ImageItem, type KeywordNote } from './canvas-types'
-import type { SelectionSnapshot, SelectionSegment } from './command-session'
+import { isBullet, isImage, type BulletItem, type CardItem, type ImageItem, type KeywordNote, type TextStyleRun } from './canvas-types'
+import type { SelectionSnapshot } from './command-session'
 import { isImeEvent } from './ime'
 import { useLocale } from './locale'
+import { EditableImage } from './EditableImage'
+import { normalizeRuns, remapRunsForTextChange } from './rich-text'
+import { buildTextSelectionSnapshot, type TextSelectionEndpoint } from './text-selection'
 
 const hostOf = (u: string) => {
   try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u }
@@ -59,6 +62,41 @@ const caretFromPoint = (x: number, y: number): CaretPos | null => {
   return p ? { node: p.offsetNode, offset: p.offset } : null
 }
 
+const rangeRectForText = (host: HTMLElement, start: number, end: number) => {
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
+  const range = document.createRange()
+  let pos = 0
+  let startSet = false
+  let last: Text | null = null
+  while (walker.nextNode()) {
+    const text = walker.currentNode as Text
+    last = text
+    const next = pos + text.length
+    if (!startSet && start <= next) {
+      range.setStart(text, Math.max(0, start - pos))
+      startSet = true
+    }
+    if (startSet && end <= next) {
+      range.setEnd(text, Math.max(0, end - pos))
+      const rects = [...range.getClientRects()]
+      if (!rects.length) {
+        const rect = range.getBoundingClientRect()
+        return { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+      }
+      const left = Math.min(...rects.map((rect) => rect.left))
+      const top = Math.min(...rects.map((rect) => rect.top))
+      const right = Math.max(...rects.map((rect) => rect.right))
+      const bottom = Math.max(...rects.map((rect) => rect.bottom))
+      return { top, left, width: right - left, height: bottom - top }
+    }
+    pos = next
+  }
+  if (!startSet || !last) return null
+  range.setEnd(last, last.length)
+  const rect = range.getBoundingClientRect()
+  return { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+}
+
 // Character offset of (node, offset) within host's text — sum the text before it.
 const textOffsetIn = (host: HTMLElement, node: Node, offset: number): number => {
   if (node === host) return offset <= 0 ? 0 : host.textContent?.length ?? 0
@@ -110,6 +148,7 @@ const caretOnEdgeLine = (el: HTMLElement, edge: 'start' | 'end') => {
 // and a click puts the caret exactly where the user clicked.
 function BulletText({
   text,
+  runs,
   editing,
   title,
   onInput,
@@ -121,10 +160,11 @@ function BulletText({
   onIndent
 }: {
   text: string
+  runs?: TextStyleRun[]
   editing?: boolean
   title?: string
-  onInput: (text: string) => void
-  onEnter: () => void
+  onInput: (text: string, runs: TextStyleRun[]) => void
+  onEnter: (offset: number) => void
   onBlur: () => void
   onClick?: () => void
   onNavigate: (dir: 'prev' | 'next') => boolean
@@ -133,13 +173,35 @@ function BulletText({
 }) {
   const ref = useRef<HTMLSpanElement>(null)
 
-  // Push external text (AI streaming / URL extraction) into the DOM — but never
+  const syncDom = (el: HTMLElement) => {
+    const safe = normalizeRuns(runs, text.length)
+    const bounds = new Set<number>([0, text.length])
+    safe.forEach((r) => { bounds.add(r.start); bounds.add(r.end) })
+    const points = [...bounds].sort((a, b) => a - b)
+    el.replaceChildren()
+    for (let i = 0; i < points.length - 1; i++) {
+      const start = points[i], end = points[i + 1]
+      if (end <= start) continue
+      const run = safe.find((r) => r.start <= start && r.end >= end)
+      if (!run) el.append(document.createTextNode(text.slice(start, end)))
+      else {
+        const span = document.createElement('span')
+        span.textContent = text.slice(start, end)
+        if (run.color) span.style.color = run.color
+        if (run.size) { span.style.fontSize = `${run.size}px`; span.style.lineHeight = '1.45' }
+        if (run.weight) span.style.fontWeight = String(run.weight)
+        el.append(span)
+      }
+    }
+  }
+
+  // Push external text / formatting into the DOM — but never
   // while the user is typing in this line, so the caret doesn't jump. Runs on
   // every render (not [text]): a change skipped while focused still lands on
   // the next render after focus has moved on.
   useEffect(() => {
     const el = ref.current
-    if (el && document.activeElement !== el && el.innerText !== text) el.innerText = text
+    if (el && document.activeElement !== el) syncDom(el)
   })
 
   // editing = "focus me" (fresh bullet from ⏎ or keyword commit). A plain click
@@ -154,7 +216,10 @@ function BulletText({
     if (isImeEvent(e)) return // ⏎/arrows aimed at the IME candidate panel, not us
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      onEnter()
+      const el = ref.current
+      const s = window.getSelection()
+      const offset = el && s?.rangeCount && s.focusNode ? textOffsetIn(el, s.focusNode, s.focusOffset) : text.length
+      onEnter(offset)
       return
     }
     if (e.key === 'Tab') {
@@ -196,7 +261,10 @@ function BulletText({
       suppressContentEditableWarning
       spellCheck={false}
       title={title}
-      onInput={(e) => onInput((e.currentTarget as HTMLElement).innerText.replace(/\n$/, ''))}
+      onInput={(e) => {
+        const nextText = (e.currentTarget as HTMLElement).innerText.replace(/\n$/, '')
+        onInput(nextText, remapRunsForTextChange(runs, text, nextText))
+      }}
       onKeyDown={onKeyDown}
       onBlur={onBlur}
       onClick={onClick}
@@ -275,6 +343,12 @@ export function KeywordNoteView({
   onInsertAfter,
   onIndentBullet,
   onOpenImage,
+  onImageChange,
+  onBulletImageChange,
+  onSummonImage,
+  onImageEditStart,
+  activeImageAiId,
+  viewScale,
   onTextSelection
 }: {
   note: KeywordNote
@@ -286,8 +360,8 @@ export function KeywordNoteView({
   onKeywordEdit: () => void
   onKeywordChange: (text: string) => void
   onKeywordCommit: () => void
-  onBulletChange: (bulletId: string, text: string) => void
-  onBulletEnter: (bulletId: string) => void
+  onBulletChange: (bulletId: string, text: string, runs: TextStyleRun[]) => void
+  onBulletEnter: (bulletId: string, offset: number) => void
   onBulletBlur: (bulletId: string) => void
   onMergeBullet: (bulletId: string, dir: 'prev' | 'next') => void
   onDeleteNote: () => void
@@ -304,6 +378,12 @@ export function KeywordNoteView({
   onRemoveImage: (imageId: string) => void
   onInsertAfter: (itemId: string) => void
   onOpenImage: (img: { src: string; sourceUrl?: string; title?: string; originRect?: DOMRect }) => void
+  onImageChange: (imageId: string, patch: { sourceUrl?: string; w?: number; offsetX?: number; offsetY?: number }) => void
+  onBulletImageChange: (bulletId: string, patch: { sourceUrl?: string; w?: number; offsetX?: number; offsetY?: number }) => void
+  onSummonImage: (img: { id: string; src: string; url?: string; rect: DOMRect; noteId: string }) => void
+  onImageEditStart: () => void
+  activeImageAiId?: string
+  viewScale: number
   /**
    * A text selection inside this note's bullets settled (drag or double-click).
    * The payload is already snapshot-shaped: per-bullet segments + a viewport-
@@ -346,6 +426,15 @@ export function KeywordNoteView({
     const item = note.items[idx]
     if (!Number.isInteger(idx) || !item || !isBullet(item)) return null
     return { id: item.id, idx, off: textOffsetIn(host, node, offset) }
+  }
+
+  const reportLocatedSelection = (anchor: TextSelectionEndpoint, focus: TextSelectionEndpoint) => {
+    if (!onTextSelection) return
+    const snapshot = buildTextSelectionSnapshot(note.id, note.items, anchor, focus, (idx, start, end) => {
+      const host = itemsRef.current?.querySelector<HTMLElement>(`[data-idx="${idx}"] .bullet-text`)
+      return host ? rangeRectForText(host, start, end) : null
+    })
+    if (snapshot) onTextSelection(snapshot)
   }
 
   const onNoteKeyDown = (e: React.KeyboardEvent) => {
@@ -403,28 +492,7 @@ export function KeywordNoteView({
     const a = bulletLocate(s.anchorNode, s.anchorOffset)
     const f = bulletLocate(s.focusNode, s.focusOffset)
     if (!a || !f) return
-    const [start, end] = a.idx <= f.idx ? [a, f] : [f, a]
-    const segments: SelectionSegment[] = []
-    for (let i = start.idx; i <= end.idx; i++) {
-      const item = note.items[i]
-      if (!item || !isBullet(item)) continue // cards/images inside the span are skipped
-      const sameBullet = start.idx === end.idx
-      const from = i === start.idx ? (sameBullet ? Math.min(start.off, end.off) : start.off) : 0
-      const to = i === end.idx ? (sameBullet ? Math.max(start.off, end.off) : end.off) : item.text.length
-      if (to > from) segments.push({ itemId: item.id, start: from, end: to, textAtCapture: item.text })
-    }
-    const selectedText = s.toString().trim()
-    if (!segments.length || !selectedText) return
-    const rect = s.getRangeAt(0).getBoundingClientRect()
-    // Empty range rect (rare) → fall back to the note's own rect.
-    const rr = rect.width || rect.height ? rect : rootRef.current?.getBoundingClientRect()
-    if (!rr) return
-    onTextSelection({
-      noteId: note.id,
-      selectedText,
-      segments,
-      screenRect: { top: rr.top, left: rr.left, width: rr.width, height: rr.height }
-    })
+    reportLocatedSelection(a, f)
   }
 
   // Drag across bullets to select text: the browser confines a native drag to
@@ -434,15 +502,20 @@ export function KeywordNoteView({
   const onItemsPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return
     const anchor = caretFromPoint(e.clientX, e.clientY)
-    if (!anchor) return
+    const anchorLocated = anchor && bulletLocate(anchor.node, anchor.offset)
+    if (!anchor || !anchorLocated) return
     const downX = e.clientX, downY = e.clientY
     let moved = false
+    let finalFocus: TextSelectionEndpoint | null = null
     const move = (ev: PointerEvent) => {
       if (!moved && Math.abs(ev.clientX - downX) < 4 && Math.abs(ev.clientY - downY) < 4) return
       const focus = caretFromPoint(ev.clientX, ev.clientY)
       const fEl = focus && (focus.node.nodeType === Node.TEXT_NODE ? focus.node.parentElement : (focus.node as HTMLElement))
       if (!focus || !fEl || !rootRef.current?.contains(fEl)) return // stay within this note
+      const focusLocated = bulletLocate(focus.node, focus.offset)
+      if (!focusLocated) return
       moved = true
+      finalFocus = focusLocated
       setDragSelOn(true)
       try {
         window.getSelection()?.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset)
@@ -454,7 +527,10 @@ export function KeywordNoteView({
       document.removeEventListener('pointerup', up)
       // Let the selection settle before reading it (same tick it can lag the
       // final setBaseAndExtent). Only drags report — plain clicks never moved.
-      if (moved) setTimeout(reportSelection, 0)
+      if (moved && finalFocus) {
+        const focus = finalFocus
+        setTimeout(() => reportLocatedSelection(anchorLocated, focus), 0)
+      }
     }
     document.addEventListener('pointermove', move)
     document.addEventListener('pointerup', up)
@@ -531,12 +607,12 @@ export function KeywordNoteView({
     // Observer notes are kept/dismissed as a whole, so their bullets show no
     // per-line ✓/✕ and don't accept on click.
     const itemAccept = pendingAi && !isObserver
-    const indent = b.indent ?? 0
+    const indent = b.bulleted ? (b.indent ?? 0) : 0
     const next = note.items[i + 1]
     const hasIndentedChild = next && isBullet(next) && (next.indent ?? 0) > indent
     const style = indent ? ({ '--indent-offset': `${indent * 24}px` } as React.CSSProperties) : undefined
     return (
-      <div key={b.id} data-idx={i} className={`bullet ${b.origin} ${b.status}`} style={style}>
+      <div key={b.id} data-idx={i} className={`bullet ${b.bulleted ? 'bulleted' : ''} ${b.origin} ${b.status}`} style={style}>
         {/* Obsidian-style indentation guides: one vertical segment per ancestor
             level. A parent with children draws the first segment below its own
             dot; child rows only continue that thread through their own height. */}
@@ -548,14 +624,15 @@ export function KeywordNoteView({
             style={{ '--guide-offset': `${(lvl - indent) * 24}px` } as React.CSSProperties}
           />
         ))}
-        <span className="dot">{indent ? '◦' : '•'}</span>
+        {b.bulleted && <span className="dot">{indent ? '◦' : '•'}</span>}
         <div className="bullet-body">
           <BulletText
             text={b.text}
+            runs={b.runs}
             editing={b.editing}
             title={itemAccept ? tr('Click to accept & edit', '点击接受并编辑') : undefined}
-            onInput={(t) => onBulletChange(b.id, t)}
-            onEnter={() => onBulletEnter(b.id)}
+            onInput={(t, runs) => onBulletChange(b.id, t, runs)}
+            onEnter={(offset) => onBulletEnter(b.id, offset)}
             onBlur={() => onBulletBlur(b.id)}
             onClick={itemAccept ? () => onKeepBullet(b.id) : undefined}
             onNavigate={(dir) => focusIdx(dir === 'next' ? i + 1 : i - 1, dir === 'next' ? 'start' : 'end')}
@@ -563,16 +640,33 @@ export function KeywordNoteView({
             onIndent={(delta) => onIndentBullet(b.id, delta)}
           />
           {/* Inline image: PART of the bullet — no controls of its own, it is
-              kept/rejected with its text. Click = expand into the previewer
-              (source url shown there). A broken src removes itself. */}
+              kept/rejected with its text. Single-click selects; double-click
+              opens the previewer. A broken src removes itself. */}
           {b.image && (
-            <img
-              className="bullet-img"
+            <EditableImage
               src={b.image.src}
-              alt=""
-              title={tr('Click to expand', '点击展开')}
-              draggable={false}
-              onClick={(e) => onOpenImage({ ...b.image!, originRect: e.currentTarget.getBoundingClientRect() })}
+              url={b.image.sourceUrl}
+              title={b.image.title}
+              width={b.image.w ?? 230}
+              scale={viewScale}
+              dataImageId={b.id}
+              aiPromptActive={activeImageAiId === b.id}
+              style={{ transform: `translate(${b.image.offsetX ?? 0}px, ${b.image.offsetY ?? 0}px)` }}
+              onOpen={(rect) => onOpenImage({ ...b.image!, originRect: rect })}
+              onMove={(shiftX, shiftY) => onBulletImageChange(b.id, {
+                offsetX: (b.image?.offsetX ?? 0) + shiftX,
+                offsetY: (b.image?.offsetY ?? 0) + shiftY
+              })}
+              onMoveStart={onImageEditStart}
+              onResize={(w, shiftX, shiftY) => onBulletImageChange(b.id, {
+                w,
+                offsetX: (b.image?.offsetX ?? 0) + shiftX,
+                offsetY: (b.image?.offsetY ?? 0) + shiftY
+              })}
+              onResizeStart={onImageEditStart}
+              onUrlChange={(sourceUrl) => onBulletImageChange(b.id, { sourceUrl })}
+              onUrlChangeStart={onImageEditStart}
+              onSummon={(rect) => onSummonImage({ id: b.id, src: b.image!.src, url: b.image!.sourceUrl, rect, noteId: note.id })}
               onError={(e) => { e.currentTarget.style.display = 'none' }}
             />
           )}
@@ -666,13 +760,30 @@ export function KeywordNoteView({
         }
       }}
     >
-      <img
-        className="bullet-img"
+      <EditableImage
         src={im.src}
-        alt=""
-        title={tr('Click to expand', '点击展开')}
-        draggable={false}
-        onClick={(e) => onOpenImage({ src: im.src, sourceUrl: im.sourceUrl, title: im.title, originRect: e.currentTarget.getBoundingClientRect() })}
+        url={im.sourceUrl}
+        title={im.title}
+        width={im.w ?? 230}
+        scale={viewScale}
+        dataImageId={im.id}
+        aiPromptActive={activeImageAiId === im.id}
+        style={{ transform: `translate(${im.offsetX ?? 0}px, ${im.offsetY ?? 0}px)` }}
+        onOpen={(rect) => onOpenImage({ src: im.src, sourceUrl: im.sourceUrl, title: im.title, originRect: rect })}
+        onMove={(shiftX, shiftY) => onImageChange(im.id, {
+          offsetX: (im.offsetX ?? 0) + shiftX,
+          offsetY: (im.offsetY ?? 0) + shiftY
+        })}
+        onMoveStart={onImageEditStart}
+        onResize={(w, shiftX, shiftY) => onImageChange(im.id, {
+          w,
+          offsetX: (im.offsetX ?? 0) + shiftX,
+          offsetY: (im.offsetY ?? 0) + shiftY
+        })}
+        onResizeStart={onImageEditStart}
+        onUrlChange={(sourceUrl) => onImageChange(im.id, { sourceUrl })}
+        onUrlChangeStart={onImageEditStart}
+        onSummon={(rect) => onSummonImage({ id: im.id, src: im.src, url: im.sourceUrl, rect, noteId: note.id })}
         onError={(e) => { e.currentTarget.style.display = 'none' }}
       />
     </div>
@@ -699,15 +810,15 @@ export function KeywordNoteView({
           transcript source phrase is hovered */}
       {/* Observer gray marks a note still awaiting judgment; once kept (✓) the
           header settles to black together with the body text. */}
-      <div className={`kw-header ${isObserver && hasPending ? 'observer' : ''} ${hovered ? 'hovered' : ''}`}>
+      {(note.keywordEditing || note.keyword.trim()) && <div className={`kw-header ${isObserver && hasPending ? 'observer' : ''} ${hovered ? 'hovered' : ''}`}>
         {note.keywordEditing ? (
           <KeywordEditor value={note.keyword} onChange={onKeywordChange} onCommit={onKeywordCommit} />
         ) : (
           <span className="kw-text" title={tr('Click to edit', '点击编辑')} onClick={onKeywordEdit}>
-            {note.keyword || 'untitled'}
+            {note.keyword}
           </span>
         )}
-      </div>
+      </div>}
 
       {/* one ordered flow: bullets and inline URL cards */}
       {/* onDoubleClick: a dbl-click word-selection is a selection too — report it. */}

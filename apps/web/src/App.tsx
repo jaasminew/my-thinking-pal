@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Transcript, type TranscriptSync } from './Transcript'
 import { KeywordNoteView } from './KeywordNoteView'
-import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage } from './canvas-types'
+import { uid, isBullet, isCard, type KeywordNote, type NoteItem, type BulletItem, type CardItem, type ImageItem, type CanvasImage, type TextStyleRun } from './canvas-types'
 import { loadJSON, saveJSON } from './persist'
 import { requestCocreate } from '../../../services/llm/cocreate'
 import type { CocreateProvider } from '../../../services/llm/cocreate-types'
 import { requestCommandChat } from '../../../services/llm/command-chat'
 import { InlineCommandBubble } from './InlineCommandBubble'
+import { SelectionToolbar } from './SelectionToolbar'
+import { EditableImage } from './EditableImage'
+import { loadImageDimensions, placeDroppedImage } from './image-drop-placement'
+import {
+  applyMagneticResistance,
+  MAGNET_RADIUS_PX
+} from './image-magnet'
+import { applyTextStyle, joinRuns, remapRunsForTextChange, sliceRuns, splitRuns, type TextStylePatch } from './rich-text'
 import { CommandSidePanel } from './CommandSidePanel'
 import {
   actionAutoApplies,
@@ -16,7 +24,10 @@ import {
   clearContextHighlight,
   freeCreateSpot,
   salvageLooseAction,
+  isImageSelection,
   type SelectionSnapshot,
+  type ImageSelectionSnapshot,
+  type CommandContextSource,
   type CommandSession,
   type CommandMessage
 } from './command-session'
@@ -271,7 +282,7 @@ const settledCommandSession = (s: CommandSession | null): CommandSession | null 
   s
     ? {
         ...s,
-        origin: s.origin ?? (s.source ? 'selection' : 'canvas'),
+        origin: s.origin ?? (isImageSelection(s.source) ? 'image' : s.source ? 'selection' : 'canvas'),
         canvasRefs: s.canvasRefs ?? [],
         createdNoteCount: s.createdNoteCount ?? 0,
         messages: s.messages.map((m) => (m.pending ? { ...m, pending: false } : m))
@@ -280,6 +291,7 @@ const settledCommandSession = (s: CommandSession | null): CommandSession | null 
 
 type BubbleState =
   | { kind: 'selection'; snapshot: SelectionSnapshot }
+  | { kind: 'image'; snapshot: ImageSelectionSnapshot }
   | { kind: 'canvas'; x: number; y: number }
 
 // URLs the user types/pastes into a bullet get pulled out into inline cards.
@@ -295,14 +307,23 @@ const commitBullet = (b: BulletItem, continueOutline: boolean): NoteItem[] => {
   const urls = b.text.match(URL_RE) || []
   const text = b.text.replace(URL_RE, ' ').replace(/\s+/g, ' ').trim()
   const out: NoteItem[] = []
-  if (text) out.push({ ...b, text, editing: false })
+  if (text) out.push({ ...b, text, runs: remapRunsForTextChange(b.runs, b.text, text), editing: false })
   for (const u of urls) {
     out.push({ kind: 'card', id: uid('c'), origin: 'human', status: 'kept', title: hostOf(u), url: u })
   }
   // ⏎ on an empty bullet ends the outline instead of opening another one. The
   // fresh line continues at the same outline depth.
   if (continueOutline && out.length) {
-    out.push({ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true, indent: b.indent })
+    out.push({
+      kind: 'bullet',
+      id: uid('b'),
+      origin: 'human',
+      text: '',
+      status: 'kept',
+      editing: true,
+      indent: b.indent,
+      bulleted: b.bulleted
+    })
   }
   return out
 }
@@ -568,6 +589,7 @@ function CanvasSpace({
   // Selection bubbles retain a frozen snapshot; canvas bubbles retain only a
   // viewport-space click point. One session at a time, restored per idea space.
   const [bubble, setBubble] = useState<BubbleState | null>(null)
+  const [selectionTools, setSelectionTools] = useState<SelectionSnapshot | null>(null)
   const [session, setSession] = useState<CommandSession | null>(() =>
     settledCommandSession(loadJSON<CommandSession | null>(k('command-session'), null))
   )
@@ -751,6 +773,16 @@ function CanvasSpace({
     setNotes(s.notes)
     setImages(s.images)
     setSelectedIds(new Set()) // stale ids may point at notes that just came/went
+  }, [])
+
+  const checkpointCanvas = useCallback(() => {
+    const current = { notes: notesRef.current, images: imagesRef.current }
+    const last = historyRef.current[historyRef.current.length - 1]
+    if (last !== current) {
+      historyRef.current.push(current)
+      if (historyRef.current.length > HISTORY_CAP) historyRef.current.shift()
+    }
+    futureRef.current = []
   }, [])
 
   useEffect(() => {
@@ -979,6 +1011,7 @@ function CanvasSpace({
       // dismiss it rather than let it float over the wrong spot. (The context
       // HIGHLIGHT lives on the text itself, so it moves correctly and stays.)
       setBubble(null)
+      setSelectionTools(null)
       setView((v) => {
         if (e.ctrlKey || e.metaKey) {
           const cx = e.clientX - rect.left, cy = e.clientY - rect.top
@@ -1360,37 +1393,86 @@ function CanvasSpace({
   // after every notes render (React replaces the DOM nodes). It lives on the
   // real text, so pan/zoom/drag move it for free. Clears when the conversation
   // officially ends (panel close / bubble dismissed without submitting).
-  const activeSnapshot = session?.source ?? (bubble?.kind === 'selection' ? bubble.snapshot : null)
+  const sessionTextSource = session?.source && !isImageSelection(session.source) ? session.source : null
+  const promptTextSource = bubble?.kind === 'selection' ? bubble.snapshot : null
+  // The active prompt always wins over an older open session so the text that
+  // summoned THIS prompt remains highlighted until the prompt is dismissed.
+  const activeSnapshot = promptTextSource ?? selectionTools ?? sessionTextSource
   useEffect(() => {
     if (!activeSnapshot) {
       clearContextHighlight()
       return
     }
     paintContextHighlight(activeSnapshot, notes.find((n) => n.id === activeSnapshot.noteId))
-  }, [activeSnapshot, notes])
+  }, [activeSnapshot, notes, bubble?.kind])
   useEffect(() => () => clearContextHighlight(), []) // unmount (space closed)
 
-  // Click anywhere outside the bubble dismisses it (the bubble stops its own
+  // Click anywhere outside the selection toolbar / command bubble dismisses it.
   // pointerdown from reaching the document). No session started → the
   // highlight clears with it via the effect above.
   useEffect(() => {
-    if (!bubble) return
+    if (!bubble && !selectionTools) return
     // Belt and braces: the bubble already stops its own pointerdown from
     // bubbling, but ALSO check the target — event-order quirks (touch,
     // synthetic events) must never let a click INSIDE the bubble dismiss it.
     const onDown = (e: PointerEvent) => {
-      if ((e.target as HTMLElement | null)?.closest?.('.cmd-bubble')) return
+      if ((e.target as HTMLElement | null)?.closest?.('.cmd-bubble, .selection-toolbar')) return
       setBubble(null)
+      setSelectionTools(null)
     }
     document.addEventListener('pointerdown', onDown)
     return () => document.removeEventListener('pointerdown', onDown)
-  }, [bubble])
+  }, [bubble, selectionTools])
 
-  // A settled text selection inside a note summons the bubble (already
-  // snapshot-shaped — freezing IS receiving it).
+  // A settled text selection first opens the five-action formatting toolbar.
   const onNoteTextSelection = useCallback((sel: SelectionSnapshot) => {
-    setBubble({ kind: 'selection', snapshot: sel })
+    setBubble(null)
+    setSelectionTools(sel)
   }, [])
+
+  const patchSelectedText = useCallback((snapshot: SelectionSnapshot, patch: TextStylePatch) => {
+    checkpointCanvas()
+    setNotes((ns) => ns.map((n) => {
+      if (n.id !== snapshot.noteId) return n
+      return {
+        ...n,
+        items: n.items.map((item) => {
+          if (!isBullet(item)) return item
+          const segs = snapshot.segments.filter((s) => s.itemId === item.id && s.textAtCapture === item.text)
+          if (!segs.length) return item
+          const runs = segs.reduce(
+            (acc, seg) => applyTextStyle(acc, item.text.length, seg.start, seg.end, patch),
+            item.runs ?? []
+          )
+          return { ...item, runs }
+        })
+      }
+    }))
+  }, [checkpointCanvas])
+
+  const toggleSelectedBullets = useCallback((snapshot: SelectionSnapshot) => {
+    checkpointCanvas()
+    setNotes((ns) => ns.map((n) => {
+      if (n.id !== snapshot.noteId) return n
+      const ids = new Set(snapshot.segments.map((s) => s.itemId))
+      const targets = n.items.filter((i): i is BulletItem => isBullet(i) && ids.has(i.id))
+      const makeBulleted = !targets.length || !targets.every((i) => !!i.bulleted)
+      return {
+        ...n,
+        items: n.items.map((i) => isBullet(i) && ids.has(i.id)
+          ? { ...i, bulleted: makeBulleted, indent: makeBulleted ? i.indent : 0 }
+          : i)
+      }
+    }))
+  }, [checkpointCanvas])
+
+  const selectionAllBulleted = useMemo(() => {
+    if (!selectionTools) return false
+    const note = notes.find((n) => n.id === selectionTools.noteId)
+    const ids = new Set(selectionTools.segments.map((s) => s.itemId))
+    const targets = note?.items.filter((i): i is BulletItem => isBullet(i) && ids.has(i.id)) ?? []
+    return targets.length > 0 && targets.every((i) => !!i.bulleted)
+  }, [notes, selectionTools])
 
   // One guarded path for streamed auto-applies and clicked proposal actions.
   // It resolves only session aliases and records every id it creates, so later
@@ -1400,9 +1482,14 @@ function CanvasSpace({
     if (!cur || (sessionId && cur.id !== sessionId)) return false
 
     let createAt = { x: 80, y: 80 }
-    const src = cur.source ? notesRef.current.find((n) => n.id === cur.source!.noteId) : undefined
+    const sourceNoteId = cur.source
+      ? (isImageSelection(cur.source) ? cur.source.noteId : cur.source.noteId)
+      : undefined
+    const src = sourceNoteId ? notesRef.current.find((n) => n.id === sourceNoteId) : undefined
     if (src) {
       createAt = { x: src.x + 340, y: src.y }
+    } else if (isImageSelection(cur.source) && cur.source.x !== undefined && cur.source.y !== undefined) {
+      createAt = { x: cur.source.x + 360, y: cur.source.y }
     } else if (canvasRef.current) {
       const r = canvasRef.current.getBoundingClientRect()
       const v = viewRef.current
@@ -1439,7 +1526,10 @@ function CanvasSpace({
     setSession(next)
     setChatStreaming(true)
 
-    const note = cur.source ? notesRef.current.find((n) => n.id === cur.source!.noteId) : undefined
+    const sourceNoteId = cur.source
+      ? (isImageSelection(cur.source) ? cur.source.noteId : cur.source.noteId)
+      : undefined
+    const note = sourceNoteId ? notesRef.current.find((n) => n.id === sourceNoteId) : undefined
     // 1 min TOTAL of verbatim transcript (Tier-3 window is half of Tier-2's):
     // dragged note → ±30s around when its keyword was spoken; else last 60s.
     const transcriptWindow =
@@ -1465,7 +1555,8 @@ function CanvasSpace({
     const pm = projectMemoryRef.current
     const memoryTask = [
       `Current request: ${text}`,
-      cur.source?.selectedText ? `Selected text: ${cur.source.selectedText}` : '',
+      cur.source && !isImageSelection(cur.source) && cur.source.selectedText ? `Selected text: ${cur.source.selectedText}` : '',
+      isImageSelection(cur.source) ? `Selected image${cur.source.url ? ` linked to ${cur.source.url}` : ''}` : '',
       note?.keyword ? `Source note keyword: ${note.keyword}` : '',
       note ? `Source note bullets:\n${note.items.flatMap((i) => isBullet(i) && i.origin === 'human' && i.text.trim() ? [`- ${i.text}`] : []).join('\n')}` : '',
       transcriptWindow ? `Transcript:\n${transcriptWindow}` : '',
@@ -1503,6 +1594,7 @@ function CanvasSpace({
         projectMemory: memory ?? undefined,
         ...thinkerReq,
         messages: history.map((m) => ({ role: m.role, text: m.text })),
+        images: isImageSelection(cur.source) ? [cur.source.src] : undefined,
         context: buildTurnContext(note, cur.source, transcriptWindow, cur, notesRef.current)
       },
       {
@@ -1541,13 +1633,13 @@ function CanvasSpace({
 
   // Open a session from the bubble (snapshot) or the bottom bar (null source),
   // replacing any previous one — its stream is aborted, its highlight replaced.
-  const openCommandSession = useCallback((source: SelectionSnapshot | null, firstCommand: string) => {
+  const openCommandSession = useCallback((source: CommandContextSource | null, firstCommand: string) => {
     chatAbortRef.current?.abort()
     const title = firstCommand.length > 42 ? firstCommand.slice(0, 42) + '…' : firstCommand
     const s: CommandSession = {
       id: uid('cs'),
       source,
-      origin: source ? 'selection' : 'canvas',
+      origin: isImageSelection(source) ? 'image' : source ? 'selection' : 'canvas',
       title,
       messages: [],
       createdAt: Date.now(),
@@ -1557,6 +1649,7 @@ function CanvasSpace({
     sessionRef.current = s
     setSession(s)
     setBubble(null)
+    setSelectionTools(null)
     void sendTurn(firstCommand)
   }, [sendTurn])
 
@@ -1627,9 +1720,20 @@ function CanvasSpace({
       setMarquee(null)
       if (!moved) {
         const id = uid('n')
-        // A fresh note starts in typing mode, NOT selected — the selection
+        // A fresh note starts as an untitled, unbulleted body line.
         // rectangle is a drag-select (marquee) affordance, not a "new" marker.
-        setNotes((ns) => [...ns, { id, x: startW.x, y: startW.y, keyword: '', keywordEditing: true, items: [], aiRunning: false, kept: [], rejected: [], lastFiredWords: 0 }])
+        setNotes((ns) => [...ns, {
+          id,
+          x: startW.x,
+          y: startW.y,
+          keyword: '',
+          keywordEditing: false,
+          items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true, bulleted: false }],
+          aiRunning: false,
+          kept: [],
+          rejected: [],
+          lastFiredWords: 0
+        }])
         setSelectedIds(new Set())
       }
     }
@@ -1644,17 +1748,24 @@ function CanvasSpace({
     const file = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/'))
     if (file) {
       e.preventDefault()
-      // Priority: dropped onto a note → into that note as an image item; else
-      // the selected note; else a standalone floating image at the drop point.
+      // Dropped directly over a note → inline. Blank canvas → standalone,
+      // regardless of an unrelated selected note.
       const dropNoteEl = (e.target as HTMLElement).closest('[data-noteid]')
-      const targetNoteId = dropNoteEl?.getAttribute('data-noteid') ?? [...selectedIdsRef.current][0] ?? null
-      const { x, y } = toWorld(e.clientX, e.clientY)
+      const targetNoteId = dropNoteEl?.getAttribute('data-noteid') ?? null
+      const dropPoint = toWorld(e.clientX, e.clientY)
       const src = await fileToDataUrl(file)
       if (targetNoteId && notesRef.current.some((n) => n.id === targetNoteId)) {
         insertImage(targetNoteId, src, focusedItemIn(targetNoteId))
       } else {
+        const natural = await loadImageDimensions(src)
+        const placed = placeDroppedImage(
+          dropPoint.x,
+          dropPoint.y,
+          natural.width,
+          natural.height
+        )
         const id = uid('img')
-        setImages((is) => [...is, { id, x, y, src }])
+        setImages((is) => [...is, { id, ...placed, src }])
         setSelectedIds(new Set([id]))
       }
       return
@@ -1679,7 +1790,7 @@ function CanvasSpace({
         kept: [], rejected: [], lastFiredWords: 0, sourceText: text,
         ...(Number.isFinite(originTs) ? { originTs } : {}),
         ...(originSignalType ? { originSignalType } : {}),
-        items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
+        items: [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true, bulleted: false }]
       }
     ])
     setSelectedIds(new Set())
@@ -1704,20 +1815,23 @@ function CanvasSpace({
       keywordEditing: false,
       items: nn.items.length
         ? nn.items
-        : [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }]
+        : [{ kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true, bulleted: false }]
     }))
   }
 
   // ---- bullet editing ----
-  const onBulletChange = (id: string) => (bulletId: string, text: string) =>
-    patchNote(id, (n) => ({ ...n, items: n.items.map((it) => (it.id === bulletId && isBullet(it) ? { ...it, text } : it)) }))
+  const onBulletChange = (id: string) => (bulletId: string, text: string, runs: TextStyleRun[]) =>
+    patchNote(id, (n) => ({
+      ...n,
+      items: n.items.map((it) => (it.id === bulletId && isBullet(it) ? { ...it, text, runs } : it))
+    }))
 
   // Tab / Shift+Tab: push a bullet one outline level deeper / shallower.
   const onIndentBullet = (id: string) => (bulletId: string, delta: number) =>
     patchNote(id, (n) => ({
       ...n,
       items: n.items.map((it) =>
-        it.id === bulletId && isBullet(it)
+        it.id === bulletId && isBullet(it) && it.bulleted
           ? { ...it, indent: Math.max(0, Math.min(3, (it.indent ?? 0) + delta)) }
           : it
       )
@@ -1726,16 +1840,41 @@ function CanvasSpace({
   // Replace one bullet with its committed form (URL cards split out, optional
   // fresh editing bullet after) — splice keeps the item's position in the flow.
   const spliceCommit = (id: string, bulletId: string, continueOutline: boolean) =>
-    patchNote(id, (n) => {
+    setNotes((ns) => ns.map((n) => {
+      if (n.id !== id) return n
       const idx = n.items.findIndex((it) => it.id === bulletId)
       const b = n.items[idx]
       if (!b || !isBullet(b)) return n
       return { ...n, items: [...n.items.slice(0, idx), ...commitBullet(b, continueOutline), ...n.items.slice(idx + 1)] }
-    })
+    }).filter((n) => n.keyword.trim() !== '' || n.items.length > 0))
 
   // ⏎ inside any bullet — human or laid-down AI — commits it and opens a fresh
   // bullet right below. ⏎ on an empty bullet removes it (end of the outline).
-  const onBulletEnter = (id: string) => (bulletId: string) => spliceCommit(id, bulletId, true)
+  const onBulletEnter = (id: string) => (bulletId: string, offset: number) =>
+    setNotes((ns) => ns.map((n) => {
+      if (n.id !== id) return n
+      const idx = n.items.findIndex((it) => it.id === bulletId)
+      const b = n.items[idx]
+      if (!b || !isBullet(b)) return n
+      if (!b.text && b.bulleted) {
+        return { ...n, items: n.items.map((it) => it.id === b.id ? { ...b, bulleted: false, indent: 0, editing: true } : it) }
+      }
+      const at = Math.max(0, Math.min(b.text.length, offset))
+      const [leftRuns, rightRuns] = splitRuns(b.runs, at)
+      const left: BulletItem = { ...b, text: b.text.slice(0, at), runs: leftRuns, editing: false }
+      const right: BulletItem = {
+        kind: 'bullet',
+        id: uid('b'),
+        text: b.text.slice(at),
+        runs: rightRuns,
+        editing: true,
+        origin: 'human',
+        status: 'kept',
+        indent: b.indent,
+        bulleted: b.bulleted
+      }
+      return { ...n, items: [...n.items.slice(0, idx), left, right, ...n.items.slice(idx + 1)] }
+    }))
 
   // Blur a bullet: commit it (empty → remove). No new bullet on blur. Bullets
   // are always contentEditable, so a click edits in place natively — no
@@ -1757,6 +1896,7 @@ function CanvasSpace({
       const merged: BulletItem = {
         ...keep,
         text: keep.text + drop.text,
+        runs: joinRuns(keep.runs, keep.text.length, drop.runs, drop.text.length),
         image: keep.image ?? drop.image
       }
       return { ...n, items: n.items.map((it, i) => (i === keepIdx ? merged : it)).filter((_, i) => i !== dropIdx) }
@@ -1777,6 +1917,12 @@ function CanvasSpace({
       const merged: BulletItem = {
         ...s,
         text: s.text.slice(0, startOff) + e.text.slice(endOff),
+        runs: joinRuns(
+          sliceRuns(s.runs, 0, startOff),
+          startOff,
+          sliceRuns(e.runs, endOff, e.text.length),
+          e.text.length - endOff
+        ),
         image: s.image ?? e.image
       }
       return { ...n, items: [...n.items.slice(0, si), merged, ...n.items.slice(ei + 1)] }
@@ -1838,7 +1984,7 @@ function CanvasSpace({
     patchNote(id, (n) => {
       const idx = n.items.findIndex((it) => it.id === itemId)
       if (idx < 0) return n
-      const fresh: NoteItem = { kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true }
+      const fresh: NoteItem = { kind: 'bullet', id: uid('b'), origin: 'human', text: '', status: 'kept', editing: true, bulleted: false }
       return { ...n, items: [...n.items.slice(0, idx + 1), fresh, ...n.items.slice(idx + 1)] }
     })
 
@@ -2216,20 +2362,48 @@ function CanvasSpace({
   }
 
   // Drag a set of canvas objects (notes and/or images) together, world-space.
-  // A pointerup with no real movement is a click, not a drag → onClick (used by
-  // standalone images to expand into the previewer, same as an inline image).
-  const beginDrag = (dragIds: string[], startX: number, startY: number, onClick?: () => void) => {
+  // When the drag starts on a standalone image, only its top/left coordinates
+  // receive a subtle magnetic detent against every other canvas image.
+  const beginDrag = (dragIds: string[], startX: number, startY: number, magneticImageId?: string) => {
     const origins = dragIds.flatMap((i) => {
       const n = notesRef.current.find((x) => x.id === i)
       if (n) return [{ i, ox: n.x, oy: n.y }]
       const im = imagesRef.current.find((x) => x.id === i)
       return im ? [{ i, ox: im.x, oy: im.y }] : []
     })
-    let moved = false
+    const primary = magneticImageId ? origins.find((origin) => origin.i === magneticImageId) : undefined
+    const magneticFrame = primary
+      ? [...(layerRef.current?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+          .find((element) => element.dataset.imageid === magneticImageId)
+      : undefined
+    const primaryRect = magneticFrame?.getBoundingClientRect()
+    const otherImageRects = primaryRect
+      ? [...(layerRef.current?.querySelectorAll<HTMLElement>('.editable-image') ?? [])]
+          .filter((element) => {
+            if (element === magneticFrame || dragIds.includes(element.dataset.imageid ?? '')) return false
+            const noteId = element.closest<HTMLElement>('[data-noteid]')?.dataset.noteid
+            return !noteId || !dragIds.includes(noteId)
+          })
+          .map((element) => element.getBoundingClientRect())
+      : []
     const move = (ev: PointerEvent) => {
-      if (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4) moved = true
       const s = viewRef.current.scale
-      const dx = (ev.clientX - startX) / s, dy = (ev.clientY - startY) / s
+      let dx = (ev.clientX - startX) / s
+      let dy = (ev.clientY - startY) / s
+      if (primary && primaryRect) {
+        const magneticLeft = applyMagneticResistance(
+          primaryRect.left + ev.clientX - startX,
+          otherImageRects.map((rect) => rect.left),
+          MAGNET_RADIUS_PX
+        )
+        const magneticTop = applyMagneticResistance(
+          primaryRect.top + ev.clientY - startY,
+          otherImageRects.map((rect) => rect.top),
+          MAGNET_RADIUS_PX
+        )
+        dx = (magneticLeft - primaryRect.left) / s
+        dy = (magneticTop - primaryRect.top) / s
+      }
       const shift = <T extends { id: string; x: number; y: number }>(o: T): T => {
         const org = origins.find((g) => g.i === o.id)
         return org ? { ...o, x: org.ox + dx, y: org.oy + dy } : o
@@ -2240,7 +2414,6 @@ function CanvasSpace({
     const up = () => {
       document.removeEventListener('pointermove', move)
       document.removeEventListener('pointerup', up)
-      if (!moved) onClick?.()
     }
     document.addEventListener('pointermove', move)
     document.addEventListener('pointerup', up)
@@ -2266,15 +2439,43 @@ function CanvasSpace({
     beginDrag(dragIds, e.clientX, e.clientY)
   }
 
-  // ---- select + drag a standalone canvas image; a plain click (no drag)
-  // expands it into the previewer, same as clicking an inline image ----
+  // ---- select + drag a standalone canvas image. Preview opening is handled
+  // uniformly by EditableImage on double-click. ----
   const onImagePointerDown = (id: string) => (e: React.PointerEvent) => {
     e.stopPropagation()
     if (e.shiftKey || e.metaKey) { toggleSelected(id); return }
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const im = imagesRef.current.find((x) => x.id === id)
-    beginDrag(dragTargets(id), e.clientX, e.clientY, im ? () => setImgPreview({ src: im.src, originRect: rect }) : undefined)
+    beginDrag(dragTargets(id), e.clientX, e.clientY, id)
   }
+
+  const summonImage = useCallback((img: {
+    id: string
+    src: string
+    url?: string
+    rect: DOMRect
+    noteId?: string
+    x?: number
+    y?: number
+  }) => {
+    setSelectionTools(null)
+    setBubble({
+      kind: 'image',
+      snapshot: {
+        kind: 'image',
+        imageId: img.id,
+        src: img.src,
+        url: img.url,
+        noteId: img.noteId,
+        x: img.x,
+        y: img.y,
+        screenRect: {
+          top: img.rect.top,
+          left: img.rect.left,
+          width: img.rect.width,
+          height: img.rect.height
+        }
+      }
+    })
+  }, [])
 
   // Which transcript phrases to faintly mark: one per note born from a drag
   // (keeps its immutable sourceText + the source line's ts). Deriving from notes
@@ -2393,20 +2594,49 @@ function CanvasSpace({
               onInsertAfter={onInsertAfter(n.id)}
               onRemoveImage={removeImageItem(n.id)}
               onOpenImage={setImgPreview}
+              onImageChange={(imageId, patch) => patchNote(n.id, (note) => ({
+                ...note,
+                items: note.items.map((item) => item.id === imageId ? { ...item, ...patch } : item)
+              }))}
+              onBulletImageChange={(bulletId, patch) => patchNote(n.id, (note) => ({
+                ...note,
+                items: note.items.map((item) => isBullet(item) && item.id === bulletId && item.image
+                  ? { ...item, image: { ...item.image, ...patch } }
+                  : item)
+              }))}
+              onSummonImage={summonImage}
+              onImageEditStart={checkpointCanvas}
+              activeImageAiId={bubble?.kind === 'image' ? bubble.snapshot.imageId : undefined}
+              viewScale={view.scale}
               onTextSelection={onNoteTextSelection}
             />
           ))}
           {/* standalone floating images — no note wrapper, no header */}
           {images.map((im) => (
-            <img
+            <EditableImage
               key={im.id}
-              data-imageid={im.id}
-              className={`canvas-image ${selectedIds.has(im.id) ? 'selected' : ''}`}
+              dataImageId={im.id}
+              className="canvas-image"
               src={im.src}
-              alt=""
-              draggable={false}
-              style={{ left: im.x, top: im.y }}
-              onPointerDown={onImagePointerDown(im.id)}
+              url={im.url}
+              width={im.w ?? 320}
+              selected={selectedIds.has(im.id)}
+              aiPromptActive={bubble?.kind === 'image' && bubble.snapshot.imageId === im.id}
+              scale={view.scale}
+              // Inline position is deliberate: standalone images must never
+              // participate in normal flow, even if shared image CSS changes.
+              style={{ position: 'absolute', left: im.x, top: im.y }}
+              onPointerDownImage={onImagePointerDown(im.id)}
+              onOpen={(rect) => setImgPreview({ src: im.src, sourceUrl: im.url, originRect: rect })}
+              onResize={(w, shiftX, shiftY) => setImages((items) => items.map((item) => item.id === im.id
+                ? { ...item, w, x: im.x + shiftX, y: im.y + shiftY }
+                : item))}
+              onResizeStart={checkpointCanvas}
+              onUrlChange={(url) => {
+                checkpointCanvas()
+                setImages((items) => items.map((item) => item.id === im.id ? { ...item, url } : item))
+              }}
+              onSummon={(rect) => summonImage({ id: im.id, src: im.src, url: im.url, rect, x: im.x, y: im.y })}
               onError={(e) => { e.currentTarget.style.display = 'none' }}
             />
           ))}
@@ -2430,15 +2660,34 @@ function CanvasSpace({
       )}
 
       {/* Tier-3: inline AI bubble at a frozen selection or canvas click. */}
+      {selectionTools && (
+        <SelectionToolbar
+          snapshot={selectionTools}
+          allBulleted={selectionAllBulleted}
+          onFormat={(patch) => patchSelectedText(selectionTools, patch)}
+          onToggleBullets={() => toggleSelectedBullets(selectionTools)}
+          onSummon={() => {
+            setBubble({ kind: 'selection', snapshot: selectionTools })
+            setSelectionTools(null)
+          }}
+        />
+      )}
+
       {bubble && (
         <InlineCommandBubble
-          anchor={bubble.kind === 'selection'
+          anchor={bubble.kind === 'selection' || bubble.kind === 'image'
             ? bubble.snapshot.screenRect
             : { top: bubble.y, left: bubble.x, width: 0, height: 0 }}
+          placement={bubble.kind === 'selection' || bubble.kind === 'image' ? 'above' : 'below'}
           placeholder={bubble.kind === 'selection'
             ? tr('Ask AI about this…', '向 AI 提问…')
-            : tr('Ask AI anything…', '问 AI 任何问题…')}
-          onSubmit={(cmd) => openCommandSession(bubble.kind === 'selection' ? bubble.snapshot : null, cmd)}
+            : bubble.kind === 'image'
+              ? tr('Ask AI about this image…', '向 AI 询问这张图片…')
+              : tr('Ask AI anything…', '问 AI 任何问题…')}
+          onSubmit={(cmd) => openCommandSession(
+            bubble.kind === 'selection' || bubble.kind === 'image' ? bubble.snapshot : null,
+            cmd
+          )}
           onDismiss={() => setBubble(null)}
         />
       )}

@@ -6,6 +6,14 @@ import type { ObserverOpportunityType } from '../../../packages/core/llm/observe
 // below it), not an appendix at the bottom. The whole note is draggable.
 export type Origin = 'human' | 'ai'
 
+export interface TextStyleRun {
+  start: number
+  end: number
+  color?: string
+  size?: number
+  weight?: 400 | 600 | 700
+}
+
 export interface BulletItem {
   kind: 'bullet'
   id: string
@@ -25,8 +33,12 @@ export interface BulletItem {
    * Inline image, PART OF the bullet (no ✓/✕ of its own — it lives and dies
    * with its text). src is the cited page's own og:image, resolved server-side.
    */
-  image?: { src: string; sourceUrl?: string; title?: string }
+  image?: { src: string; sourceUrl?: string; title?: string; w?: number; offsetX?: number; offsetY?: number }
   indent?: number // outline depth (0 = top level); Tab/Shift+Tab moves it. Cards never indent.
+  /** Body lines are plain by default; this opt-in renders the line as a list item. */
+  bulleted?: boolean
+  /** Sparse character ranges carrying rich-text presentation. Plain text stays canonical. */
+  runs?: TextStyleRun[]
 }
 
 export interface CardItem {
@@ -49,8 +61,13 @@ export interface ImageItem {
   kind: 'image'
   id: string
   src: string // data URL (dropped/pasted file) or remote url
-  sourceUrl?: string // where it came from (shown in the expanded previewer)
+  /** The image's single attached destination URL. */
+  sourceUrl?: string
   title?: string
+  w?: number
+  /** Visual offset within the note, used to keep the opposite resize anchor fixed. */
+  offsetX?: number
+  offsetY?: number
   origin: Origin
   status: 'pending' | 'kept'
 }
@@ -66,6 +83,8 @@ export interface CanvasImage {
   y: number
   src: string
   w?: number // natural display width in world coordinates (set once the image loads)
+  /** Exactly one attached URL; absent means the image is unlinked. */
+  url?: string
 }
 
 export interface KeywordNote {

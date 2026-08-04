@@ -18,8 +18,16 @@ export interface PlainBullet {
   fireId?: string
   fireLine?: number
   diagnosis?: string
-  image?: { src: string; sourceUrl?: string; title?: string }
+  image?: { src: string; sourceUrl?: string; title?: string; w?: number; offsetX?: number; offsetY?: number }
   indent?: number
+  bulleted?: boolean
+  runs?: Array<{
+    start: number
+    end: number
+    color?: string
+    size?: number
+    weight?: 400 | 600 | 700
+  }>
 }
 
 export interface PlainCard {
@@ -40,6 +48,9 @@ export interface PlainImage {
   src: string
   sourceUrl?: string
   title?: string
+  w?: number
+  offsetX?: number
+  offsetY?: number
   origin: Origin
   status: ItemStatus
 }
@@ -66,6 +77,7 @@ export interface PlainCanvasImage {
   y: number
   src: string
   w?: number
+  url?: string
 }
 
 export interface BoardContent {
@@ -143,7 +155,8 @@ export function yToCanvasImage(m: Y.Map<unknown>): PlainCanvasImage {
     x: typeof o.x === 'number' ? o.x : 0,
     y: typeof o.y === 'number' ? o.y : 0,
     src: typeof o.src === 'string' ? o.src : '',
-    w: typeof o.w === 'number' ? o.w : undefined
+    w: typeof o.w === 'number' ? o.w : undefined,
+    url: typeof o.url === 'string' ? o.url : undefined
   }
 }
 
