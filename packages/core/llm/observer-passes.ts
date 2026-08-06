@@ -6,7 +6,7 @@
 // yields a null result the engine logs as an error and moves on.
 
 import { chatCompletion, ChatHttpError } from './chat'
-import { getJsonReasoningParams, getReasoningParams } from './parse'
+import { getJsonReasoningParams, getObserverMaxTokens, getReasoningParams } from './parse'
 import { parseObserverContribution, parseObserverDecision } from './observer-parse'
 import {
   buildObserverContributorSystem,
@@ -39,7 +39,7 @@ export async function observerEvaluate(
       system: buildObserverEvaluatorSystem(),
       userText: buildObserverEvaluatorUserText(input),
       fetchImpl,
-      maxTokens: 3000,
+      maxTokens: getObserverMaxTokens(provider.model),
       reasoning: getJsonReasoningParams(provider.model)
     })
     const decision = parseObserverDecision(content)
@@ -47,21 +47,14 @@ export async function observerEvaluate(
       // Keep this diagnostic at the parse boundary: the network panel does not
       // make provider reasoning-vs-answer starvation obvious. Never print the
       // prompt or credentials.
-      console.warn('[observer] unparseable evaluator response', {
+      const error = describeFailure(content, finishReason, hasReasoningContent)
+      console.warn(`[observer] evaluator ${error}`, {
         content,
         finish_reason: finishReason ?? null,
-        reasoning_content_present: hasReasoningContent
+        reasoning_content_present: hasReasoningContent,
+        model: provider.model
       })
-      const metadata = [
-        finishReason ? `finish_reason=${finishReason}` : '',
-        `reasoning_content=${hasReasoningContent ? 'present' : 'absent'}`
-      ].filter(Boolean).join(', ')
-      return {
-        decision: null,
-        serverMs,
-        model: provider.model,
-        error: `unparseable-response (${metadata})`
-      }
+      return { decision: null, serverMs, model: provider.model, error }
     }
     return { decision, serverMs, model: provider.model }
   } catch (e) {
@@ -87,34 +80,41 @@ export async function observerContribute(
       system: buildObserverContributorSystem(),
       userText: buildObserverContributorUserText(input),
       fetchImpl,
-      maxTokens: 3000,
+      maxTokens: getObserverMaxTokens(provider.model),
       // Plain-text protocol (KEYWORD/bullets/SEARCH), not JSON — use the
       // non-JSON reasoning params like the section-header pass.
       reasoning: getReasoningParams(provider.model)
     })
     const contribution = parseObserverContribution(content)
     if (!contribution) {
-      console.warn('[observer] unparseable contributor response', {
+      const error = describeFailure(content, finishReason, hasReasoningContent)
+      console.warn(`[observer] contributor ${error}`, {
         content,
         finish_reason: finishReason ?? null,
-        reasoning_content_present: hasReasoningContent
+        reasoning_content_present: hasReasoningContent,
+        model: provider.model
       })
-      const metadata = [
-        finishReason ? `finish_reason=${finishReason}` : '',
-        `reasoning_content=${hasReasoningContent ? 'present' : 'absent'}`
-      ].filter(Boolean).join(', ')
-      return {
-        contribution: null,
-        serverMs,
-        model: provider.model,
-        error: `unparseable-response (${metadata})`
-      }
+      return { contribution: null, serverMs, model: provider.model, error }
     }
     return { contribution, serverMs, model: provider.model }
   } catch (e) {
     const serverMs = e instanceof ChatHttpError ? e.serverMs : 0
     return { contribution: null, serverMs, model: provider.model, error: errMsg(e) }
   }
+}
+
+// Name what actually went wrong. An EMPTY completion that stopped on `length`
+// is not a malformed reply: the model spent the whole token budget reasoning
+// and never began the answer. The two need opposite fixes — a prompt the model
+// can follow vs. a budget it can finish inside — so the engine log must not
+// collapse them into one "unparseable".
+function describeFailure(content: string, finishReason?: string, hasReasoningContent?: boolean): string {
+  const metadata = [
+    finishReason ? `finish_reason=${finishReason}` : '',
+    `reasoning_content=${hasReasoningContent ? 'present' : 'absent'}`
+  ].filter(Boolean).join(', ')
+  const starved = !content.trim() && finishReason === 'length'
+  return `${starved ? 'starved-response' : 'unparseable-response'} (${metadata})`
 }
 
 function errMsg(e: unknown): string {

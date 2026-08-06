@@ -82,6 +82,22 @@ export function getReasoningParams(model: string): ReasoningParams {
   return {}
 }
 
+// Output budget for the observer's passes. Both replies are short — a JSON
+// decision, a few-line note — but a reasoning model spends the SAME completion
+// on thinking first, and DeepSeek's endpoint rejects the reasoning_effort
+// extension that would shorten it (see getJsonReasoningParams below), so there
+// is no way to cap it from here. At a flat 3000 the contributor spent the whole
+// budget reasoning and returned `content: ""` with finish_reason=length, which
+// the parser can only read as a malformed reply. The observer has no retry — a
+// starved pass is a lost note — so give reasoning models the provider ceiling.
+// Unused tokens are not billed, so the only cost of the headroom is none.
+export function getObserverMaxTokens(model: string): number {
+  if (/deepseek/i.test(model)) return 8000
+  // Elsewhere reasoning is absent or capped via getReasoningParams, so the
+  // ordinary observer budget already leaves room for the answer.
+  return 3000
+}
+
 // Reasoning params for the JSON-answer passes (extract/organize): gpt-oss needs
 // medium effort + hidden reasoning so the JSON isn't starved; others fall back.
 export function getJsonReasoningParams(model: string): ReasoningParams {

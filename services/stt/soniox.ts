@@ -27,6 +27,9 @@ export class SonioxSTT implements STTProvider {
   private audioConnected = false
   private key = ''
   private model = ''
+  /** Device rate, read once at start — see PcmMicStream: the audio callback
+   * can outlive teardown, so it must not dereference a torn-down context. */
+  private sourceRate = 48000
   private readonly TARGET_RATE = 16000
 
   async start(opts: STTStartOpts): Promise<void> {
@@ -43,6 +46,7 @@ export class SonioxSTT implements STTProvider {
 
     this.stream = opts.stream ?? (await navigator.mediaDevices.getUserMedia({ audio: true }))
     this.ctx = new AudioContext()
+    this.sourceRate = this.ctx.sampleRate
     this.source = this.ctx.createMediaStreamSource(this.stream)
     this.processor = this.ctx.createScriptProcessor(4096, 1, 1)
 
@@ -89,7 +93,7 @@ export class SonioxSTT implements STTProvider {
         this.levelCb?.(rms(input))
         const active = this.ws
         if (!active || active.readyState !== WebSocket.OPEN) return
-        const pcm = floatToPcm16(downsample(input, this.ctx!.sampleRate, this.TARGET_RATE))
+        const pcm = floatToPcm16(downsample(input, this.sourceRate, this.TARGET_RATE))
         active.send(pcm)
       }
       if (!this.sourceConnected()) {
@@ -170,6 +174,7 @@ export class SonioxSTT implements STTProvider {
   stop(): void {
     this.stopping = true
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    if (this.processor) this.processor.onaudioprocess = null
     try {
       this.processor?.disconnect()
       this.source?.disconnect()
