@@ -12,16 +12,23 @@ export class PcmMicStream {
   ): Promise<void> {
     const targetRate = opts.targetRate ?? 16000
     this.stream = opts.stream ?? (await navigator.mediaDevices.getUserMedia({ audio: true }))
-    this.ctx = new AudioContext()
-    this.source = this.ctx.createMediaStreamSource(this.stream)
-    this.processor = this.ctx.createScriptProcessor(4096, 1, 1)
-    this.processor.onaudioprocess = (e) => {
+    const ctx = new AudioContext()
+    this.ctx = ctx
+    this.source = ctx.createMediaStreamSource(this.stream)
+    const processor = ctx.createScriptProcessor(4096, 1, 1)
+    this.processor = processor
+    // Read the device rate once, here. A ScriptProcessor callback already
+    // queued when stop() runs still fires afterwards, and stop() has by then
+    // cleared this.ctx — reaching for `this.ctx!.sampleRate` inside the handler
+    // threw "Cannot read properties of undefined" on every teardown.
+    const sourceRate = ctx.sampleRate
+    processor.onaudioprocess = (e) => {
       const input = e.inputBuffer.getChannelData(0)
       opts.onLevel?.(rms(input))
-      onPcm(floatToPcm16(downsample(input, this.ctx!.sampleRate, targetRate)))
+      onPcm(floatToPcm16(downsample(input, sourceRate, targetRate)))
     }
-    this.source.connect(this.processor)
-    this.processor.connect(this.ctx.destination)
+    this.source.connect(processor)
+    processor.connect(ctx.destination)
   }
 
   stop(): void {
@@ -33,6 +40,9 @@ export class PcmMicStream {
     this.source = undefined
     this.ctx = undefined
     this.stream = undefined
+    // Detach before disconnecting: a disconnected node can still deliver the
+    // block it had already captured, and that callback must not outlive stop().
+    if (processor) processor.onaudioprocess = null
     try {
       processor?.disconnect()
       source?.disconnect()

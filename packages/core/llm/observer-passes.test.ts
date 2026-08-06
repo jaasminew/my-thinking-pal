@@ -100,6 +100,37 @@ describe('observerContribute (integration)', () => {
     expect(mock.calls[0].body.max_tokens).toBe(3000)
   })
 
+  // DeepSeek reasons before answering and its endpoint rejects reasoning_effort,
+  // so the flat budget left nothing for the note: the live app got content:""
+  // with finish_reason=length. Both passes now ask for the ceiling.
+  it('asks for the ceiling on DeepSeek, whose reasoning cannot be capped', async () => {
+    const deepseek = { ...TEST_PROVIDER, id: 'hosted-deepseek', model: 'deepseek-v4-pro' }
+    const mock = mockFetchSequence([jsonResponse('KEYWORD: Topic\n- useful angle')])
+    await observerContribute(deepseek, contribInput, mock.fetch)
+    expect(mock.calls[0].body.max_tokens).toBe(8000)
+
+    const evalMock = mockFetchSequence([jsonResponse('{"emit":false,"confidence":0.1}')])
+    await observerEvaluate(deepseek, evalInput, evalMock.fetch)
+    expect(evalMock.calls[0].body.max_tokens).toBe(8000)
+  })
+
+  it('names an empty length-truncated reply as starved, not unparseable', async () => {
+    const mock = mockFetchSequence([
+      jsonResponse('', { finishReason: 'length', reasoningContent: 'thinking, at length…' })
+    ])
+    const out = await observerContribute(TEST_PROVIDER, contribInput, mock.fetch)
+    expect(out.contribution).toBeNull()
+    expect(out.error).toMatch(/starved-response/)
+    expect(out.error).toMatch(/finish_reason=length/)
+    expect(out.error).toMatch(/reasoning_content=present/)
+  })
+
+  it('still calls a non-empty truncated reply unparseable', async () => {
+    const mock = mockFetchSequence([jsonResponse('half a thou', { finishReason: 'length' })])
+    const out = await observerContribute(TEST_PROVIDER, contribInput, mock.fetch)
+    expect(out.error).toMatch(/unparseable-response/)
+  })
+
   it('maps an HTTP failure to a null contribution + error', async () => {
     const mock = mockFetchSequence([jsonResponse('boom', { status: 503 })])
     const out = await observerContribute(TEST_PROVIDER, contribInput, mock.fetch)

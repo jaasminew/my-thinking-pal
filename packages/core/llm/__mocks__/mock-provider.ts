@@ -40,9 +40,19 @@ export function sseResponse(deltas: string[], init?: { status?: number }): Respo
 }
 
 // Build a plain JSON chat-completion Response (non-streaming passes).
-export function jsonResponse(content: string, init?: { status?: number }): Response {
+export function jsonResponse(
+  content: string,
+  init?: { status?: number; finishReason?: string; reasoningContent?: string }
+): Response {
   const status = init?.status ?? 200
-  const payload = status >= 400 ? content : JSON.stringify({ choices: [{ message: { content } }] })
+  // finish_reason / reasoning_content are optional so a test can reproduce a
+  // provider that stopped on `length` having written nothing but reasoning.
+  const payload = status >= 400 ? content : JSON.stringify({
+    choices: [{
+      message: { content, ...(init?.reasoningContent ? { reasoning_content: init.reasoningContent } : {}) },
+      ...(init?.finishReason ? { finish_reason: init.finishReason } : {})
+    }]
+  })
   return new Response(payload, {
     status,
     headers: { 'Content-Type': 'application/json' }
